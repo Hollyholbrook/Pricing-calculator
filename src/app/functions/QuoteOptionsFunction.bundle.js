@@ -1641,7 +1641,6 @@ var buildSelectedProperties = (option, approvalStatus) => {
     pricing_onboarding_tier: onboardingHubSpotValue[input.onboardingPackage] || input.onboardingPackage,
     pricing_arr: String(result.committedArr),
     pricing_tcv: String(result.tcv),
-    hs_tcv: String(result.tcv),
     pricing_list_price_tcv: String(result.listTcv),
     pricing_blended_effective_discount_pct: String(roundForProperty(effectiveDiscount)),
     pricing_has_100pct_line: String(result.largestDiscretionaryDiscount === 1),
@@ -1700,11 +1699,26 @@ var chooseOption = async (client, dealId, state, parameters, settings) => {
     document,
     buildSelectedProperties({ ...option, status: approvalStatus }, approvalStatus)
   );
+  const synced = await syncDealLineItems(
+    client,
+    dealId,
+    {
+      ...state,
+      document,
+      selectedOptionId: option.id,
+      selectedOptionName: option.name,
+      selectedStateHash: option.result.stateHash
+    },
+    settings
+  );
   return {
     document,
     selectedOptionId: option.id,
     selectedOptionName: option.name,
-    approvalStatus
+    approvalStatus,
+    lineItemSyncStatus: "synced",
+    lineItemCount: synced.count,
+    lineItemsSyncedAt: synced.syncedAt
   };
 };
 var selectedOptionForDraft = (state) => {

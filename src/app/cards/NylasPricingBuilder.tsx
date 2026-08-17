@@ -620,14 +620,14 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
     setSaving(true);
     setError(null);
     try {
-      await runAction({
+      const body = await runAction({
         action: "select",
         expectedRevision: optionSet.revision,
         optionId: option.id,
       });
       actions.addAlert({
-        title: "Customer choice selected",
-        message: `${option.name} now populates the Deal's reportable pricing fields. Approval is not requested until the HubSpot Quote is submitted.`,
+        title: "Customer choice and Deal line items updated",
+        message: `${option.name} is selected and ${body.lineItemCount || 0} line items now drive the Deal's native totals. Approval is not requested until the HubSpot Quote is submitted.`,
         type: "success",
       });
       setView("list");

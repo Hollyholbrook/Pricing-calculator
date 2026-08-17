@@ -273,7 +273,6 @@ const buildSelectedProperties = (option, approvalStatus) => {
     pricing_onboarding_tier: onboardingHubSpotValue[input.onboardingPackage] || input.onboardingPackage,
     pricing_arr: String(result.committedArr),
     pricing_tcv: String(result.tcv),
-    hs_tcv: String(result.tcv),
     pricing_list_price_tcv: String(result.listTcv),
     pricing_blended_effective_discount_pct: String(roundForProperty(effectiveDiscount)),
     pricing_has_100pct_line: String(result.largestDiscretionaryDiscount === 1),
@@ -345,11 +344,30 @@ const chooseOption = async (client, dealId, state, parameters, settings) => {
     document,
     buildSelectedProperties({ ...option, status: approvalStatus }, approvalStatus),
   );
+
+  // HubSpot's native Deal totals are derived from associated line items. Keep
+  // selection and line-item reconciliation in the same user action so the
+  // official totals cannot intentionally diverge from the customer choice.
+  const synced = await syncDealLineItems(
+    client,
+    dealId,
+    {
+      ...state,
+      document,
+      selectedOptionId: option.id,
+      selectedOptionName: option.name,
+      selectedStateHash: option.result.stateHash,
+    },
+    settings,
+  );
   return {
     document,
     selectedOptionId: option.id,
     selectedOptionName: option.name,
     approvalStatus,
+    lineItemSyncStatus: 'synced',
+    lineItemCount: synced.count,
+    lineItemsSyncedAt: synced.syncedAt,
   };
 };
 
