@@ -1,0 +1,11 @@
+{
+  "uid": "nylas_pricing_quote_options",
+  "type": "app-function",
+  "config": {
+    "entrypoint": "/app/functions/QuoteOptionsFunction.bundle.js",
+    "secretKeys": [
+      "QUOTE_TEMPLATE_ID",
+      "SETTINGS_ADMIN_USER_IDS"
+    ]
+  }
+}

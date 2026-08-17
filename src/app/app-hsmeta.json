@@ -1,0 +1,40 @@
+{
+  "uid": "nylas_pricing_app",
+  "type": "app",
+  "config": {
+    "description": "Build, calculate, compare, approve, and sync Nylas New Business quote options from Deal records.",
+    "name": "Nylas Pricing",
+    "distribution": "private",
+    "auth": {
+      "type": "static",
+      "requiredScopes": [
+        "oauth",
+        "crm.objects.deals.read",
+        "crm.objects.deals.write",
+        "crm.objects.line_items.read",
+        "crm.objects.line_items.write",
+        "crm.objects.products.read",
+        "crm.objects.quotes.read",
+        "crm.objects.quotes.write",
+        "crm.objects.contacts.read",
+        "crm.objects.companies.read",
+        "crm.objects.custom.read",
+        "crm.objects.custom.write"
+      ],
+      "optionalScopes": [],
+      "conditionallyRequiredScopes": []
+    },
+    "permittedUrls": {
+      "fetch": [
+        "https://api.hubapi.com"
+      ],
+      "iframe": [],
+      "img": []
+    },
+    "support": {
+      "supportEmail": "revops@nylas.com",
+      "documentationUrl": "https://developer.nylas.com",
+      "supportUrl": "https://www.nylas.com"
+    }
+  }
+}

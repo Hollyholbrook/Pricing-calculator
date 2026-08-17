@@ -1,0 +1,582 @@
+const crypto = require('node:crypto');
+const rules = require('./pricingRules');
+
+class QuoteValidationError extends Error {
+  constructor(code, field) {
+    super(code);
+    this.name = 'QuoteValidationError';
+    this.code = code;
+    this.field = field;
+  }
+}
+
+const round = (value, decimals = 2) => {
+  const multiplier = 10 ** decimals;
+  return Math.round((value + Number.EPSILON) * multiplier) / multiplier;
+};
+
+const assertPlainObject = (value, field) => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new QuoteValidationError('INVALID_OBJECT', field);
+  }
+};
+
+const requireAllowedString = (value, allowed, field) => {
+  if (typeof value !== 'string' || !allowed.includes(value)) {
+    throw new QuoteValidationError('UNSUPPORTED_VALUE', field);
+  }
+  return value;
+};
+
+const requireInteger = (value, min, max, field) => {
+  if (!Number.isInteger(value) || value < min || value > max) {
+    throw new QuoteValidationError('INVALID_INTEGER', field);
+  }
+  return value;
+};
+
+const requirePercent = (value, field) => {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > 1) {
+    throw new QuoteValidationError('INVALID_PERCENTAGE', field);
+  }
+  return value;
+};
+
+const findRule = (collection, value, fields, inputField) => {
+  const match = collection.find((item) => fields.some((field) => item[field] === value));
+  if (!match) throw new QuoteValidationError('UNSUPPORTED_VALUE', inputField);
+  return match;
+};
+
+const normalizeAddOns = (input) => {
+  if (Array.isArray(input)) return input;
+  if (!input || typeof input !== 'object') return [];
+  const legacyMap = {
+    enterpriseAccelerator: 'enterprise_accelerator',
+    privacyFilter: 'privacy_filter',
+    verifiedOauth: 'verified_oauth',
+  };
+  return Object.entries(input)
+    .filter(([, selected]) => selected === true)
+    .map(([key]) => legacyMap[key])
+    .filter(Boolean);
+};
+
+const normalizeDiscountMap = (value, allowedKeys, field, fallback = 0) => {
+  if (value == null) {
+    return Object.fromEntries(allowedKeys.map((key) => [key, fallback]));
+  }
+  assertPlainObject(value, field);
+  if (Object.keys(value).some((key) => !allowedKeys.includes(key))) {
+    throw new QuoteValidationError('UNSUPPORTED_FIELD', field);
+  }
+  return Object.fromEntries(
+    allowedKeys.map((key) => [key, requirePercent(value[key] ?? fallback, `${field}.${key}`)]),
+  );
+};
+
+const normalizeInput = (input, activeRules = rules) => {
+  assertPlainObject(input, 'input');
+  const allowedInputFields = new Set([
+    'startDate',
+    'termMonths',
+    'paymentFrequency',
+    'discretionaryDiscount',
+    'productDiscounts',
+    'addOnDiscounts',
+    'supportDiscount',
+    'onboardingDiscount',
+    'professionalServicesDiscount',
+    'volumes',
+    'supportLevel',
+    'professionalServices',
+    'psItemCount',
+    'onboardingPackage',
+    'addOns',
+    'autoRenewal',
+    'renewalTermMonths',
+    'nonRenewalNoticeDays',
+    'redliningRequested',
+    'nonStandardTerms',
+    'specialTerms',
+  ]);
+  if (Object.keys(input).some((field) => !allowedInputFields.has(field))) {
+    throw new QuoteValidationError('UNSUPPORTED_FIELD', 'input');
+  }
+
+  const termMonths = requireInteger(input.termMonths, 12, 36, 'termMonths');
+  if (!activeRules.allowedTerms.includes(termMonths)) {
+    throw new QuoteValidationError('UNSUPPORTED_TERM', 'termMonths');
+  }
+
+  const payment = findRule(
+    activeRules.paymentRules,
+    input.paymentFrequency,
+    ['key', 'label', 'hubspotValue'],
+    'paymentFrequency',
+  );
+  const support = findRule(
+    activeRules.supportRules,
+    input.supportLevel,
+    ['key', 'level'],
+    'supportLevel',
+  );
+  const onboarding = findRule(
+    activeRules.onboardingRules,
+    input.onboardingPackage,
+    ['key', 'package'],
+    'onboardingPackage',
+  );
+
+  const discretionaryDiscount = requirePercent(
+    input.discretionaryDiscount ?? 0,
+    'discretionaryDiscount',
+  );
+
+  const sourceVolumes = input.volumes ?? {};
+  assertPlainObject(sourceVolumes, 'volumes');
+  const productKeys = new Set(activeRules.products.map(({ key }) => key));
+  if (Object.keys(sourceVolumes).some((key) => !productKeys.has(key))) {
+    throw new QuoteValidationError('UNSUPPORTED_FIELD', 'volumes');
+  }
+  const volumes = {};
+  for (const product of activeRules.products) {
+    volumes[product.key] = requireInteger(
+      sourceVolumes[product.key] ?? 0,
+      0,
+      activeRules.maximumVolume,
+      `volumes.${product.key}`,
+    );
+  }
+  const productDiscounts = normalizeDiscountMap(
+    input.productDiscounts,
+    [...productKeys],
+    'productDiscounts',
+    discretionaryDiscount,
+  );
+
+  const professionalServices = [
+    ...new Set(Array.isArray(input.professionalServices) ? input.professionalServices : []),
+  ];
+  const allowedProfessionalServices = activeRules.professionalServiceOptions.map(({ key }) => key);
+  for (const key of professionalServices) {
+    requireAllowedString(key, allowedProfessionalServices, 'professionalServices');
+  }
+  const psItemCount = requireInteger(
+    input.psItemCount ?? professionalServices.length,
+    0,
+    5,
+    'professionalServices',
+  );
+
+  const addOns = normalizeAddOns(input.addOns);
+  const allowedAddOns = activeRules.addOnRules.map(({ key }) => key);
+  for (const key of addOns) requireAllowedString(key, allowedAddOns, 'addOns');
+  const addOnDiscounts = normalizeDiscountMap(
+    input.addOnDiscounts,
+    allowedAddOns,
+    'addOnDiscounts',
+    0,
+  );
+
+  const autoRenewal = input.autoRenewal === true;
+  const renewalTermMonths = autoRenewal ? 12 : 0;
+  const nonRenewalNoticeDays = 60;
+
+  if (input.startDate != null) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(input.startDate)) {
+      throw new QuoteValidationError('INVALID_DATE', 'startDate');
+    }
+    const parsedDate = new Date(`${input.startDate}T00:00:00.000Z`);
+    if (Number.isNaN(parsedDate.getTime()) || parsedDate.toISOString().slice(0, 10) !== input.startDate) {
+      throw new QuoteValidationError('INVALID_DATE', 'startDate');
+    }
+  }
+  if (typeof input.specialTerms === 'string' && input.specialTerms.length > 4_000) {
+    throw new QuoteValidationError('VALUE_TOO_LONG', 'specialTerms');
+  }
+
+  return {
+    startDate: input.startDate || null,
+    termMonths,
+    payment,
+    support,
+    onboarding,
+    discretionaryDiscount,
+    productDiscounts,
+    addOnDiscounts,
+    supportDiscount: requirePercent(input.supportDiscount ?? 0, 'supportDiscount'),
+    onboardingDiscount: requirePercent(input.onboardingDiscount ?? 0, 'onboardingDiscount'),
+    professionalServicesDiscount: requirePercent(
+      input.professionalServicesDiscount ?? 0,
+      'professionalServicesDiscount',
+    ),
+    volumes,
+    professionalServices,
+    psItemCount,
+    addOns: [...new Set(addOns)],
+    autoRenewal,
+    renewalTermMonths,
+    nonRenewalNoticeDays,
+    redliningRequested: input.redliningRequested === true,
+    nonStandardTerms: false,
+    specialTerms:
+      input.redliningRequested === true && typeof input.specialTerms === 'string'
+        ? input.specialTerms.trim()
+        : '',
+  };
+};
+
+const calculateBandCharge = (volume, bands) =>
+  bands.reduce((total, [from, to, marginalRate]) => {
+    const upperBound = to == null ? volume : Math.min(volume, to);
+    const unitsInBand = Math.max(upperBound - from, 0);
+    return total + unitsInBand * marginalRate;
+  }, 0);
+
+const addMonthsUtc = (dateString, months) => {
+  const [year, month, day] = dateString.split('-').map(Number);
+  const target = new Date(Date.UTC(year, month - 1 + months, 1));
+  const finalDay = Math.min(day, new Date(Date.UTC(target.getUTCFullYear(), target.getUTCMonth() + 1, 0)).getUTCDate());
+  target.setUTCDate(finalDay);
+  return target;
+};
+
+const formatDate = (date) => date.toISOString().slice(0, 10);
+
+const calculateDates = (input) => {
+  if (!input.startDate) {
+    return {
+      contractStartDate: null,
+      contractEndDate: null,
+      renewalDate: null,
+      nonRenewalNoticeDate: null,
+    };
+  }
+  const renewalDate = addMonthsUtc(input.startDate, input.termMonths);
+  const endDate = new Date(renewalDate.getTime());
+  endDate.setUTCDate(endDate.getUTCDate() - 1);
+  const noticeDate = new Date(renewalDate.getTime());
+  noticeDate.setUTCDate(noticeDate.getUTCDate() - input.nonRenewalNoticeDays);
+  return {
+    contractStartDate: input.startDate,
+    contractEndDate: formatDate(endDate),
+    renewalDate: input.autoRenewal ? formatDate(renewalDate) : null,
+    nonRenewalNoticeDate: formatDate(noticeDate),
+  };
+};
+
+const buildApproval = (
+  input,
+  largestDiscretionaryDiscount,
+  committedArr,
+  hasOauthDependencyFailure,
+  activeRules = rules,
+) => {
+  const reasons = [];
+  const blockingReasons = [];
+  let tier = 'none';
+  const percentLabel = (value) => `${round(value * 100, 2)}%`;
+  const currencyLabel = (value) => `$${round(value, 2).toLocaleString('en-US')}`;
+
+  if (
+    largestDiscretionaryDiscount > 0 &&
+    largestDiscretionaryDiscount <= activeRules.salesDirectorDiscountMax
+  ) {
+    tier = 'sales_director';
+    reasons.push(
+      `Discretionary discount is greater than 0% and no more than ${percentLabel(activeRules.salesDirectorDiscountMax)}.`,
+    );
+  } else if (
+    largestDiscretionaryDiscount > activeRules.salesDirectorDiscountMax &&
+    largestDiscretionaryDiscount <= activeRules.headSalesDiscountMax
+  ) {
+    tier = 'head_sales';
+    reasons.push(
+      `Discretionary discount is greater than ${percentLabel(activeRules.salesDirectorDiscountMax)} and no more than ${percentLabel(activeRules.headSalesDiscountMax)}.`,
+    );
+  } else if (largestDiscretionaryDiscount > activeRules.headSalesDiscountMax) {
+    tier = 'finance';
+    reasons.push(
+      `Discretionary discount is greater than ${percentLabel(activeRules.headSalesDiscountMax)}.`,
+    );
+  }
+
+  if (input.nonStandardTerms) {
+    tier = 'finance';
+    reasons.push('Contract includes non-standard terms.');
+  }
+  if (committedArr < activeRules.minimumCommittedArr) {
+    tier = 'finance';
+    reasons.push(
+      `Committed ARR is below the ${currencyLabel(activeRules.minimumCommittedArr)} Enterprise minimum.`,
+    );
+    blockingReasons.push('BELOW_ENTERPRISE_MINIMUM');
+  }
+  if (input.redliningRequested && committedArr < activeRules.redliningMinimumArr) {
+    tier = 'finance';
+    reasons.push(
+      `Redlining was requested below the ${currencyLabel(activeRules.redliningMinimumArr)} ARR threshold.`,
+    );
+    blockingReasons.push('REDLINING_BELOW_THRESHOLD');
+  }
+  if (hasOauthDependencyFailure) {
+    blockingReasons.push('OAUTH_REQUIRES_PROFESSIONAL_SERVICES');
+    reasons.push('Turnkey Verified OAuth requires at least one professional-services item.');
+  }
+
+  return { tier, reasons, blockingReasons };
+};
+
+const buildActiveRules = (pricingPolicy = {}) => ({
+  ...rules,
+  calculationMethod: pricingPolicy.calculationMethod ?? rules.calculationMethod,
+  products: rules.products.map((product) => ({
+    ...product,
+    bands: product.bands.map((band, index) => [
+      band[0],
+      band[1],
+      pricingPolicy.productBandRates?.[product.key]?.[index] ?? band[2],
+    ]),
+  })),
+  minimumCommittedArr: pricingPolicy.minimumCommittedArr ?? rules.minimumCommittedArr,
+  redliningMinimumArr: pricingPolicy.redliningMinimumArr ?? rules.redliningMinimumArr,
+  salesDirectorDiscountMax: pricingPolicy.salesDirectorDiscountMax ?? 0.1,
+  headSalesDiscountMax: pricingPolicy.headSalesDiscountMax ?? 0.3,
+  termRules: rules.termRules.map((rule) => ({
+    ...rule,
+    discount: pricingPolicy.termDiscounts?.[String(rule.months)] ?? rule.discount,
+  })),
+  paymentRules: rules.paymentRules.map((rule) => ({
+    ...rule,
+    premium: pricingPolicy.paymentPremiums?.[rule.key] ?? rule.premium,
+  })),
+  supportRules: rules.supportRules.map((rule) => ({
+    ...rule,
+    percentOfPlatformArr:
+      pricingPolicy.support?.[rule.key]?.percent ?? rule.percentOfPlatformArr,
+    annualCap: pricingPolicy.support?.[rule.key]?.cap ?? rule.annualCap,
+  })),
+  onboardingRules: rules.onboardingRules.map((rule) => ({
+    ...rule,
+    oneTimeAmount: pricingPolicy.onboardingAmounts?.[rule.key] ?? rule.oneTimeAmount,
+  })),
+  professionalServicesRules: rules.professionalServicesRules.map((rule) => ({
+    ...rule,
+    oneTimeAmount:
+      pricingPolicy.professionalServicesAmounts?.[rule.itemCount] ?? rule.oneTimeAmount,
+  })),
+  addOnRules: rules.addOnRules.map((rule) => ({
+    ...rule,
+    annualAmount: pricingPolicy.addOnAnnualAmounts?.[rule.key] ?? rule.annualAmount,
+  })),
+});
+
+const calculateQuote = (rawInput, pricingPolicy = {}, settingsVersion = 0) => {
+  const activeRules = buildActiveRules(pricingPolicy);
+  const input = normalizeInput(rawInput, activeRules);
+  const termRule = activeRules.termRules.find(({ months }) => months === input.termMonths);
+
+  const lines = activeRules.products.map((product) => {
+    const volume = input.volumes[product.key];
+    const entryRate = product.bands[0][2];
+    const bandCharge = calculateBandCharge(volume, product.bands);
+    const baseBlendedRate = volume === 0 ? 0 : round(bandCharge / volume, 3);
+    const baseForCustomerRate = volume === 0 ? entryRate : baseBlendedRate;
+    const excelCompatible = activeRules.calculationMethod === 'excel_compatible';
+    const exactListUnitRate = excelCompatible
+      ? baseForCustomerRate * (1 - termRule.discount + input.payment.premium)
+      : round(baseForCustomerRate * (1 - termRule.discount) * (1 + input.payment.premium), 2);
+    const listUnitRate = round(exactListUnitRate, 2);
+    const displayListUnitRate = round(exactListUnitRate, 4);
+    const discretionaryDiscount = input.productDiscounts[product.key];
+    const exactProposedUnitRate = excelCompatible
+      ? exactListUnitRate * (1 - discretionaryDiscount)
+      : round(listUnitRate * (1 - discretionaryDiscount), 2);
+    const proposedUnitRate = round(exactProposedUnitRate, 2);
+    const displayProposedUnitRate = round(exactProposedUnitRate, 4);
+    const billingUnitRate = round(exactProposedUnitRate, 9);
+    const exactListMrr = volume * exactListUnitRate;
+    const exactProposedMrr = volume * exactProposedUnitRate;
+    const listMrr = round(exactListMrr, 2);
+    const proposedMrr = round(exactProposedMrr, 2);
+
+    return {
+      productKey: product.key,
+      productName: product.name,
+      unitOfMeasure: product.unitOfMeasure,
+      volume,
+      committed: volume > 0,
+      baseBlendedRate,
+      listUnitRate: volume === 0 ? 0 : listUnitRate,
+      displayListUnitRate,
+      proposedUnitRate: volume === 0 ? 0 : proposedUnitRate,
+      displayProposedUnitRate,
+      billingUnitRate,
+      availableUnitRate: proposedUnitRate,
+      discretionaryDiscount,
+      listMrr,
+      proposedMrr,
+      annualCommitment: round(exactProposedMrr * 12, 2),
+      listTermCommitment: round(exactListMrr * input.termMonths, 2),
+      termCommitment: round(exactProposedMrr * input.termMonths, 2),
+      exactListMrr,
+      exactProposedMrr,
+    };
+  });
+
+  const listPlatformArr = round(lines.reduce((sum, line) => sum + line.exactListMrr, 0) * 12, 2);
+  const proposedPlatformArr = round(
+    lines.reduce((sum, line) => sum + line.exactProposedMrr, 0) * 12,
+    2,
+  );
+  const listSupportAnnual = round(
+    Math.min(
+      proposedPlatformArr * input.support.percentOfPlatformArr,
+      input.support.annualCap,
+    ),
+    2,
+  );
+  const supportAnnual = round(listSupportAnnual * (1 - input.supportDiscount), 2);
+  const selectedAddOns = activeRules.addOnRules
+    .filter(({ key }) => input.addOns.includes(key))
+    .map(({ key, label, annualAmount }) => {
+      const exactListMonthlyAmount = activeRules.calculationMethod === 'excel_compatible'
+        ? (annualAmount / 12) * (1 - termRule.discount + input.payment.premium)
+        : round((annualAmount / 12) * (1 - termRule.discount) * (1 + input.payment.premium), 2);
+      const listMonthlyAmount = round(exactListMonthlyAmount, 2);
+      const discretionaryDiscount = input.addOnDiscounts[key];
+      const exactProposedMonthlyAmount = activeRules.calculationMethod === 'excel_compatible'
+        ? exactListMonthlyAmount * (1 - discretionaryDiscount)
+        : round(listMonthlyAmount * (1 - discretionaryDiscount), 2);
+      const proposedMonthlyAmount = round(exactProposedMonthlyAmount, 2);
+      return {
+        key,
+        label,
+        rateCardAnnualAmount: annualAmount,
+        listMonthlyAmount,
+        proposedMonthlyAmount,
+        billingMonthlyAmount: round(exactProposedMonthlyAmount, 9),
+        listAnnualAmount: round(exactListMonthlyAmount * 12, 2),
+        annualAmount: round(exactProposedMonthlyAmount * 12, 2),
+        discretionaryDiscount,
+      };
+    });
+  const annualAddOns = selectedAddOns.reduce((sum, item) => sum + item.annualAmount, 0);
+  const listAnnualAddOns = selectedAddOns.reduce((sum, item) => sum + item.listAnnualAmount, 0);
+  const listProfessionalServicesAmount = activeRules.professionalServicesRules.find(
+    ({ itemCount }) => itemCount === input.psItemCount,
+  ).oneTimeAmount;
+  const professionalServicesAmount = round(
+    listProfessionalServicesAmount * (1 - input.professionalServicesDiscount),
+    2,
+  );
+  const listOnboardingAmount = input.onboarding.oneTimeAmount;
+  const onboardingAmount = round(
+    listOnboardingAmount * (1 - input.onboardingDiscount),
+    2,
+  );
+  const oneTime = onboardingAmount + professionalServicesAmount;
+  const listOneTime = listOnboardingAmount + listProfessionalServicesAmount;
+  const committedArr = round(proposedPlatformArr + supportAnnual + annualAddOns, 2);
+  const listCommittedArr = round(listPlatformArr + listSupportAnnual + listAnnualAddOns, 2);
+  const tcv = round(committedArr * (input.termMonths / 12) + oneTime, 2);
+  const listTcv = round(listCommittedArr * (input.termMonths / 12) + listOneTime, 2);
+  const recurringPerPeriod = round(committedArr / input.payment.paymentsPerYear, 2);
+  const hasOauthDependencyFailure =
+    input.addOns.includes('verified_oauth') && input.psItemCount === 0;
+  const largestDiscretionaryDiscount = Math.max(
+    0,
+    ...Object.values(input.productDiscounts),
+    ...Object.values(input.addOnDiscounts),
+    input.supportDiscount,
+    input.onboardingDiscount,
+    input.professionalServicesDiscount,
+  );
+  const approval = buildApproval(
+    input,
+    largestDiscretionaryDiscount,
+    committedArr,
+    hasOauthDependencyFailure,
+    activeRules,
+  );
+
+  const legacyGuardrails = [];
+  if (largestDiscretionaryDiscount > activeRules.headSalesDiscountMax && input.termMonths > 12) {
+    legacyGuardrails.push('FINANCE_APPROVAL_MULTI_YEAR_DISCOUNT');
+  }
+  if (committedArr < activeRules.minimumCommittedArr) {
+    legacyGuardrails.push('FINANCE_APPROVAL_BELOW_MINIMUM');
+  }
+  if (hasOauthDependencyFailure) legacyGuardrails.push('BLOCKED_OAUTH_REQUIRES_PS');
+
+  const dates = calculateDates(input);
+  const result = {
+    schemaVersion: rules.schemaVersion,
+    calculationVersion: `${rules.priceListVersion} / ${activeRules.calculationMethod} / settings ${settingsVersion}`,
+    calculationMethod: activeRules.calculationMethod,
+    settingsVersion,
+    currency: rules.currency,
+    calculatedAt: new Date().toISOString(),
+    termDiscount: termRule.discount,
+    paymentPremium: input.payment.premium,
+    paymentFrequencyHubSpotValue: input.payment.hubspotValue,
+    paymentsPerYear: input.payment.paymentsPerYear,
+    billingPeriod: input.payment.period,
+    lines,
+    quotedProducts: lines.filter(({ committed }) => committed).map(({ productKey }) => productKey),
+    listPlatformArr,
+    proposedPlatformArr,
+    listSupportAnnual,
+    supportAnnual,
+    selectedAddOns,
+    annualAddOns,
+    listAnnualAddOns,
+    listProfessionalServicesAmount,
+    professionalServicesAmount,
+    listOnboardingAmount,
+    onboardingAmount,
+    listCommittedArr,
+    committedArr,
+    recurringPerPeriod,
+    listOneTime,
+    oneTime,
+    listTcv,
+    tcv,
+    largestDiscretionaryDiscount,
+    approvalTierRequired: approval.tier,
+    approvalReasons: approval.reasons,
+    blockingReasons: approval.blockingReasons,
+    calculationStatus:
+      approval.blockingReasons.length > 0
+        ? 'blocked'
+        : approval.tier === 'none'
+          ? 'ready'
+          : 'approval_required',
+    approvalStatus:
+      legacyGuardrails.length === 0 ? 'WITHIN_GUARDRAILS' : legacyGuardrails.join('; '),
+    dates,
+  };
+
+  result.stateHash = crypto
+    .createHash('sha256')
+    .update(
+      JSON.stringify({
+        input,
+        calculationVersion: result.calculationVersion,
+        pricingPolicy,
+      }),
+    )
+    .digest('hex');
+
+  return result;
+};
+
+module.exports = {
+  QuoteValidationError,
+  calculateQuote,
+  buildActiveRules,
+  normalizeInput,
+  round,
+  rules,
+};
