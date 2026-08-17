@@ -59,6 +59,14 @@ test('Deal line items reconcile to the approved calculation', () => {
   assert.equal(Math.round(recurring * 100) / 100, selected.result.recurringPerPeriod);
   assert.equal(Math.round(oneTime * 100) / 100, selected.result.oneTime);
   assert.equal(new Set(items.map(({ key }) => key)).size, items.length);
+  const recurringItems = items.filter(
+    ({ properties }) => properties.recurringbillingfrequency,
+  );
+  assert.equal(recurringItems.length, 1);
+  assert.equal(recurringItems[0].key, 'subscription:nylas_enterprise');
+  assert.equal(recurringItems[0].properties.hs_product_id, '46037350773');
+  assert.equal(recurringItems[0].properties.name, 'Nylas Enterprise');
+  assert.equal(recurringItems[0].properties.quantity, '1');
 });
 
 test('Quote can collapse only the subscription products, not other charges', () => {

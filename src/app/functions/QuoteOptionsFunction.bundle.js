@@ -1059,7 +1059,7 @@ var require_lineItemModel = __commonJS({
   "lineItemModel.js"(exports2, module2) {
     var crypto2 = require("node:crypto");
     var CATALOG = Object.freeze({
-      enterprise: { id: "46037350773", name: "Enterprise", category: "Platform" },
+      enterprise: { id: "46037350773", name: "Nylas Enterprise", category: "Platform" },
       connect_ca: { id: "45820463620", name: "Connect", category: "Platform" },
       calendar_ca: { id: "45887560099", name: "Calendar Only - CAs", category: "Calendar" },
       notetaker_bot_hours: { id: "45816248707", name: "Notetaker", category: "Notetaker" },
@@ -1264,6 +1264,21 @@ var require_lineItemModel = __commonJS({
         source
       })
     });
+    var buildDealBundleLine = (option) => ({
+      key: "subscription:nylas_enterprise",
+      properties: recurringProperties({
+        option,
+        key: "subscription:nylas_enterprise",
+        component: "subscription_bundle",
+        product: CATALOG.enterprise,
+        quantity: 1,
+        price: option.result.recurringPerPeriod,
+        description: `Bundled Nylas Enterprise subscription, including committed products, support, and recurring add-ons.
+Product rate schedule:
+${rateScheduleText(option, true)}`,
+        source: "deal"
+      })
+    });
     var buildSupportLine = (option, source) => {
       if (option.result.supportAnnual <= 0) return [];
       const product = CATALOG[option.input.supportLevel];
@@ -1360,7 +1375,11 @@ var require_lineItemModel = __commonJS({
         ...buildProfessionalServiceLines(option, source)
       ];
     };
-    var buildDealLineItems2 = (option) => buildLineItems(option, { source: "deal", presentation: "itemized_products" });
+    var buildDealLineItems2 = (option) => [
+      buildDealBundleLine(option),
+      ...buildOnboardingLines(option, "deal"),
+      ...buildProfessionalServiceLines(option, "deal")
+    ];
     var buildQuoteLineItems2 = (option, content) => buildLineItems(option, {
       source: "quote",
       presentation: content.presentation,

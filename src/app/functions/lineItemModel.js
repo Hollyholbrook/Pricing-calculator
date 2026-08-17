@@ -1,7 +1,7 @@
 const crypto = require('node:crypto');
 
 const CATALOG = Object.freeze({
-  enterprise: { id: '46037350773', name: 'Enterprise', category: 'Platform' },
+  enterprise: { id: '46037350773', name: 'Nylas Enterprise', category: 'Platform' },
   connect_ca: { id: '45820463620', name: 'Connect', category: 'Platform' },
   calendar_ca: { id: '45887560099', name: 'Calendar Only - CAs', category: 'Calendar' },
   notetaker_bot_hours: { id: '45816248707', name: 'Notetaker', category: 'Notetaker' },
@@ -239,6 +239,22 @@ const buildSubscriptionSummaryLine = (option, source, includeUncommitted) => ({
   }),
 });
 
+const buildDealBundleLine = (option) => ({
+  key: 'subscription:nylas_enterprise',
+  properties: recurringProperties({
+    option,
+    key: 'subscription:nylas_enterprise',
+    component: 'subscription_bundle',
+    product: CATALOG.enterprise,
+    quantity: 1,
+    price: option.result.recurringPerPeriod,
+    description:
+      'Bundled Nylas Enterprise subscription, including committed products, support, and recurring add-ons.\n' +
+      `Product rate schedule:\n${rateScheduleText(option, true)}`,
+    source: 'deal',
+  }),
+});
+
 const buildSupportLine = (option, source) => {
   if (option.result.supportAnnual <= 0) return [];
   const product = CATALOG[option.input.supportLevel];
@@ -345,8 +361,11 @@ const buildLineItems = (option, { source, presentation = 'itemized_products', in
   ];
 };
 
-const buildDealLineItems = (option) =>
-  buildLineItems(option, { source: 'deal', presentation: 'itemized_products' });
+const buildDealLineItems = (option) => [
+  buildDealBundleLine(option),
+  ...buildOnboardingLines(option, 'deal'),
+  ...buildProfessionalServiceLines(option, 'deal'),
+];
 
 const buildQuoteLineItems = (option, content) =>
   buildLineItems(option, {
