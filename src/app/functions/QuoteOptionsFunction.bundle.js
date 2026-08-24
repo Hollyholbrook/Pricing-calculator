@@ -77,7 +77,13 @@ var require_pricingRules = __commonJS({
           key: "agent_email_thousands",
           name: "Agent Email",
           unitOfMeasure: "1,000 emails",
-          bands: [[0, null, 0.5]]
+          pricingModel: "graduated_adjusted_bands",
+          bands: [
+            [0, 5e4, 1],
+            [5e4, 1e5, 0.75],
+            [1e5, 5e5, 0.35],
+            [5e5, null, 0.25]
+          ]
         },
         {
           key: "agent_storage_gb",
@@ -407,6 +413,24 @@ var require_calculator = __commonJS({
       const unitsInBand = Math.max(upperBound - from, 0);
       return total + unitsInBand * marginalRate;
     }, 0);
+    var calculateAdjustedBandPricing = (volume, bands, termDiscount, paymentPremium, discretionaryDiscount) => {
+      const bandRates = bands.map(([lower, upper, rate]) => {
+        const upperBound = upper == null ? volume : Math.min(volume, upper);
+        const units = Math.max(upperBound - lower, 0);
+        const adjustedRate = rate * (1 - termDiscount + paymentPremium);
+        const listRate = round(adjustedRate, 2);
+        const proposedRate = round(adjustedRate * (1 - discretionaryDiscount), 2);
+        return { lower, upper, units, listRate, proposedRate };
+      });
+      return {
+        bandRates,
+        exactListMrr: bandRates.reduce((sum, band) => sum + band.units * band.listRate, 0),
+        exactProposedMrr: bandRates.reduce(
+          (sum, band) => sum + band.units * band.proposedRate,
+          0
+        )
+      };
+    };
     var addMonthsUtc = (dateString, months) => {
       const [year, month, day] = dateString.split("-").map(Number);
       const target = new Date(Date.UTC(year, month - 1 + months, 1));
@@ -534,16 +558,35 @@ var require_calculator = __commonJS({
         const baseBlendedRate = volume === 0 ? 0 : round(bandCharge / volume, 3);
         const baseForCustomerRate = volume === 0 ? entryRate : baseBlendedRate;
         const excelCompatible = activeRules.calculationMethod === "excel_compatible";
-        const exactListUnitRate = excelCompatible ? baseForCustomerRate * (1 - termRule.discount + input.payment.premium) : round(baseForCustomerRate * (1 - termRule.discount) * (1 + input.payment.premium), 2);
+        let exactListUnitRate = excelCompatible ? baseForCustomerRate * (1 - termRule.discount + input.payment.premium) : round(baseForCustomerRate * (1 - termRule.discount) * (1 + input.payment.premium), 2);
+        const discretionaryDiscount = input.productDiscounts[product.key];
+        let exactProposedUnitRate = excelCompatible ? exactListUnitRate * (1 - discretionaryDiscount) : round(round(exactListUnitRate, 2) * (1 - discretionaryDiscount), 2);
+        let exactListMrr = volume * exactListUnitRate;
+        let exactProposedMrr = volume * exactProposedUnitRate;
+        let proposedBandRates = [];
+        if (product.pricingModel === "graduated_adjusted_bands") {
+          const adjusted = calculateAdjustedBandPricing(
+            volume,
+            product.bands,
+            termRule.discount,
+            input.payment.premium,
+            discretionaryDiscount
+          );
+          exactListMrr = adjusted.exactListMrr;
+          exactProposedMrr = adjusted.exactProposedMrr;
+          exactListUnitRate = volume === 0 ? adjusted.bandRates[0].listRate : exactListMrr / volume;
+          exactProposedUnitRate = volume === 0 ? adjusted.bandRates[0].proposedRate : exactProposedMrr / volume;
+          proposedBandRates = adjusted.bandRates.map(({ lower, upper, proposedRate }) => ({
+            lower,
+            upper,
+            rate: proposedRate
+          }));
+        }
         const listUnitRate = round(exactListUnitRate, 2);
         const displayListUnitRate = round(exactListUnitRate, 4);
-        const discretionaryDiscount = input.productDiscounts[product.key];
-        const exactProposedUnitRate = excelCompatible ? exactListUnitRate * (1 - discretionaryDiscount) : round(listUnitRate * (1 - discretionaryDiscount), 2);
         const proposedUnitRate = round(exactProposedUnitRate, 2);
         const displayProposedUnitRate = round(exactProposedUnitRate, 4);
         const billingUnitRate = round(exactProposedUnitRate, 9);
-        const exactListMrr = volume * exactListUnitRate;
-        const exactProposedMrr = volume * exactProposedUnitRate;
         const listMrr = round(exactListMrr, 2);
         const proposedMrr = round(exactProposedMrr, 2);
         return {
@@ -558,6 +601,7 @@ var require_calculator = __commonJS({
           proposedUnitRate: volume === 0 ? 0 : proposedUnitRate,
           displayProposedUnitRate,
           billingUnitRate,
+          proposedBandRates,
           availableUnitRate: proposedUnitRate,
           discretionaryDiscount,
           listMrr,
@@ -715,6 +759,9 @@ var require_appSettings = __commonJS({
     var OBJECT_NAME = "nylas_pricing_configuration";
     var MAX_PIPELINES = 30;
     var CALCULATION_METHODS = Object.freeze(["excel_compatible", "rounded_unit_rate"]);
+    var LEGACY_PRODUCT_BAND_RATES = Object.freeze({
+      agent_email_thousands: [0.5]
+    });
     var defaultPricingPolicy = () => ({
       calculationMethod: "excel_compatible",
       minimumCommittedArr: 25e3,
@@ -868,12 +915,14 @@ var require_appSettings = __commonJS({
       for (const product of pricingRules.products) {
         const incomingRates = value.productBandRates?.[product.key];
         const defaultRates = defaults.productBandRates[product.key];
-        if (incomingRates != null && (!Array.isArray(incomingRates) || incomingRates.length !== product.bands.length)) {
+        if (incomingRates != null && (!Array.isArray(incomingRates) || incomingRates.length > product.bands.length)) {
           throw new Error(`INVALID_SETTINGS:productBandRates.${product.key}`);
         }
+        const legacyDefaults = LEGACY_PRODUCT_BAND_RATES[product.key];
+        const isUnmodifiedLegacyDefault = Array.isArray(incomingRates) && Array.isArray(legacyDefaults) && incomingRates.length === legacyDefaults.length && incomingRates.every((rate, index) => rate === legacyDefaults[index]);
         policy.productBandRates[product.key] = defaultRates.map(
           (rate, index) => requireNumber(
-            incomingRates?.[index] ?? rate,
+            isUnmodifiedLegacyDefault ? rate : incomingRates?.[index] ?? rate,
             0,
             1e6,
             `productBandRates.${product.key}.${index}`
@@ -1208,7 +1257,11 @@ var require_lineItemModel = __commonJS({
       price: String(round(price)),
       description: String(description || "").slice(0, 5e3)
     });
-    var productDescription = (line) => `${line.volume.toLocaleString("en-US")} ${line.unitOfMeasure} committed average per month at $${line.proposedUnitRate.toFixed(2)} per ${line.unitOfMeasure} per month. Usage draws down from the shared prepaid subscription pool at this rate.`;
+    var formatBand = ({ lower, upper, rate }) => `${lower.toLocaleString("en-US")}\u2013${upper == null ? "+" : upper.toLocaleString("en-US")}: $${rate.toFixed(2)} per 1,000 emails`;
+    var productDescription = (line) => {
+      const bandDetail = line.proposedBandRates?.length ? ` Graduated monthly rates: ${line.proposedBandRates.map(formatBand).join("; ")}.` : "";
+      return `${line.volume.toLocaleString("en-US")} ${line.unitOfMeasure} committed average per month at $${line.proposedUnitRate.toFixed(2)} blended per ${line.unitOfMeasure} per month.` + bandDetail + " Usage draws down from the shared prepaid subscription pool at these rates.";
+    };
     var rateScheduleText = (option, includeUncommitted) => option.result.lines.filter((line) => line.committed || includeUncommitted).map(
       (line) => `${line.productName}: $${line.availableUnitRate.toFixed(2)} per ${line.unitOfMeasure}/month` + (line.committed ? ` (${line.volume.toLocaleString("en-US")} committed/month)` : " (uncommitted)")
     ).join("\n");
@@ -1450,7 +1503,7 @@ var SAFE_ERRORS = Object.freeze({
   INVALID_DEAL: "Nylas Pricing is available only on New Business Deals.",
   INVALID_OPTION: "The quote option contains invalid or incomplete information.",
   INVALID_QUOTE_CONTENT: "The quote display choices are invalid or incomplete.",
-  LINE_ITEM_SYNC_FAILED: "HubSpot could not update the Deal line items. No unmanaged line items were changed.",
+  LINE_ITEM_SYNC_FAILED: "HubSpot could not replace the Deal line items. Review the Deal before trying again.",
   OPTION_BLOCKED: "This option has blocking policy issues and cannot be selected.",
   OPTION_NOT_FOUND: "The selected quote option could not be found.",
   OPTION_REQUIRED: "Select or calculate a quote option first.",
@@ -1755,57 +1808,44 @@ var createAssociation = (toId, associationTypeId) => ({
   types: [{ associationCategory: "HUBSPOT_DEFINED", associationTypeId }]
 });
 var associatedIds = async (client, fromType, fromId, toType, limit = 100) => {
-  const page = await client.crm.associations.v4.basicApi.getPage(
-    fromType,
-    String(fromId),
-    toType,
-    void 0,
-    limit
-  );
-  return (page.results || []).map(({ toObjectId }) => String(toObjectId));
+  const ids = [];
+  let after;
+  do {
+    const page = await client.crm.associations.v4.basicApi.getPage(
+      fromType,
+      String(fromId),
+      toType,
+      after,
+      Math.min(limit - ids.length, 500)
+    );
+    ids.push(...(page.results || []).map(({ toObjectId }) => String(toObjectId)));
+    after = page.paging?.next?.after;
+    if (ids.length >= limit && after != null && toType === "line_items") {
+      throw new Error("TOO_MANY_LINE_ITEMS");
+    }
+  } while (after != null && ids.length < limit);
+  return ids;
 };
-var readManagedDealLineItems = async (client, dealId) => {
-  const ids = await associatedIds(client, "deals", dealId, "line_items", 500);
-  const records = await Promise.all(
-    ids.map(
-      (id) => client.crm.lineItems.basicApi.getById(id, [
-        "nylas_pricing_managed",
-        "nylas_line_item_key",
-        "nylas_line_item_source"
-      ])
-    )
-  );
-  return records.filter(
-    ({ properties }) => properties.nylas_pricing_managed === "true" && (!properties.nylas_line_item_source || properties.nylas_line_item_source === "deal")
-  );
+var inBatches = async (values, action, batchSize = 10) => {
+  for (let index = 0; index < values.length; index += batchSize) {
+    await Promise.all(values.slice(index, index + batchSize).map(action));
+  }
 };
 var syncDealLineItems = async (client, dealId, state, settings) => {
   const option = selectedOptionForDraft(state);
   assertCurrentSettings(option, settings);
   const desired = buildDealLineItems(option);
+  const createdIds = [];
   try {
-    const existing = await readManagedDealLineItems(client, dealId);
-    const byKey = new Map(
-      existing.filter(({ properties }) => properties.nylas_line_item_key).map((record) => [record.properties.nylas_line_item_key, record])
-    );
-    const retainedIds = new Set(
-      await Promise.all(desired.map(async (item) => {
-        const prior = byKey.get(item.key);
-        if (prior) {
-          await client.crm.lineItems.basicApi.update(prior.id, { properties: item.properties });
-          return String(prior.id);
-        } else {
-          const created = await client.crm.lineItems.basicApi.create({
-            properties: item.properties,
-            associations: [createAssociation(dealId, 20)]
-          });
-          return String(created.id);
-        }
-      }))
-    );
-    await Promise.all(
-      existing.filter((stale) => !retainedIds.has(String(stale.id))).map((stale) => client.crm.lineItems.basicApi.archive(stale.id))
-    );
+    const existingIds = await associatedIds(client, "deals", dealId, "line_items", 1e3);
+    await inBatches(existingIds, (id) => client.crm.lineItems.basicApi.archive(id));
+    await inBatches(desired, async (item) => {
+      const created = await client.crm.lineItems.basicApi.create({
+        properties: item.properties,
+        associations: [createAssociation(dealId, 20)]
+      });
+      createdIds.push(String(created.id));
+    });
     const syncedAt = (/* @__PURE__ */ new Date()).toISOString();
     await client.crm.deals.basicApi.update(dealId, {
       properties: {
@@ -1815,6 +1855,10 @@ var syncDealLineItems = async (client, dealId, state, settings) => {
     });
     return { count: desired.length, syncedAt };
   } catch (error) {
+    await inBatches(
+      createdIds,
+      (id) => client.crm.lineItems.basicApi.archive(id).catch(() => void 0)
+    );
     await client.crm.deals.basicApi.update(dealId, { properties: { pricing_line_item_sync_status: "failed" } }).catch(() => void 0);
     throw new Error(
       error?.message === "PRODUCT_MAPPING_REQUIRED" ? "PRODUCT_MAPPING_REQUIRED" : "LINE_ITEM_SYNC_FAILED"
@@ -2062,3 +2106,4 @@ exports.main = async (context) => {
     return safeError("WRITE_FAILED", 500);
   }
 };
+exports._test = Object.freeze({ associatedIds, syncDealLineItems });

@@ -5,6 +5,9 @@ const CONFIGURATION_KEY = 'default';
 const OBJECT_NAME = 'nylas_pricing_configuration';
 const MAX_PIPELINES = 30;
 const CALCULATION_METHODS = Object.freeze(['excel_compatible', 'rounded_unit_rate']);
+const LEGACY_PRODUCT_BAND_RATES = Object.freeze({
+  agent_email_thousands: [0.5],
+});
 
 const defaultPricingPolicy = () => ({
   calculationMethod: 'excel_compatible',
@@ -174,13 +177,19 @@ const normalizePricingPolicy = (incoming) => {
     const defaultRates = defaults.productBandRates[product.key];
     if (
       incomingRates != null &&
-      (!Array.isArray(incomingRates) || incomingRates.length !== product.bands.length)
+      (!Array.isArray(incomingRates) || incomingRates.length > product.bands.length)
     ) {
       throw new Error(`INVALID_SETTINGS:productBandRates.${product.key}`);
     }
+    const legacyDefaults = LEGACY_PRODUCT_BAND_RATES[product.key];
+    const isUnmodifiedLegacyDefault =
+      Array.isArray(incomingRates) &&
+      Array.isArray(legacyDefaults) &&
+      incomingRates.length === legacyDefaults.length &&
+      incomingRates.every((rate, index) => rate === legacyDefaults[index]);
     policy.productBandRates[product.key] = defaultRates.map((rate, index) =>
       requireNumber(
-        incomingRates?.[index] ?? rate,
+        isUnmodifiedLegacyDefault ? rate : (incomingRates?.[index] ?? rate),
         0,
         1_000_000,
         `productBandRates.${product.key}.${index}`,

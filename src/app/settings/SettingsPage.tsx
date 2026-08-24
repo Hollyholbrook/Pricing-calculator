@@ -63,7 +63,7 @@ const productRateSettings = [
   { key: 'calendar_ca', label: 'Calendar Only — CA', bands: ['0–500', '500–1K', '1K–2K', '2K–5K', '5K–10K', '10K–20K', '20K–50K', '50K–100K', '100K–200K', '200K–500K', '500K–1.1M', '1.1M+'] },
   { key: 'notetaker_bot_hours', label: 'Notetaker — Bot Hour', bands: ['0–1K', '1K–2K', '2K–5K', '5K–10K', '10K+'] },
   { key: 'agent_accounts', label: 'Agent Accounts', bands: ['All Volume'] },
-  { key: 'agent_email_thousands', label: 'Agent Email — 1K Emails', bands: ['All Volume'] },
+  { key: 'agent_email_thousands', label: 'Agent Email — 1K Emails', bands: ['0–50K', '50K–100K', '100K–500K', '500K+'] },
   { key: 'agent_storage_gb', label: 'Agent Storage — GB', bands: ['All Volume'] },
   { key: 'agent_bandwidth_gb', label: 'Agent Bandwidth — GB', bands: ['All Volume'] },
 ];

@@ -69,7 +69,13 @@ module.exports = Object.freeze({
       key: 'agent_email_thousands',
       name: 'Agent Email',
       unitOfMeasure: '1,000 emails',
-      bands: [[0, null, 0.5]],
+      pricingModel: 'graduated_adjusted_bands',
+      bands: [
+        [0, 50_000, 1],
+        [50_000, 100_000, 0.75],
+        [100_000, 500_000, 0.35],
+        [500_000, null, 0.25],
+      ],
     },
     {
       key: 'agent_storage_gb',

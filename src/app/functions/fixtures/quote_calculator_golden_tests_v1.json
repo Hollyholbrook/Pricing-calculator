@@ -1,0 +1,59 @@
+[
+  {
+    "name": "Workbook mixed products and graduated email",
+    "input": {
+      "startDate": "2026-09-01",
+      "termMonths": 24,
+      "paymentFrequency": "quarterly_in_advance",
+      "volumes": {
+        "connect_ca": 2800,
+        "calendar_ca": 2800,
+        "notetaker_bot_hours": 150,
+        "agent_accounts": 0,
+        "agent_email_thousands": 120000,
+        "agent_storage_gb": 0,
+        "agent_bandwidth_gb": 0
+      },
+      "supportLevel": "full",
+      "onboardingPackage": "quick_launch_plus",
+      "addOns": ["enterprise_accelerator"],
+      "professionalServices": [
+        "google_verification_review",
+        "architecture_workflow_review"
+      ],
+      "productDiscounts": {
+        "connect_ca": 0.1,
+        "calendar_ca": 0.1,
+        "notetaker_bot_hours": 0.1,
+        "agent_email_thousands": 0.05
+      },
+      "supportDiscount": 0,
+      "onboardingDiscount": 0,
+      "professionalServicesDiscount": 0,
+      "addOnDiscounts": { "enterprise_accelerator": 0 },
+      "autoRenewal": true,
+      "redliningRequested": false
+    },
+    "expected": {
+      "termDiscount": 0.025,
+      "paymentPremium": 0.06,
+      "listPlatformArr": 1267548,
+      "proposedPlatformArr": 1193904,
+      "supportAnnual": 10000,
+      "annualAddOns": 2480.4,
+      "committedArr": 1206384.4,
+      "oneTime": 8800,
+      "tcv": 2421568.8,
+      "approvalStatus": "WITHIN_GUARDRAILS",
+      "lines": [
+        { "productKey": "connect_ca", "volume": 2800, "baseBlendedRate": 1.496, "listUnitRate": 1.55, "proposedUnitRate": 1.4, "listMrr": 4340, "proposedMrr": 3920 },
+        { "productKey": "calendar_ca", "volume": 2800, "baseBlendedRate": 1.032, "listUnitRate": 1.07, "proposedUnitRate": 0.96, "listMrr": 2996, "proposedMrr": 2688 },
+        { "productKey": "notetaker_bot_hours", "volume": 150, "baseBlendedRate": 0.6, "listUnitRate": 0.62, "proposedUnitRate": 0.56, "listMrr": 93, "proposedMrr": 84 },
+        { "productKey": "agent_accounts", "volume": 0, "baseBlendedRate": 0, "listUnitRate": 0, "proposedUnitRate": 0, "listMrr": 0, "proposedMrr": 0 },
+        { "productKey": "agent_email_thousands", "volume": 120000, "baseBlendedRate": 0.788, "listUnitRate": 0.82, "proposedUnitRate": 0.77, "listMrr": 98200, "proposedMrr": 92800 },
+        { "productKey": "agent_storage_gb", "volume": 0, "baseBlendedRate": 0, "listUnitRate": 0, "proposedUnitRate": 0, "listMrr": 0, "proposedMrr": 0 },
+        { "productKey": "agent_bandwidth_gb", "volume": 0, "baseBlendedRate": 0, "listUnitRate": 0, "proposedUnitRate": 0, "listMrr": 0, "proposedMrr": 0 }
+      ]
+    }
+  }
+]

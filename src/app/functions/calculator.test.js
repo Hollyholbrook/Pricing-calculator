@@ -6,7 +6,7 @@ const { QuoteValidationError, calculateQuote, normalizeInput } = require('./calc
 
 const goldenTests = require(path.resolve(
   __dirname,
-  '../../../../../outputs/quote-agent-hub/quote_calculator_golden_tests_v1.json',
+  'fixtures/quote_calculator_golden_tests_v1.json',
 ));
 
 const expectedLineFields = [

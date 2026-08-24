@@ -163,10 +163,21 @@ const oneTimeProperties = ({ option, key, component, product, price, description
   description: String(description || '').slice(0, 5_000),
 });
 
-const productDescription = (line) =>
-  `${line.volume.toLocaleString('en-US')} ${line.unitOfMeasure} committed average per month at ` +
-  `$${line.proposedUnitRate.toFixed(2)} per ${line.unitOfMeasure} per month. ` +
-  'Usage draws down from the shared prepaid subscription pool at this rate.';
+const formatBand = ({ lower, upper, rate }) =>
+  `${lower.toLocaleString('en-US')}–${upper == null ? '+' : upper.toLocaleString('en-US')}: ` +
+  `$${rate.toFixed(2)} per 1,000 emails`;
+
+const productDescription = (line) => {
+  const bandDetail = line.proposedBandRates?.length
+    ? ` Graduated monthly rates: ${line.proposedBandRates.map(formatBand).join('; ')}.`
+    : '';
+  return (
+    `${line.volume.toLocaleString('en-US')} ${line.unitOfMeasure} committed average per month at ` +
+    `$${line.proposedUnitRate.toFixed(2)} blended per ${line.unitOfMeasure} per month.` +
+    bandDetail +
+    ' Usage draws down from the shared prepaid subscription pool at these rates.'
+  );
+};
 
 const rateScheduleText = (option, includeUncommitted) =>
   option.result.lines

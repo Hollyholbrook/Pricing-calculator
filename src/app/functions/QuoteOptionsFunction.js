@@ -31,7 +31,7 @@ const SAFE_ERRORS = Object.freeze({
   INVALID_DEAL: 'Nylas Pricing is available only on New Business Deals.',
   INVALID_OPTION: 'The quote option contains invalid or incomplete information.',
   INVALID_QUOTE_CONTENT: 'The quote display choices are invalid or incomplete.',
-  LINE_ITEM_SYNC_FAILED: 'HubSpot could not update the Deal line items. No unmanaged line items were changed.',
+  LINE_ITEM_SYNC_FAILED: 'HubSpot could not replace the Deal line items. Review the Deal before trying again.',
   OPTION_BLOCKED: 'This option has blocking policy issues and cannot be selected.',
   OPTION_NOT_FOUND: 'The selected quote option could not be found.',
   OPTION_REQUIRED: 'Select or calculate a quote option first.',
@@ -391,66 +391,46 @@ const createAssociation = (toId, associationTypeId) => ({
 });
 
 const associatedIds = async (client, fromType, fromId, toType, limit = 100) => {
-  const page = await client.crm.associations.v4.basicApi.getPage(
-    fromType,
-    String(fromId),
-    toType,
-    undefined,
-    limit,
-  );
-  return (page.results || []).map(({ toObjectId }) => String(toObjectId));
+  const ids = [];
+  let after;
+  do {
+    const page = await client.crm.associations.v4.basicApi.getPage(
+      fromType,
+      String(fromId),
+      toType,
+      after,
+      Math.min(limit - ids.length, 500),
+    );
+    ids.push(...(page.results || []).map(({ toObjectId }) => String(toObjectId)));
+    after = page.paging?.next?.after;
+    if (ids.length >= limit && after != null && toType === 'line_items') {
+      throw new Error('TOO_MANY_LINE_ITEMS');
+    }
+  } while (after != null && ids.length < limit);
+  return ids;
 };
 
-const readManagedDealLineItems = async (client, dealId) => {
-  const ids = await associatedIds(client, 'deals', dealId, 'line_items', 500);
-  const records = await Promise.all(
-    ids.map((id) =>
-      client.crm.lineItems.basicApi.getById(id, [
-        'nylas_pricing_managed',
-        'nylas_line_item_key',
-        'nylas_line_item_source',
-      ]),
-    ),
-  );
-  return records.filter(
-    ({ properties }) =>
-      properties.nylas_pricing_managed === 'true' &&
-      (!properties.nylas_line_item_source || properties.nylas_line_item_source === 'deal'),
-  );
+const inBatches = async (values, action, batchSize = 10) => {
+  for (let index = 0; index < values.length; index += batchSize) {
+    await Promise.all(values.slice(index, index + batchSize).map(action));
+  }
 };
 
 const syncDealLineItems = async (client, dealId, state, settings) => {
   const option = selectedOptionForDraft(state);
   assertCurrentSettings(option, settings);
   const desired = buildDealLineItems(option);
+  const createdIds = [];
   try {
-    const existing = await readManagedDealLineItems(client, dealId);
-    const byKey = new Map(
-      existing
-        .filter(({ properties }) => properties.nylas_line_item_key)
-        .map((record) => [record.properties.nylas_line_item_key, record]),
-    );
-    const retainedIds = new Set(
-      await Promise.all(desired.map(async (item) => {
-      const prior = byKey.get(item.key);
-      if (prior) {
-        await client.crm.lineItems.basicApi.update(prior.id, { properties: item.properties });
-        return String(prior.id);
-      } else {
+    const existingIds = await associatedIds(client, 'deals', dealId, 'line_items', 1_000);
+    await inBatches(existingIds, (id) => client.crm.lineItems.basicApi.archive(id));
+    await inBatches(desired, async (item) => {
         const created = await client.crm.lineItems.basicApi.create({
           properties: item.properties,
           associations: [createAssociation(dealId, 20)],
         });
-        return String(created.id);
-      }
-      })),
-    );
-
-    await Promise.all(
-      existing
-        .filter((stale) => !retainedIds.has(String(stale.id)))
-        .map((stale) => client.crm.lineItems.basicApi.archive(stale.id)),
-    );
+        createdIds.push(String(created.id));
+    });
 
     const syncedAt = new Date().toISOString();
     await client.crm.deals.basicApi.update(dealId, {
@@ -461,6 +441,10 @@ const syncDealLineItems = async (client, dealId, state, settings) => {
     });
     return { count: desired.length, syncedAt };
   } catch (error) {
+    await inBatches(
+      createdIds,
+      (id) => client.crm.lineItems.basicApi.archive(id).catch(() => undefined),
+    );
     await client.crm.deals.basicApi
       .update(dealId, { properties: { pricing_line_item_sync_status: 'failed' } })
       .catch(() => undefined);
@@ -732,3 +716,5 @@ exports.main = async (context) => {
     return safeError('WRITE_FAILED', 500);
   }
 };
+
+exports._test = Object.freeze({ associatedIds, syncDealLineItems });

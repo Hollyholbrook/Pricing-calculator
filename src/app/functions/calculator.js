@@ -234,6 +234,31 @@ const calculateBandCharge = (volume, bands) =>
     return total + unitsInBand * marginalRate;
   }, 0);
 
+const calculateAdjustedBandPricing = (
+  volume,
+  bands,
+  termDiscount,
+  paymentPremium,
+  discretionaryDiscount,
+) => {
+  const bandRates = bands.map(([lower, upper, rate]) => {
+    const upperBound = upper == null ? volume : Math.min(volume, upper);
+    const units = Math.max(upperBound - lower, 0);
+    const adjustedRate = rate * (1 - termDiscount + paymentPremium);
+    const listRate = round(adjustedRate, 2);
+    const proposedRate = round(adjustedRate * (1 - discretionaryDiscount), 2);
+    return { lower, upper, units, listRate, proposedRate };
+  });
+  return {
+    bandRates,
+    exactListMrr: bandRates.reduce((sum, band) => sum + band.units * band.listRate, 0),
+    exactProposedMrr: bandRates.reduce(
+      (sum, band) => sum + band.units * band.proposedRate,
+      0,
+    ),
+  };
+};
+
 const addMonthsUtc = (dateString, months) => {
   const [year, month, day] = dateString.split('-').map(Number);
   const target = new Date(Date.UTC(year, month - 1 + months, 1));
@@ -384,20 +409,40 @@ const calculateQuote = (rawInput, pricingPolicy = {}, settingsVersion = 0) => {
     const baseBlendedRate = volume === 0 ? 0 : round(bandCharge / volume, 3);
     const baseForCustomerRate = volume === 0 ? entryRate : baseBlendedRate;
     const excelCompatible = activeRules.calculationMethod === 'excel_compatible';
-    const exactListUnitRate = excelCompatible
+    let exactListUnitRate = excelCompatible
       ? baseForCustomerRate * (1 - termRule.discount + input.payment.premium)
       : round(baseForCustomerRate * (1 - termRule.discount) * (1 + input.payment.premium), 2);
+    const discretionaryDiscount = input.productDiscounts[product.key];
+    let exactProposedUnitRate = excelCompatible
+      ? exactListUnitRate * (1 - discretionaryDiscount)
+      : round(round(exactListUnitRate, 2) * (1 - discretionaryDiscount), 2);
+    let exactListMrr = volume * exactListUnitRate;
+    let exactProposedMrr = volume * exactProposedUnitRate;
+    let proposedBandRates = [];
+    if (product.pricingModel === 'graduated_adjusted_bands') {
+      const adjusted = calculateAdjustedBandPricing(
+        volume,
+        product.bands,
+        termRule.discount,
+        input.payment.premium,
+        discretionaryDiscount,
+      );
+      exactListMrr = adjusted.exactListMrr;
+      exactProposedMrr = adjusted.exactProposedMrr;
+      exactListUnitRate = volume === 0 ? adjusted.bandRates[0].listRate : exactListMrr / volume;
+      exactProposedUnitRate =
+        volume === 0 ? adjusted.bandRates[0].proposedRate : exactProposedMrr / volume;
+      proposedBandRates = adjusted.bandRates.map(({ lower, upper, proposedRate }) => ({
+        lower,
+        upper,
+        rate: proposedRate,
+      }));
+    }
     const listUnitRate = round(exactListUnitRate, 2);
     const displayListUnitRate = round(exactListUnitRate, 4);
-    const discretionaryDiscount = input.productDiscounts[product.key];
-    const exactProposedUnitRate = excelCompatible
-      ? exactListUnitRate * (1 - discretionaryDiscount)
-      : round(listUnitRate * (1 - discretionaryDiscount), 2);
     const proposedUnitRate = round(exactProposedUnitRate, 2);
     const displayProposedUnitRate = round(exactProposedUnitRate, 4);
     const billingUnitRate = round(exactProposedUnitRate, 9);
-    const exactListMrr = volume * exactListUnitRate;
-    const exactProposedMrr = volume * exactProposedUnitRate;
     const listMrr = round(exactListMrr, 2);
     const proposedMrr = round(exactProposedMrr, 2);
 
@@ -413,6 +458,7 @@ const calculateQuote = (rawInput, pricingPolicy = {}, settingsVersion = 0) => {
       proposedUnitRate: volume === 0 ? 0 : proposedUnitRate,
       displayProposedUnitRate,
       billingUnitRate,
+      proposedBandRates,
       availableUnitRate: proposedUnitRate,
       discretionaryDiscount,
       listMrr,

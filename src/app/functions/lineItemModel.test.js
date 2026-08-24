@@ -88,6 +88,29 @@ test('Quote can collapse only the subscription products, not other charges', () 
   assert.equal(items.filter(({ key }) => key.startsWith('professional_service:')).length, 2);
 });
 
+test('itemized Quote line items reconcile to recurring and one-time totals', () => {
+  const selected = option();
+  const items = buildQuoteLineItems(selected, normalizeQuoteContent({
+    title: 'Acme – Itemized',
+    expirationDate: '2026-09-30',
+    presentation: 'itemized_products',
+  }));
+  const recurring = items
+    .filter(({ properties }) => properties.recurringbillingfrequency)
+    .reduce(
+      (sum, { properties }) => sum + Number(properties.price) * Number(properties.quantity),
+      0,
+    );
+  const oneTime = items
+    .filter(({ properties }) => !properties.recurringbillingfrequency)
+    .reduce(
+      (sum, { properties }) => sum + Number(properties.price) * Number(properties.quantity),
+      0,
+    );
+  assert.equal(Math.round(recurring * 100) / 100, selected.result.recurringPerPeriod);
+  assert.equal(Math.round(oneTime * 100) / 100, selected.result.oneTime);
+});
+
 test('Quote content rejects unknown fields', () => {
   assert.throws(
     () => normalizeQuoteContent({ title: 'Test', unexpected: true }),
