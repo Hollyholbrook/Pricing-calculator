@@ -1834,6 +1834,39 @@ var chooseOption = async (client, dealId, state, parameters, settings) => {
     lineItemsSyncedAt: synced.syncedAt
   };
 };
+var lockLiveCalculation = async (client, dealId, state, parameters, portalId, settings) => {
+  const input = parameters.input;
+  const result = calculateQuote(input, settings.pricingPolicy, settings.version);
+  if (result.blockingReasons.length > 0) throw new Error("OPTION_BLOCKED");
+  const liveOption = {
+    id: `live-${result.stateHash.slice(0, 16)}`,
+    name: "Live calculation",
+    status: "draft",
+    input,
+    result
+  };
+  const properties = buildSelectedProperties(liveOption, "draft");
+  properties[SELECTED_OPTION_ID_PROPERTY] = "";
+  properties[SELECTED_OPTION_NAME_PROPERTY] = "";
+  await client.crm.deals.basicApi.update(dealId, { properties });
+  const liveState = {
+    ...state,
+    document: { schemaVersion: "1.0", revision: 0, options: [liveOption] },
+    selectedOptionId: liveOption.id,
+    selectedOptionName: liveOption.name,
+    selectedStateHash: result.stateHash
+  };
+  const synced = await syncDealLineItems(client, dealId, liveState, settings);
+  const quote = await generateQuote(
+    client,
+    dealId,
+    liveState,
+    { quoteContent: parameters.quoteContent || {} },
+    portalId,
+    settings
+  );
+  return { result, lineItemCount: synced.count, ...quote };
+};
 var selectedOptionForDraft = (state) => {
   const option = state.document.options.find(({ id }) => id === state.selectedOptionId);
   if (!option?.result || option.result.blockingReasons.length > 0) {
@@ -2071,6 +2104,17 @@ exports.main = async (context) => {
         previewResult: calculateQuote(parameters.input, settings.pricingPolicy, settings.version)
       });
     }
+    if (action === "lock_live") {
+      const locked = await lockLiveCalculation(
+        client,
+        dealId,
+        state,
+        parameters,
+        accountId,
+        settings
+      );
+      return response(200, { success: true, ...locked });
+    }
     if (action === "calculate_and_save") {
       const saved = await calculateAndSaveOption(client, dealId, state, parameters, settings);
       return response(200, {
@@ -2148,4 +2192,9 @@ exports.main = async (context) => {
     return safeError("WRITE_FAILED", 500);
   }
 };
-exports._test = Object.freeze({ associatedIds, deleteOption, syncDealLineItems });
+exports._test = Object.freeze({
+  associatedIds,
+  deleteOption,
+  lockLiveCalculation,
+  syncDealLineItems
+});
