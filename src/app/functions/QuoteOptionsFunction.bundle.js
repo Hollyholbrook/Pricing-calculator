@@ -1255,10 +1255,8 @@ var require_lineItemModel = __commonJS({
         category: "Professional Services"
       },
       notification_webhook_best_practices: {
-        // UNVERIFIED: this id does not appear in the 2026-08-25 product library export, while every
-        // other id here does. It is also 42870410889 + 1 (Go-To-Market Review), which is what a
-        // guessed id looks like. Selecting this service will fail against a product that does not
-        // exist. Confirm it in HubSpot before relying on it.
+        // Confirmed against the full product export: Standalone, Professional Services, $2,000.
+        // It was absent from the bundles export only because it belongs to no bundle.
         id: "42870410890",
         name: "Notification & Webhook Best Practices",
         category: "Professional Services"
