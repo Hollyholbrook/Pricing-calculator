@@ -329,8 +329,14 @@ const emptyProductDiscounts = (): Record<ProductKey, number> => ({
   agent_bandwidth_gb: 0,
 });
 
+const firstDayOfFollowingMonth = () => {
+  const today = new Date();
+  const nextMonth = new Date(today.getFullYear(), today.getMonth() + 1, 1);
+  return `${nextMonth.getFullYear()}-${String(nextMonth.getMonth() + 1).padStart(2, "0")}-01`;
+};
+
 const emptyInput = (): QuoteInput => ({
-  startDate: null,
+  startDate: firstDayOfFollowingMonth(),
   termMonths: 12,
   paymentFrequency: "annual_in_advance",
   volumes: emptyVolumes(),
@@ -409,6 +415,7 @@ const cloneInput = (input: QuoteInput): QuoteInput => {
   return {
     ...defaults,
     ...cloned,
+    startDate: cloned.startDate || defaults.startDate,
     volumes: { ...defaults.volumes, ...(cloned.volumes || {}) },
     productDiscounts: {
       ...defaults.productDiscounts,
