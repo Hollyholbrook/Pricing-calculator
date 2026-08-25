@@ -2104,28 +2104,37 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
   let quote;
   const createdLineItemIds = [];
   try {
-    quote = await client.crm.quotes.basicApi.create({
-      properties: {
-        hs_title: content.title,
-        hs_expiration_date: content.expirationDate,
-        hs_contract_effective_start_date: option.input.startDate || "",
-        hs_comments: quoteText.comments,
-        hs_terms: quoteText.terms
-      },
-      associations: []
+    const quoteResponse = await client.apiRequest({
+      method: "POST",
+      path: "/crm/v3/objects/quotes",
+      body: {
+        properties: {
+          hs_title: content.title,
+          hs_expiration_date: content.expirationDate,
+          hs_status: "DRAFT"
+        }
+      }
     });
+    const quoteBody = await quoteResponse.json().catch(() => ({}));
+    if (!quoteResponse.ok || !quoteBody?.id) {
+      const error = new Error("QUOTE_CREATE_REJECTED");
+      error.statusCode = quoteResponse.status;
+      error.body = quoteBody;
+      throw error;
+    }
+    quote = quoteBody;
     await client.crm.associations.v4.basicApi.createDefault(
       "quotes",
       String(quote.id),
       "deals",
       dealId
     );
-    await client.crm.associations.v4.basicApi.createDefault(
-      "quotes",
-      String(quote.id),
-      "quote_template",
-      templateId
-    );
+    await client.crm.associations.v4.basicApi.createDefault("quotes", String(quote.id), "quote_template", templateId).catch((error) => {
+      console.error(
+        "Nylas pricing optional quote-template association skipped.",
+        JSON.stringify(lineItemFailureDiagnostic(error))
+      );
+    });
     const createdLineItems = await Promise.all(lineItems.map(async (item) => {
       const created = await createProductLineItem(
         client,
@@ -2140,7 +2149,7 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
       associatedIds(client, "deals", dealId, "contacts", 10),
       associatedIds(client, "deals", dealId, "companies", 1)
     ]);
-    await Promise.all(
+    await Promise.allSettled(
       contactIds.map(
         (contactId) => client.crm.associations.v4.basicApi.createDefault(
           "quotes",
@@ -2156,12 +2165,21 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
         String(quote.id),
         "companies",
         companyIds[0]
-      );
+      ).catch(() => void 0);
     }
-    const finalized = await client.crm.quotes.basicApi.update(quote.id, {
-      properties: { hs_status: "DRAFT" }
+    await client.crm.quotes.basicApi.update(quote.id, {
+      properties: {
+        hs_contract_effective_start_date: option.input.startDate || "",
+        hs_comments: quoteText.comments,
+        hs_terms: quoteText.terms
+      }
+    }).catch((error) => {
+      console.error(
+        "Nylas pricing optional quote details update skipped.",
+        JSON.stringify(lineItemFailureDiagnostic(error))
+      );
     });
-    const quoteUrl = finalized.properties?.hs_quote_link || quoteRecordUrl(portalId, String(quote.id));
+    const quoteUrl = quote.properties?.hs_quote_link || quoteRecordUrl(portalId, String(quote.id));
     const generatedAt = (/* @__PURE__ */ new Date()).toISOString();
     await client.crm.deals.basicApi.update(dealId, {
       properties: {
