@@ -6,6 +6,7 @@ const { defaultSettings, isDealAllowed, normalizeSettings } = require('./appSett
 test('deal eligibility defaults to New Business only', () => {
   const settings = defaultSettings();
   assert.equal(settings.pricingPolicy.calculationMethod, 'excel_compatible');
+  assert.equal(isDealAllowed(settings, '', 'default'), true);
   assert.equal(isDealAllowed(settings, 'newbusiness', 'default'), true);
   assert.equal(isDealAllowed(settings, 'renewal', 'renewals'), false);
 });

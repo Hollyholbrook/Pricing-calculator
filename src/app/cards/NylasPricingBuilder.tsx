@@ -74,6 +74,7 @@ interface QuoteLine {
   unitOfMeasure: string;
   volume: number;
   committed: boolean;
+  baseUnitRate: number;
   listUnitRate: number;
   displayListUnitRate: number;
   availableUnitRate: number;
@@ -85,6 +86,16 @@ interface QuoteLine {
   annualCommitment: number;
   listTermCommitment: number;
   termCommitment: number;
+  baseBandRates: {
+    lower: number;
+    upper: number | null;
+    rate: number;
+  }[];
+  proposedBandRates: {
+    lower: number;
+    upper: number | null;
+    rate: number;
+  }[];
 }
 
 interface QuoteAddOn {
@@ -1142,10 +1153,22 @@ const OptionEditor = ({
       return <Text variant="microcopy">Updating price…</Text>;
     }
     if (!line) {
+      return <Text variant="microcopy">Loading workbook base rate…</Text>;
+    }
+    if (line.volume === 0) {
       return (
-        <Text variant="microcopy">
-          Complete the pricing inputs to preview this amount.
-        </Text>
+        <Stack distance="flush">
+          <Text>
+            Base rate {rateCurrency(line.baseUnitRate)} / unit / month
+          </Text>
+          {line.productKey === "agent_email_thousands" && (
+            <Text variant="microcopy">
+              Email volume is entered in thousands. Tier rates adjust
+              automatically as volume, term, payment schedule, or discount
+              changes.
+            </Text>
+          )}
+        </Stack>
       );
     }
     return (
@@ -1227,17 +1250,11 @@ const OptionEditor = ({
                 />
               </TableCell>
               <TableCell>
-                {option.input.volumes[product.key] > 0 ? (
-                  productPricePreview(
-                    previewResult?.lines.find(
-                      ({ productKey }) => productKey === product.key,
-                    ),
-                    option.input.productDiscounts?.[product.key] || 0,
-                  )
-                ) : (
-                  <Text variant="microcopy">
-                    Enter a commitment to calculate.
-                  </Text>
+                {productPricePreview(
+                  previewResult?.lines.find(
+                    ({ productKey }) => productKey === product.key,
+                  ),
+                  option.input.productDiscounts?.[product.key] || 0,
                 )}
               </TableCell>
             </TableRow>

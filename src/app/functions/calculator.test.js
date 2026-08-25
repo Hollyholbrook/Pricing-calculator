@@ -96,8 +96,8 @@ test('derives contract and renewal dates', () => {
   assert.deepEqual(result.dates, {
     contractStartDate: '2026-08-15',
     contractEndDate: '2028-08-14',
-    renewalDate: '2028-08-15',
-    nonRenewalNoticeDate: '2028-06-16',
+    renewalDate: '2028-09-01',
+    nonRenewalNoticeDate: '2028-06-15',
   });
 });
 
@@ -135,7 +135,35 @@ test('enforces the standard 12-month renewal term and 60-day notice period', () 
 
   const nonRenewingResult = calculateQuote(nonRenewingInput);
   assert.equal(nonRenewingResult.dates.renewalDate, null);
-  assert.equal(nonRenewingResult.dates.nonRenewalNoticeDate, '2027-06-16');
+  assert.equal(nonRenewingResult.dates.nonRenewalNoticeDate, '2027-06-15');
+});
+
+test('calculates notice deadlines from contract end across month and leap-year boundaries', () => {
+  const base = {
+    termMonths: 12,
+    paymentFrequency: 'annual_in_advance',
+    volumes: { connect_ca: 1_000 },
+    supportLevel: 'basic',
+    onboardingPackage: 'quick_launch',
+    professionalServices: [],
+    addOns: [],
+    autoRenewal: true,
+  };
+
+  const monthEnd = calculateQuote({ ...base, startDate: '2026-09-01' });
+  assert.equal(monthEnd.dates.contractEndDate, '2027-08-31');
+  assert.equal(monthEnd.dates.renewalDate, '2027-09-01');
+  assert.equal(monthEnd.dates.nonRenewalNoticeDate, '2027-07-02');
+
+  const leapYear = calculateQuote({ ...base, startDate: '2023-03-01' });
+  assert.equal(leapYear.dates.contractEndDate, '2024-02-29');
+  assert.equal(leapYear.dates.renewalDate, '2024-03-01');
+  assert.equal(leapYear.dates.nonRenewalNoticeDate, '2023-12-31');
+
+  const multiYear = calculateQuote({ ...base, startDate: '2024-02-29', termMonths: 36 });
+  assert.equal(multiYear.dates.contractEndDate, '2027-02-27');
+  assert.equal(multiYear.dates.renewalDate, '2027-03-01');
+  assert.equal(multiYear.dates.nonRenewalNoticeDate, '2026-12-29');
 });
 
 test('fails closed on unsupported fields', () => {

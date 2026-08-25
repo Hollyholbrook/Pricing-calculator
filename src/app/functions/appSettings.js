@@ -371,6 +371,7 @@ const dealCategory = (settings, dealType, pipelineId) => {
   if (settings.renewalPipelineIds.includes(pipelineId)) return 'renewal';
   if (settings.newBusinessPipelineIds.includes(pipelineId)) return 'new_business';
   const normalized = String(dealType || '').toLowerCase().replace(/[^a-z]/g, '');
+  if (!normalized) return 'new_business';
   if (normalized === 'newbusiness') return 'new_business';
   if (normalized === 'renewal') return 'renewal';
   return 'unsupported';
