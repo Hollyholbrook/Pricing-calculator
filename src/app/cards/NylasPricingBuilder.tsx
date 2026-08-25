@@ -15,8 +15,6 @@ import {
   ExtensionPointApiActions,
   Flex,
   Heading,
-  Input,
-  LoadingButton,
   LoadingSpinner,
   MultiSelect,
   NumberInput,
@@ -468,8 +466,12 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
     includeRenewalTerms: true,
     includeSpecialTerms: true,
   });
-  const [editing, setEditing] = useState<QuoteOption | null>(null);
-  const [view, setView] = useState<"list" | "edit" | "compare">("list");
+  const [editing, setEditing] = useState<QuoteOption>({
+    name: "Live calculator",
+    status: "draft",
+    input: emptyInput(),
+  });
+  const [_view, setView] = useState<"list" | "edit" | "compare">("list");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -538,7 +540,7 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dealId]);
 
-  const beginNew = () => {
+  const _beginNew = () => {
     setEditing({
       name: `Option ${optionSet.options.length + 1}`,
       status: "draft",
@@ -547,7 +549,7 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
     setView("edit");
   };
 
-  const beginEdit = (option: QuoteOption) => {
+  const _beginEdit = (option: QuoteOption) => {
     setEditing({ ...option, input: cloneInput(option.input) });
     setView("edit");
   };
@@ -572,33 +574,6 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
       result: undefined,
       input: { ...editing.input, [field]: value },
     });
-  };
-
-  const calculateAndSave = async () => {
-    if (!editing) return;
-    setSaving(true);
-    setError(null);
-    try {
-      const body = await runAction({
-        action: "calculate_and_save",
-        expectedRevision: optionSet.revision,
-        option: editing,
-      });
-      if (body.option) setEditing(body.option);
-      actions.addAlert({
-        title: "Option calculated",
-        message: `${body.option?.name || editing.name} was saved without changing the official Deal totals.`,
-        type: "success",
-      });
-    } catch (saveError) {
-      setError(
-        saveError instanceof Error
-          ? saveError.message
-          : "Unable to calculate this option.",
-      );
-    } finally {
-      setSaving(false);
-    }
   };
 
   const previewQuote = async (input: QuoteInput) => {
@@ -722,25 +697,25 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
   if (loading) {
     return (
       <Flex justify="center" align="center">
-        <LoadingSpinner label="Loading Nylas quote options" />
+        <LoadingSpinner label="Loading pricing calculator" />
       </Flex>
     );
   }
 
   if (unsupportedDeal) {
     return (
-      <EmptyState title="New Business quotes only" layout="vertical">
-        <Text>
-          This calculator is intentionally unavailable on Renewal and other Deal
-          types. Open a New Business Deal to build pricing options.
-        </Text>
+      <EmptyState
+        title="Pricing is not available for this deal"
+        layout="vertical"
+      >
+        <Text>Open an eligible deal to use the live pricing calculator.</Text>
       </EmptyState>
     );
   }
 
   return (
     <Stack distance="sm">
-      <Heading>Nylas Pricing Builder</Heading>
+      <Heading>Nylas Pricing Calculator</Heading>
 
       {error && (
         <Alert title="Couldn’t complete the pricing action" variant="error">
@@ -748,63 +723,12 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
         </Alert>
       )}
 
-      {optionSet.options.length > 0 && (
-        <Tabs
-          selected={editing?.id || (editing ? "draft" : "options")}
-          variant="enclosed"
-          fill
-          onSelectedChange={(selected: string) => {
-            if (selected === "add") return beginNew();
-            const option = optionSet.options.find(({ id }) => id === selected);
-            if (option) beginEdit(option);
-          }}
-        >
-          {optionSet.options.map((option, index) => (
-            <Tab
-              key={option.id || option.name}
-              tabId={option.id}
-              title={`${option.id === selectedOptionId ? "✓ " : ""}Option ${index + 1} · ${option.name}`}
-              disabled={saving}
-            />
-          ))}
-          {editing && !editing.id && (
-            <Tab tabId="draft" title="New option" disabled />
-          )}
-          <Tab
-            tabId="add"
-            title="+ Add option"
-            disabled={optionSet.options.length >= 10 || saving}
-          />
-        </Tabs>
-      )}
-
-      {optionSet.options.length === 0 && !editing && (
-        <Stack distance="md">
-          <Stack distance="xs">
-            <Heading>No pricing options yet</Heading>
-            <Text variant="microcopy">
-              Create an option to build workbook pricing for this deal.
-            </Text>
-          </Stack>
-          <Flex justify="start">
-            <Button variant="primary" onClick={beginNew} disabled={saving}>
-              Create option
-            </Button>
-          </Flex>
-        </Stack>
-      )}
-
-      {view === "edit" && editing && (
-        <OptionEditor
-          option={editing}
-          saving={saving}
-          onOptionChange={setEditing}
-          onInputChange={updateInput}
-          onCalculate={calculateAndSave}
-          onPreview={previewQuote}
-          onBack={() => setView("list")}
-        />
-      )}
+      <OptionEditor
+        option={editing}
+        saving={saving}
+        onInputChange={updateInput}
+        onPreview={previewQuote}
+      />
     </Stack>
   );
 };
@@ -917,33 +841,21 @@ const _OptionList = ({
   );
 };
 
-const editorSteps = [
-  "Contract",
-  "Products",
-  "Services",
-  "Renewal & Terms",
-  "Review",
-];
+const editorSteps = ["Contract", "Products", "Services", "Terms", "Summary"];
 
 const OptionEditor = ({
   option,
   saving,
-  onOptionChange,
   onInputChange,
-  onCalculate,
   onPreview,
-  onBack,
 }: {
   option: QuoteOption;
   saving: boolean;
-  onOptionChange: (option: QuoteOption) => void;
   onInputChange: <K extends keyof QuoteInput>(
     field: K,
     value: QuoteInput[K],
   ) => void;
-  onCalculate: () => void;
   onPreview: (input: QuoteInput) => Promise<QuoteResult>;
-  onBack: () => void;
 }) => {
   const [step, setStep] = useState(0);
   const [previewResult, setPreviewResult] = useState<QuoteResult | undefined>(
@@ -966,8 +878,7 @@ const OptionEditor = ({
   const committedProductCount = products.filter(
     ({ key }) => option.input.volumes[key] > 0,
   ).length;
-  const canContinue =
-    step !== 0 || Boolean(option.name.trim() && option.input.startDate);
+  const canContinue = step !== 0 || Boolean(option.input.startDate);
   const canReview = step !== 1 || committedProductCount > 0;
   const paymentLabel =
     paymentOptions.find(({ value }) => value === option.input.paymentFrequency)
@@ -1120,11 +1031,6 @@ const OptionEditor = ({
 
   return (
     <Stack distance="sm">
-      <Text format={{ fontWeight: "bold" }}>
-        {option.name.trim() || "New option"} ·{" "}
-        {option.updatedAt ? "Saved" : "Not saved"}
-      </Text>
-
       <Tabs
         selected={step}
         fill
@@ -1149,13 +1055,6 @@ const OptionEditor = ({
                 </Text>
               </Box>
               <AutoGrid columnWidth={155} flexible gap="sm">
-                <Input
-                  label="Option Name"
-                  name="option_name"
-                  value={option.name}
-                  required
-                  onChange={(name) => onOptionChange({ ...option, name })}
-                />
                 <DateInput
                   label="Start Date"
                   name="start_date"
@@ -1186,7 +1085,7 @@ const OptionEditor = ({
               </AutoGrid>
               {!canContinue && (
                 <Alert title="Complete the required fields" variant="warning">
-                  Add an option name and subscription start date to continue.
+                  Add a subscription start date to continue.
                 </Alert>
               )}
             </>
@@ -1415,10 +1314,10 @@ const OptionEditor = ({
           {step === 4 && (
             <>
               <Box>
-                <Heading>Review and Calculate</Heading>
+                <Heading>Live Pricing Summary</Heading>
                 <Text variant="microcopy">
-                  Confirm the scenario below. Calculation applies the approved
-                  rate card and approval rules.
+                  These details update automatically from the workbook rate card
+                  as inputs change.
                 </Text>
               </Box>
               {option.result && (
@@ -1429,7 +1328,6 @@ const OptionEditor = ({
                 </Alert>
               )}
               <AutoGrid columnWidth={185} flexible gap="sm">
-                <Text>Option: {option.name}</Text>
                 <Text>Start Date: {option.input.startDate || "Missing"}</Text>
                 <Text>Initial Term: {option.input.termMonths} months</Text>
                 <Text>Payment: {paymentLabel}</Text>
@@ -1443,35 +1341,24 @@ const OptionEditor = ({
                     : "Non-renewal · 60-day notice"}
                 </Text>
               </AutoGrid>
-              <LoadingButton
-                variant="primary"
-                loading={saving}
-                onClick={onCalculate}
-                disabled={!canContinue || committedProductCount === 0}
-              >
-                {option.id
-                  ? "Recalculate and Save"
-                  : "Calculate and Save Option"}
-              </LoadingButton>
             </>
           )}
         </Stack>
       </Card>
 
       <Flex justify="end" align="center" gap="sm" wrap>
-        <Button
-          onClick={() => (step === 0 ? onBack() : setStep(step - 1))}
-          disabled={saving}
-        >
-          {step === 0 ? "Cancel" : "Back"}
-        </Button>
+        {step > 0 && (
+          <Button onClick={() => setStep(step - 1)} disabled={saving}>
+            Back
+          </Button>
+        )}
         {step < editorSteps.length - 1 && (
           <Button
             variant="primary"
             onClick={() => setStep(step + 1)}
             disabled={saving || !canContinue || !canReview}
           >
-            Save &amp; continue
+            Next
           </Button>
         )}
       </Flex>
@@ -1494,7 +1381,7 @@ const ResultSummary = ({
 }) => (
   <Stack distance="md">
     {result.blockingReasons.length > 0 && (
-      <Alert title="This option cannot proceed" variant="error">
+      <Alert title="This calculation cannot proceed" variant="error">
         {result.approvalReasons.join(" ")}
       </Alert>
     )}
