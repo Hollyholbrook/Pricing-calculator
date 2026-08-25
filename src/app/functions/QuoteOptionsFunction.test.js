@@ -90,9 +90,16 @@ test('locking an option creates replacements before archiving existing Deal line
   };
 
   const synced = await _test.syncDealLineItems(client, 'deal-1', state, settings);
-  assert.equal(synced.count, 1);
+  assert.equal(synced.count, 8);
   assert.deepEqual(events, [
     'create:Enterprise OneSub',
+    'create:Connect',
+    'create:Calendar Only - CAs',
+    'create:Notetaker',
+    'create:Agent Accounts',
+    'create:Email Send',
+    'create:Storage',
+    'create:Bandwidth',
     'archive:old-unmanaged',
     'archive:old-managed',
   ]);

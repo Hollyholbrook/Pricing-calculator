@@ -42,7 +42,11 @@ const option = () => {
 
 test('Deal line items reconcile to the approved calculation', () => {
   const selected = option();
-  const items = buildDealLineItems(selected);
+  const items = buildDealLineItems(selected, {
+    bundleId: '67653718',
+    name: 'Enterprise OneSub',
+    category: 'Platform',
+  });
   const recurring = items
     .filter(({ properties }) => properties.recurringbillingfrequency)
     .reduce(
@@ -62,15 +66,19 @@ test('Deal line items reconcile to the approved calculation', () => {
   const recurringItems = items.filter(
     ({ properties }) => properties.recurringbillingfrequency,
   );
-  assert.equal(recurringItems.length, 1);
+  assert.equal(recurringItems.length, 8);
   assert.equal(recurringItems[0].key, 'subscription:nylas_enterprise');
-  assert.equal(recurringItems[0].properties.hs_product_id, '47269087321');
+  assert.equal(recurringItems[0].properties.hs_product_id, undefined);
   assert.equal(recurringItems[0].properties.name, 'Enterprise OneSub');
   assert.equal(recurringItems[0].properties.quantity, '1');
   assert.equal(
     recurringItems[0].properties.nylas_pricing_component,
     'subscription_drawdown',
   );
+  const usageRates = recurringItems.slice(1);
+  assert.equal(usageRates.length, 7);
+  assert.ok(usageRates.every(({ properties }) => properties.quantity === '0'));
+  assert.ok(usageRates.every(({ properties }) => Number(properties.price) >= 0));
 });
 
 test('Quote can collapse only the subscription products, not other charges', () => {

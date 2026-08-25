@@ -1362,6 +1362,34 @@ ${rateScheduleText(option, true)}`,
         source: "deal"
       })
     });
+    var buildDealUsageRateLines = (option) => option.result.lines.map((line) => {
+      const product = CATALOG[line.productKey];
+      if (!product) throw new Error("PRODUCT_MAPPING_REQUIRED");
+      return {
+        key: `rate_schedule:${line.productKey}`,
+        properties: {
+          ...baseManagedProperties({
+            option,
+            key: `rate_schedule:${line.productKey}`,
+            component: "subscription_product",
+            product,
+            source: "deal"
+          }),
+          quantity: "0",
+          price: String(round(line.availableUnitRate, 9)),
+          monthly_unit_price: String(round(line.availableUnitRate, 9)),
+          description: productDescription({
+            ...line,
+            volume: 0,
+            proposedUnitRate: line.availableUnitRate
+          }),
+          recurringbillingfrequency: "monthly",
+          hs_recurring_billing_period: `P${option.input.termMonths}M`,
+          hs_recurring_billing_number_of_payments: String(option.input.termMonths),
+          ...option.input.startDate ? { hs_recurring_billing_start_date: option.input.startDate } : {}
+        }
+      };
+    });
     var buildSupportLine = (option, source) => {
       if (option.result.supportAnnual <= 0) return [];
       const product = CATALOG[option.input.supportLevel];
@@ -1460,6 +1488,7 @@ ${rateScheduleText(option, true)}`,
     };
     var buildDealLineItems2 = (option, dealBundleProduct) => [
       buildDealBundleLine(option, dealBundleProduct),
+      ...buildDealUsageRateLines(option),
       ...buildOnboardingLines(option, "deal"),
       ...buildProfessionalServiceLines(option, "deal")
     ];
