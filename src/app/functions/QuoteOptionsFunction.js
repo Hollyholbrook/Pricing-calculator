@@ -693,8 +693,14 @@ const readQuoteTemplatePage = async (client, after) => {
   throw lastError;
 };
 
-// Only customizable templates are offered. A CPQ template is accepted by every call up to the
-// final DRAFT transition and rejected there, so listing one would just move the failure later.
+// Every template the portal has is listed, with no filtering on hs_type.
+//
+// Filtering here was a mistake: if hs_type is absent from the listing response -- a property that
+// is not returned, or a different object type name -- then every template fails the comparison
+// and the picker silently shows nothing, which is exactly what happened. A dropdown that hides
+// the templates the user can see in HubSpot is worse than one that lists a template the API will
+// later reject, and assertUsableQuoteTemplate already rejects a CPQ template up front with a
+// clear message. Where hs_type IS present and wrong, the option is labelled rather than removed.
 const usableQuoteTemplates = async (client) => {
   const templates = [];
   let after;
@@ -702,10 +708,16 @@ const usableQuoteTemplates = async (client) => {
     do {
       const page = await readQuoteTemplatePage(client, after);
       for (const template of page?.results || []) {
-        if (template?.properties?.hs_type !== REQUIRED_QUOTE_TEMPLATE_TYPE) continue;
+        const type = template?.properties?.hs_type;
+        const name = String(
+          template?.properties?.hs_name || `Quote template ${template?.id}`,
+        ).slice(0, 140);
         templates.push({
           id: String(template.id),
-          name: String(template.properties?.hs_name || `Quote template ${template.id}`).slice(0, 160),
+          name:
+            type && type !== REQUIRED_QUOTE_TEMPLATE_TYPE
+              ? `${name} (not supported)`
+              : name,
         });
       }
       after = page?.paging?.next?.after;

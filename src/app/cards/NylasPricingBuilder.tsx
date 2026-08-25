@@ -323,10 +323,12 @@ const professionalServiceOptions = [
 // width takes 'min' | 'max' | 'auto' | pixels — percentages are not expressible, so the requested
 // 66 / 8 / 10 / 8 / 8 split is applied as a proportional pixel budget. Product uses "max" and
 // absorbs whatever is left, which is the 66% share at a normal card width.
-const VOLUME_COLUMN_WIDTH = 96;
-const LIST_RATE_COLUMN_WIDTH = 120;
-const DISCOUNT_COLUMN_WIDTH = 96;
-const PROPOSED_RATE_COLUMN_WIDTH = 96;
+// Wide enough that no header wraps onto a second line — "Volume / mo." and "Proposed Rate" were
+// both breaking, which is what made the header row look ragged against the values beneath it.
+const VOLUME_COLUMN_WIDTH = 130;
+const LIST_RATE_COLUMN_WIDTH = 130;
+const DISCOUNT_COLUMN_WIDTH = 120;
+const PROPOSED_RATE_COLUMN_WIDTH = 140;
 
 const termOptions = [12, 24, 36].map((months) => ({
   value: months,

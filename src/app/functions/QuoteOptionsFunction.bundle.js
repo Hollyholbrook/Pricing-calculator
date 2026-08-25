@@ -2134,10 +2134,13 @@ var usableQuoteTemplates = async (client) => {
     do {
       const page = await readQuoteTemplatePage(client, after);
       for (const template of page?.results || []) {
-        if (template?.properties?.hs_type !== REQUIRED_QUOTE_TEMPLATE_TYPE) continue;
+        const type = template?.properties?.hs_type;
+        const name = String(
+          template?.properties?.hs_name || `Quote template ${template?.id}`
+        ).slice(0, 140);
         templates.push({
           id: String(template.id),
-          name: String(template.properties?.hs_name || `Quote template ${template.id}`).slice(0, 160)
+          name: type && type !== REQUIRED_QUOTE_TEMPLATE_TYPE ? `${name} (not supported)` : name
         });
       }
       after = page?.paging?.next?.after;
