@@ -2,8 +2,8 @@
   "uid": "nylas_pricing_builder_card",
   "type": "card",
   "config": {
-    "name": "Nylas Pricing Builder",
-    "description": "Create, calculate, compare, and select Nylas New Business quote options.",
+    "name": "Nylas Pricing Calculator",
+    "description": "Calculate Nylas pricing, then lock it in as Deal line items and a draft Quote.",
     "location": "crm.record.tab",
     "entrypoint": "/app/cards/NylasPricingBuilder.tsx",
     "objectTypes": ["deals"]

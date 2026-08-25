@@ -1,7 +1,7 @@
 const crypto = require('node:crypto');
 
 const CATALOG = Object.freeze({
-  enterprise: { id: '47269087321', name: 'Enterprise OneSub', category: 'Platform' },
+  enterprise: { id: '47269087321', name: 'Platform Subscription - Enterprise', category: 'Platform' },
   connect_ca: { id: '45820463620', name: 'Connect', category: 'Platform' },
   calendar_ca: { id: '45887560099', name: 'Calendar Only - CAs', category: 'Calendar' },
   notetaker_bot_hours: { id: '45816248707', name: 'Notetaker', category: 'Notetaker' },
@@ -23,14 +23,24 @@ const CATALOG = Object.freeze({
   basic: { id: '40270989858', name: 'Support Services: Basic', category: 'Support' },
   full: { id: '41648477792', name: 'Support Services: Full', category: 'Support' },
   premium: { id: '41732581464', name: 'Support Services: Premium', category: 'Support' },
-  quick_launch_plus: {
+  // Each onboarding key was previously mapped to the NEXT package's product: Quick Launch+ held
+  // "QuickLaunch Onboarding" and Strategic held "QuickLaunch+ Onboarding", so every onboarding
+  // line item named and billed the wrong package. Quick Launch had no entry at all, which made
+  // pricing it above $0 fail with PRODUCT_MAPPING_REQUIRED after the Deal had already been
+  // rewritten.
+  quick_launch: {
     id: '42724377715',
     name: 'QuickLaunch Onboarding',
     category: 'Professional Services',
   },
-  strategic: {
+  quick_launch_plus: {
     id: '42724501576',
     name: 'QuickLaunch+ Onboarding',
+    category: 'Professional Services',
+  },
+  strategic: {
+    id: '42724439648',
+    name: 'Strategic Onboarding',
     category: 'Professional Services',
   },
   google_verification_review: {
@@ -255,6 +265,13 @@ const buildSubscriptionSummaryLine = (option, source, includeUncommitted) => ({
   }),
 });
 
+// The subscription line covers the monthly product commitments ONLY.
+//
+// It used to be priced at result.recurringPerPeriod, which is committedArr per period — and
+// committedArr already includes support and recurring add-ons. Those are now their own line
+// items (support is always present, at least Basic), so pricing this line off committedArr
+// would bill both of them twice. Platform + support + add-ons still sums to committedArr, so
+// the Deal's native amount is unchanged; it is just itemized instead of bundled.
 const buildDealBundleLine = (option) => ({
   key: 'subscription:nylas_enterprise',
   properties: recurringProperties({
@@ -263,18 +280,18 @@ const buildDealBundleLine = (option) => ({
     component: 'subscription_drawdown',
     product: CATALOG.enterprise,
     quantity: 1,
-    price: option.result.recurringPerPeriod,
+    price: option.result.proposedPlatformArr / option.result.paymentsPerYear,
     description:
-      'Bundled Nylas Enterprise subscription, including committed products, support, and recurring add-ons.\n' +
+      'Committed monthly product usage, drawn down from one prepaid subscription pool.\n' +
       `Product rate schedule:\n${rateScheduleText(option, true)}`,
     source: 'deal',
   }),
 });
 
 const buildSupportLine = (option, source) => {
-  if (option.result.supportAnnual <= 0) return [];
-  const product = CATALOG[option.input.supportLevel];
-  if (!product) throw new Error('PRODUCT_MAPPING_REQUIRED');
+  // Every quote carries a support line, Basic at $0 included — the tier is part of what the
+  // customer is buying, so it belongs on the Deal and the Quote whether or not it costs anything.
+  const product = CATALOG[option.input.supportLevel] || CATALOG.basic;
   return [
     {
       key: `support:${option.input.supportLevel}`,
@@ -312,7 +329,10 @@ const buildAddOnLines = (option, source) =>
   });
 
 const buildOnboardingLines = (option, source) => {
-  if (option.result.onboardingAmount <= 0) return [];
+  // Onboarding is optional. "none" is a real selection meaning no onboarding was sold, so it
+  // produces no line item; every other package does, including $0 Quick Launch, because the
+  // package itself is part of the agreement.
+  if (option.input.onboardingPackage === 'none') return [];
   const product = CATALOG[option.input.onboardingPackage];
   if (!product) throw new Error('PRODUCT_MAPPING_REQUIRED');
   return [
@@ -379,6 +399,8 @@ const buildLineItems = (option, { source, presentation = 'itemized_products', in
 
 const buildDealLineItems = (option) => [
   buildDealBundleLine(option),
+  ...buildSupportLine(option, 'deal'),
+  ...buildAddOnLines(option, 'deal'),
   ...buildOnboardingLines(option, 'deal'),
   ...buildProfessionalServiceLines(option, 'deal'),
 ];

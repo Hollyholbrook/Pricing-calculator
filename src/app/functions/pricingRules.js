@@ -150,6 +150,7 @@ module.exports = Object.freeze({
     },
   ],
   onboardingRules: [
+    { key: 'none', package: 'None', oneTimeAmount: 0 },
     { key: 'quick_launch', package: 'Quick Launch', oneTimeAmount: 0 },
     { key: 'quick_launch_plus', package: 'Quick Launch +', oneTimeAmount: 5_000 },
     { key: 'strategic', package: 'Strategic Onboarding', oneTimeAmount: 10_000 },
