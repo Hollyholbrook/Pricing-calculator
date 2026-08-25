@@ -329,8 +329,14 @@ const emptyProductDiscounts = (): Record<ProductKey, number> => ({
   agent_bandwidth_gb: 0,
 });
 
+const firstDayOfFollowingMonth = () => {
+  const today = new Date();
+  const nextMonth = new Date(today.getFullYear(), today.getMonth() + 1, 1);
+  return `${nextMonth.getFullYear()}-${String(nextMonth.getMonth() + 1).padStart(2, "0")}-01`;
+};
+
 const emptyInput = (): QuoteInput => ({
-  startDate: null,
+  startDate: firstDayOfFollowingMonth(),
   termMonths: 12,
   paymentFrequency: "annual_in_advance",
   volumes: emptyVolumes(),
@@ -409,6 +415,7 @@ const cloneInput = (input: QuoteInput): QuoteInput => {
   return {
     ...defaults,
     ...cloned,
+    startDate: cloned.startDate || defaults.startDate,
     volumes: { ...defaults.volumes, ...(cloned.volumes || {}) },
     productDiscounts: {
       ...defaults.productDiscounts,
@@ -1589,194 +1596,201 @@ const ResultSummary = ({
             {approvalLabel(result.approvalTierRequired)}
           </DescriptionListItem>
         </DescriptionList>
+        <Accordion title="Product Rate Schedule">
+          <Table density="condensed">
+            <TableHead>
+              <TableRow>
+                <TableHeader>Product</TableHeader>
+                <TableHeader>Unit</TableHeader>
+                <TableHeader align="right">Volume / mo.</TableHeader>
+                <TableHeader align="right">List Rate</TableHeader>
+                <TableHeader align="right">Discount</TableHeader>
+                <TableHeader align="right">Proposed Rate</TableHeader>
+                <TableHeader align="right">Savings / Term</TableHeader>
+                <TableHeader align="right">Fees / Term</TableHeader>
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {result.lines.map((line) => (
+                <TableRow key={line.productKey}>
+                  <TableCell>{line.productName}</TableCell>
+                  <TableCell>{line.unitOfMeasure}</TableCell>
+                  <TableCell align="right">
+                    {line.volume.toLocaleString()}
+                  </TableCell>
+                  <TableCell align="right">
+                    {rateCurrency(line.displayListUnitRate)}
+                  </TableCell>
+                  <TableCell align="right">
+                    {percent(line.discretionaryDiscount)}
+                  </TableCell>
+                  <TableCell align="right">
+                    {rateCurrency(line.displayProposedUnitRate)}
+                  </TableCell>
+                  <TableCell align="right">
+                    {currency(line.listTermCommitment - line.termCommitment)}
+                  </TableCell>
+                  <TableCell align="right">
+                    {currency(line.termCommitment)}
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </Accordion>
+
+        <Accordion title="Services, Add-ons, and One-Time Fees">
+          <Table density="condensed">
+            <TableHead>
+              <TableRow>
+                <TableHeader>Charge</TableHeader>
+                <TableHeader>Frequency</TableHeader>
+                <TableHeader align="right">List Price</TableHeader>
+                <TableHeader align="right">Savings</TableHeader>
+                <TableHeader align="right">Proposed Price</TableHeader>
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              <TableRow>
+                <TableCell>Subscription Support</TableCell>
+                <TableCell>Annual</TableCell>
+                <TableCell align="right">
+                  {currency(result.listSupportAnnual)}
+                </TableCell>
+                <TableCell align="right">
+                  {currency(result.listSupportAnnual - result.supportAnnual)}
+                </TableCell>
+                <TableCell align="right">
+                  {currency(result.supportAnnual)}
+                </TableCell>
+              </TableRow>
+              {result.selectedAddOns.map((addOn) => (
+                <TableRow key={addOn.key}>
+                  <TableCell>{addOn.label}</TableCell>
+                  <TableCell>Annual</TableCell>
+                  <TableCell align="right">
+                    {currency(addOn.listAnnualAmount)}
+                  </TableCell>
+                  <TableCell align="right">
+                    {currency(addOn.listAnnualAmount - addOn.annualAmount)}
+                  </TableCell>
+                  <TableCell align="right">
+                    {currency(addOn.annualAmount)}
+                  </TableCell>
+                </TableRow>
+              ))}
+              <TableRow>
+                <TableCell>Onboarding</TableCell>
+                <TableCell>One-time</TableCell>
+                <TableCell align="right">
+                  {currency(result.listOnboardingAmount)}
+                </TableCell>
+                <TableCell align="right">
+                  {currency(
+                    result.listOnboardingAmount - result.onboardingAmount,
+                  )}
+                </TableCell>
+                <TableCell align="right">
+                  {currency(result.onboardingAmount)}
+                </TableCell>
+              </TableRow>
+              <TableRow>
+                <TableCell>Professional Services</TableCell>
+                <TableCell>One-time</TableCell>
+                <TableCell align="right">
+                  {currency(result.listProfessionalServicesAmount)}
+                </TableCell>
+                <TableCell align="right">
+                  {currency(
+                    result.listProfessionalServicesAmount -
+                      result.professionalServicesAmount,
+                  )}
+                </TableCell>
+                <TableCell align="right">
+                  {currency(result.professionalServicesAmount)}
+                </TableCell>
+              </TableRow>
+            </TableBody>
+          </Table>
+        </Accordion>
+
+        <Accordion title="Contract Summary">
+          <Table density="condensed">
+            <TableHead>
+              <TableRow>
+                <TableHeader>Measure</TableHeader>
+                <TableHeader align="right">List</TableHeader>
+                <TableHeader align="right">Savings</TableHeader>
+                <TableHeader align="right">Proposed</TableHeader>
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              <TableRow>
+                <TableCell>Subscription Drawdown / Year</TableCell>
+                <TableCell align="right">
+                  {currency(result.listPlatformArr)}
+                </TableCell>
+                <TableCell align="right">
+                  {currency(
+                    result.listPlatformArr - result.proposedPlatformArr,
+                  )}
+                </TableCell>
+                <TableCell align="right">
+                  {currency(result.proposedPlatformArr)}
+                </TableCell>
+              </TableRow>
+              <TableRow>
+                <TableCell>Total Recurring Fees / Year</TableCell>
+                <TableCell align="right">
+                  {currency(result.listCommittedArr)}
+                </TableCell>
+                <TableCell align="right">
+                  {currency(result.listCommittedArr - result.committedArr)}
+                </TableCell>
+                <TableCell align="right">
+                  {currency(result.committedArr)}
+                </TableCell>
+              </TableRow>
+              <TableRow>
+                <TableCell>One-Time Fees</TableCell>
+                <TableCell align="right">
+                  {currency(result.listOneTime)}
+                </TableCell>
+                <TableCell align="right">
+                  {currency(result.listOneTime - result.oneTime)}
+                </TableCell>
+                <TableCell align="right">{currency(result.oneTime)}</TableCell>
+              </TableRow>
+              <TableRow>
+                <TableCell>Total Contract Value</TableCell>
+                <TableCell align="right">{currency(result.listTcv)}</TableCell>
+                <TableCell align="right">
+                  {currency(result.listTcv - result.tcv)}
+                </TableCell>
+                <TableCell align="right">{currency(result.tcv)}</TableCell>
+              </TableRow>
+            </TableBody>
+          </Table>
+        </Accordion>
+
+        <Accordion title="Contract and Renewal Dates">
+          <DescriptionList direction="row">
+            <DescriptionListItem label="Contract Start">
+              {result.dates.contractStartDate || "Not set"}
+            </DescriptionListItem>
+            <DescriptionListItem label="Contract End">
+              {result.dates.contractEndDate || "Not set"}
+            </DescriptionListItem>
+            <DescriptionListItem label="First Renewal Date">
+              {result.dates.renewalDate || "Does not automatically renew"}
+            </DescriptionListItem>
+            <DescriptionListItem label="Non-Renewal Notice Deadline">
+              {result.dates.nonRenewalNoticeDate || "Not applicable"}
+            </DescriptionListItem>
+          </DescriptionList>
+        </Accordion>
       </Stack>
     </Card>
-
-    <Accordion title="Product Rate Schedule">
-      <Table density="condensed">
-        <TableHead>
-          <TableRow>
-            <TableHeader>Product</TableHeader>
-            <TableHeader>Unit</TableHeader>
-            <TableHeader align="right">Volume / mo.</TableHeader>
-            <TableHeader align="right">List Rate</TableHeader>
-            <TableHeader align="right">Discount</TableHeader>
-            <TableHeader align="right">Proposed Rate</TableHeader>
-            <TableHeader align="right">Savings / Term</TableHeader>
-            <TableHeader align="right">Fees / Term</TableHeader>
-          </TableRow>
-        </TableHead>
-        <TableBody>
-          {result.lines.map((line) => (
-            <TableRow key={line.productKey}>
-              <TableCell>{line.productName}</TableCell>
-              <TableCell>{line.unitOfMeasure}</TableCell>
-              <TableCell align="right">
-                {line.volume.toLocaleString()}
-              </TableCell>
-              <TableCell align="right">
-                {rateCurrency(line.displayListUnitRate)}
-              </TableCell>
-              <TableCell align="right">
-                {percent(line.discretionaryDiscount)}
-              </TableCell>
-              <TableCell align="right">
-                {rateCurrency(line.displayProposedUnitRate)}
-              </TableCell>
-              <TableCell align="right">
-                {currency(line.listTermCommitment - line.termCommitment)}
-              </TableCell>
-              <TableCell align="right">
-                {currency(line.termCommitment)}
-              </TableCell>
-            </TableRow>
-          ))}
-        </TableBody>
-      </Table>
-    </Accordion>
-
-    <Accordion title="Services, Add-ons, and One-Time Fees">
-      <Table density="condensed">
-        <TableHead>
-          <TableRow>
-            <TableHeader>Charge</TableHeader>
-            <TableHeader>Frequency</TableHeader>
-            <TableHeader align="right">List Price</TableHeader>
-            <TableHeader align="right">Savings</TableHeader>
-            <TableHeader align="right">Proposed Price</TableHeader>
-          </TableRow>
-        </TableHead>
-        <TableBody>
-          <TableRow>
-            <TableCell>Subscription Support</TableCell>
-            <TableCell>Annual</TableCell>
-            <TableCell align="right">
-              {currency(result.listSupportAnnual)}
-            </TableCell>
-            <TableCell align="right">
-              {currency(result.listSupportAnnual - result.supportAnnual)}
-            </TableCell>
-            <TableCell align="right">
-              {currency(result.supportAnnual)}
-            </TableCell>
-          </TableRow>
-          {result.selectedAddOns.map((addOn) => (
-            <TableRow key={addOn.key}>
-              <TableCell>{addOn.label}</TableCell>
-              <TableCell>Annual</TableCell>
-              <TableCell align="right">
-                {currency(addOn.listAnnualAmount)}
-              </TableCell>
-              <TableCell align="right">
-                {currency(addOn.listAnnualAmount - addOn.annualAmount)}
-              </TableCell>
-              <TableCell align="right">
-                {currency(addOn.annualAmount)}
-              </TableCell>
-            </TableRow>
-          ))}
-          <TableRow>
-            <TableCell>Onboarding</TableCell>
-            <TableCell>One-time</TableCell>
-            <TableCell align="right">
-              {currency(result.listOnboardingAmount)}
-            </TableCell>
-            <TableCell align="right">
-              {currency(result.listOnboardingAmount - result.onboardingAmount)}
-            </TableCell>
-            <TableCell align="right">
-              {currency(result.onboardingAmount)}
-            </TableCell>
-          </TableRow>
-          <TableRow>
-            <TableCell>Professional Services</TableCell>
-            <TableCell>One-time</TableCell>
-            <TableCell align="right">
-              {currency(result.listProfessionalServicesAmount)}
-            </TableCell>
-            <TableCell align="right">
-              {currency(
-                result.listProfessionalServicesAmount -
-                  result.professionalServicesAmount,
-              )}
-            </TableCell>
-            <TableCell align="right">
-              {currency(result.professionalServicesAmount)}
-            </TableCell>
-          </TableRow>
-        </TableBody>
-      </Table>
-    </Accordion>
-
-    <Accordion title="Contract Summary">
-      <Table density="condensed">
-        <TableHead>
-          <TableRow>
-            <TableHeader>Measure</TableHeader>
-            <TableHeader align="right">List</TableHeader>
-            <TableHeader align="right">Savings</TableHeader>
-            <TableHeader align="right">Proposed</TableHeader>
-          </TableRow>
-        </TableHead>
-        <TableBody>
-          <TableRow>
-            <TableCell>Subscription Drawdown / Year</TableCell>
-            <TableCell align="right">
-              {currency(result.listPlatformArr)}
-            </TableCell>
-            <TableCell align="right">
-              {currency(result.listPlatformArr - result.proposedPlatformArr)}
-            </TableCell>
-            <TableCell align="right">
-              {currency(result.proposedPlatformArr)}
-            </TableCell>
-          </TableRow>
-          <TableRow>
-            <TableCell>Total Recurring Fees / Year</TableCell>
-            <TableCell align="right">
-              {currency(result.listCommittedArr)}
-            </TableCell>
-            <TableCell align="right">
-              {currency(result.listCommittedArr - result.committedArr)}
-            </TableCell>
-            <TableCell align="right">{currency(result.committedArr)}</TableCell>
-          </TableRow>
-          <TableRow>
-            <TableCell>One-Time Fees</TableCell>
-            <TableCell align="right">{currency(result.listOneTime)}</TableCell>
-            <TableCell align="right">
-              {currency(result.listOneTime - result.oneTime)}
-            </TableCell>
-            <TableCell align="right">{currency(result.oneTime)}</TableCell>
-          </TableRow>
-          <TableRow>
-            <TableCell>Total Contract Value</TableCell>
-            <TableCell align="right">{currency(result.listTcv)}</TableCell>
-            <TableCell align="right">
-              {currency(result.listTcv - result.tcv)}
-            </TableCell>
-            <TableCell align="right">{currency(result.tcv)}</TableCell>
-          </TableRow>
-        </TableBody>
-      </Table>
-    </Accordion>
-
-    <Accordion title="Contract and Renewal Dates">
-      <DescriptionList direction="row">
-        <DescriptionListItem label="Contract Start">
-          {result.dates.contractStartDate || "Not set"}
-        </DescriptionListItem>
-        <DescriptionListItem label="Contract End">
-          {result.dates.contractEndDate || "Not set"}
-        </DescriptionListItem>
-        <DescriptionListItem label="First Renewal Date">
-          {result.dates.renewalDate || "Does not automatically renew"}
-        </DescriptionListItem>
-        <DescriptionListItem label="Non-Renewal Notice Deadline">
-          {result.dates.nonRenewalNoticeDate || "Not applicable"}
-        </DescriptionListItem>
-      </DescriptionList>
-    </Accordion>
   </Stack>
 );
 
