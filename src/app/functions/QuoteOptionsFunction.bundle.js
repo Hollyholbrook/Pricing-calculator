@@ -79,10 +79,10 @@ var require_pricingRules = __commonJS({
           unitOfMeasure: "1,000 emails",
           pricingModel: "graduated_adjusted_bands",
           bands: [
-            [0, 5e4, 1],
-            [5e4, 1e5, 0.75],
-            [1e5, 5e5, 0.35],
-            [5e5, null, 0.25]
+            [0, 50, 1],
+            [50, 100, 0.75],
+            [100, 500, 0.35],
+            [500, null, 0.25]
           ]
         },
         {
