@@ -510,6 +510,41 @@ const inBatches = async (values, action, batchSize = 10) => {
   }
 };
 
+// buildDealLineItems and buildQuoteLineItems attach bookkeeping properties (nylas_pricing_managed,
+// nylas_line_item_key, nylas_pricing_component, nylas_quote_option_id, nylas_pricing_state_hash,
+// nylas_line_item_source) that only exist on the Line Item object if a portal has had them
+// provisioned. HubSpot rejects a create naming a property it does not have, so in a portal that
+// never got them EVERY line item create fails with a 400 and the whole sync collapses into
+// "HubSpot could not replace the Deal line items."
+//
+// Send only the properties HubSpot defines. The trade-off is that the nylas_* bookkeeping is not
+// written, so managed line items cannot be told apart from ones a rep added by hand — which
+// matters for the open question of whether sync should preserve unmanaged items.
+const HUBSPOT_LINE_ITEM_PROPERTIES = new Set([
+  'name',
+  'hs_product_id',
+  'quantity',
+  'price',
+  'monthly_unit_price',
+  'discount',
+  'description',
+  'product_category',
+  'units',
+  'recurringbillingfrequency',
+  'hs_recurring_billing_period',
+  'hs_recurring_billing_terms',
+  'hs_recurring_billing_number_of_payments',
+  'hs_recurring_billing_start_date',
+  'hs_billing_start_delay_type',
+]);
+
+const hubSpotLineItemProperties = (properties) =>
+  Object.fromEntries(
+    Object.entries(properties).filter(
+      ([key, value]) => HUBSPOT_LINE_ITEM_PROPERTIES.has(key) && value != null,
+    ),
+  );
+
 const syncDealLineItems = async (client, dealId, state, settings) => {
   const option = selectedOptionForDraft(state);
   assertCurrentSettings(option, settings);
@@ -520,7 +555,7 @@ const syncDealLineItems = async (client, dealId, state, settings) => {
     await inBatches(existingIds, (id) => client.crm.lineItems.basicApi.archive(id));
     await inBatches(desired, async (item) => {
         const created = await client.crm.lineItems.basicApi.create({
-          properties: item.properties,
+          properties: hubSpotLineItemProperties(item.properties),
           associations: [createAssociation(dealId, 20)],
         });
         createdIds.push(String(created.id));
@@ -608,7 +643,7 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
     // was written for and leaked orphaned quote line items on every failed attempt.
     await Promise.all(lineItems.map(async (item) => {
       const created = await client.crm.lineItems.basicApi.create({
-        properties: item.properties,
+        properties: hubSpotLineItemProperties(item.properties),
         associations: [createAssociation(quote.id, 68)],
       });
       createdLineItemIds.push(String(created.id));

@@ -724,14 +724,20 @@ const OptionEditor = ({
     <Table density="compact" flush>
       <TableHead>
         <TableRow>
-          <TableHeader>Product</TableHeader>
-          <TableHeader>Unit</TableHeader>
-          <TableHeader align="right">Volume / mo.</TableHeader>
-          <TableHeader align="right">List Rate</TableHeader>
-          <TableHeader align="right">Discount</TableHeader>
-          <TableHeader align="right">Proposed Rate</TableHeader>
-          <TableHeader align="right">Savings / Term</TableHeader>
-          <TableHeader align="right">Fees / Term</TableHeader>
+          <TableHeader width={210}>Product</TableHeader>
+          <TableHeader width={110}>Unit</TableHeader>
+          <TableHeader width={110} align="right">
+            Volume / mo.
+          </TableHeader>
+          <TableHeader width={110} align="right">
+            List Rate
+          </TableHeader>
+          <TableHeader width={100} align="right">
+            Discount
+          </TableHeader>
+          <TableHeader width="max" align="right">
+            Proposed Rate
+          </TableHeader>
         </TableRow>
       </TableHead>
       <TableBody>
@@ -752,12 +758,17 @@ const OptionEditor = ({
                 <TableCell>{product.inputUnit}</TableCell>
                 <TableCell align="right">
                   <NumberInput
-                    label={`${product.label} volume`}
+                    // Short labels: the column header and the Product and Unit cells already
+                    // say what this is, so a full "Agent Data Storage volume" above every input
+                    // just wrapped onto three lines and made the row tall. These stay non-empty
+                    // so each input still has an accessible name.
+                    label="Qty"
                     name={product.key}
                     value={option.input.volumes[product.key]}
                     min={0}
                     max={1_000_000_000}
                     precision={0}
+                    textAlign="right"
                     tooltip={`Committed ${product.inputUnit} per month.`}
                     onChange={(value) =>
                       onInputChange("volumes", {
@@ -770,15 +781,16 @@ const OptionEditor = ({
                 <TableCell align="right">{listRatePreview(line)}</TableCell>
                 <TableCell align="right">
                   <NumberInput
-                    label={`${product.label} discount %`}
+                    label="%"
                     name={`${product.key}_discount`}
                     value={
                       (option.input.productDiscounts?.[product.key] || 0) * 100
                     }
                     min={0}
                     max={100}
-                    precision={2}
+                    precision={0}
                     formatStyle="percentage"
+                    textAlign="right"
                     // A discount on a product with no committed volume changes no total, so it
                     // is disabled rather than silently accepted.
                     readOnly={!quoted}
@@ -797,14 +809,6 @@ const OptionEditor = ({
                   />
                 </TableCell>
                 <TableCell align="right">{proposedRatePreview(line)}</TableCell>
-                <TableCell align="right">
-                  {line
-                    ? currency(line.listTermCommitment - line.termCommitment)
-                    : "—"}
-                </TableCell>
-                <TableCell align="right">
-                  {line ? currency(line.termCommitment) : "—"}
-                </TableCell>
               </TableRow>
             </Fragment>
           );

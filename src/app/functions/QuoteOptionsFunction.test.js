@@ -63,6 +63,7 @@ test('locking an option archives every existing Deal line item before creating r
     selectedStateHash: option.result.stateHash,
   };
   const events = [];
+  const createdProperties = [];
   const client = {
     crm: {
       associations: {
@@ -78,7 +79,11 @@ test('locking an option archives every existing Deal line item before creating r
         basicApi: {
           archive: async (id) => events.push(`archive:${id}`),
           create: async ({ properties }) => {
-            events.push(`create:${properties.nylas_line_item_key}`);
+            // Assert on a HubSpot-defined property. nylas_line_item_key is bookkeeping that only
+            // exists in portals where it was provisioned, so it is filtered out of the payload;
+            // sending it made every create fail with a 400 in portals that lack it.
+            createdProperties.push(properties);
+            events.push(`create:${properties.name}`);
             return { id: 'new-1' };
           },
         },
@@ -92,6 +97,16 @@ test('locking an option archives every existing Deal line item before creating r
   assert.deepEqual(events, [
     'archive:old-unmanaged',
     'archive:old-managed',
-    'create:subscription:nylas_enterprise',
+    'create:Enterprise OneSub',
   ]);
+  // No nylas_* bookkeeping may reach HubSpot: a portal without those custom properties rejects
+  // the whole create, which surfaced as "HubSpot could not replace the Deal line items."
+  for (const properties of createdProperties) {
+    assert.deepEqual(
+      Object.keys(properties).filter((key) => key.startsWith('nylas_')),
+      [],
+    );
+    assert.ok(properties.hs_product_id, 'line item must still carry hs_product_id');
+    assert.ok(properties.price != null, 'line item must still carry price');
+  }
 });

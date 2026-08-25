@@ -1953,6 +1953,28 @@ var inBatches = async (values, action, batchSize = 10) => {
     await Promise.all(values.slice(index, index + batchSize).map(action));
   }
 };
+var HUBSPOT_LINE_ITEM_PROPERTIES = /* @__PURE__ */ new Set([
+  "name",
+  "hs_product_id",
+  "quantity",
+  "price",
+  "monthly_unit_price",
+  "discount",
+  "description",
+  "product_category",
+  "units",
+  "recurringbillingfrequency",
+  "hs_recurring_billing_period",
+  "hs_recurring_billing_terms",
+  "hs_recurring_billing_number_of_payments",
+  "hs_recurring_billing_start_date",
+  "hs_billing_start_delay_type"
+]);
+var hubSpotLineItemProperties = (properties) => Object.fromEntries(
+  Object.entries(properties).filter(
+    ([key, value]) => HUBSPOT_LINE_ITEM_PROPERTIES.has(key) && value != null
+  )
+);
 var syncDealLineItems = async (client, dealId, state, settings) => {
   const option = selectedOptionForDraft(state);
   assertCurrentSettings(option, settings);
@@ -1963,7 +1985,7 @@ var syncDealLineItems = async (client, dealId, state, settings) => {
     await inBatches(existingIds, (id) => client.crm.lineItems.basicApi.archive(id));
     await inBatches(desired, async (item) => {
       const created = await client.crm.lineItems.basicApi.create({
-        properties: item.properties,
+        properties: hubSpotLineItemProperties(item.properties),
         associations: [createAssociation(dealId, 20)]
       });
       createdIds.push(String(created.id));
@@ -2035,7 +2057,7 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
     );
     await Promise.all(lineItems.map(async (item) => {
       const created = await client.crm.lineItems.basicApi.create({
-        properties: item.properties,
+        properties: hubSpotLineItemProperties(item.properties),
         associations: [createAssociation(quote.id, 68)]
       });
       createdLineItemIds.push(String(created.id));
