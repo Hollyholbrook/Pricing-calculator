@@ -1,7 +1,7 @@
 const crypto = require('node:crypto');
 
 const CATALOG = Object.freeze({
-  enterprise: { id: '46037350773', name: 'Nylas Enterprise', category: 'Platform' },
+  enterprise: { id: '47269087321', name: 'Enterprise OneSub', category: 'Platform' },
   connect_ca: { id: '45820463620', name: 'Connect', category: 'Platform' },
   calendar_ca: { id: '45887560099', name: 'Calendar Only - CAs', category: 'Calendar' },
   notetaker_bot_hours: { id: '45816248707', name: 'Notetaker', category: 'Notetaker' },

@@ -933,145 +933,133 @@ const OptionEditor = ({
     );
   };
 
-  const productPricePreview = (
-    line: QuoteLine | undefined,
-    discount: number,
-  ) => {
+  const proposedRatePreview = (line: QuoteLine | undefined) => {
     if (!line) {
-      return <Text variant="microcopy">Loading workbook base rate…</Text>;
+      return <Text variant="microcopy">Updating…</Text>;
     }
     if (line.productKey === "agent_email_thousands") {
       return (
         <Stack distance="flush">
-          <Text format={{ fontWeight: "bold" }}>Email rate tiers</Text>
           {line.baseBandRates.map((band, index) => {
             const range =
               band.upper == null
                 ? `${band.lower.toLocaleString()}K+`
                 : `${band.lower === 0 ? "1" : band.lower.toLocaleString()}K–${band.upper.toLocaleString()}K`;
-            const listRate =
-              band.rate *
-              (1 - (previewResult?.termDiscount || 0)) *
-              (1 + (previewResult?.paymentPremium || 0));
             const proposedRate =
-              line.proposedBandRates[index]?.rate ?? listRate * (1 - discount);
+              line.proposedBandRates[index]?.rate ?? band.rate;
             return (
               <Text key={range} variant="microcopy">
-                {range}: List {rateCurrency(listRate)} per 1,000 emails/month •{" "}
-                {percent(discount)} discount • Proposed{" "}
-                {rateCurrency(proposedRate)} per 1,000 emails/month
+                {range}: {rateCurrency(proposedRate)}
               </Text>
             );
           })}
-          {line.volume > 0 && (
-            <Text variant="microcopy">
-              List {currency(line.listTermCommitment)} Total Contract Value •{" "}
-              {percent(discount)} discount saves{" "}
-              {currency(line.listTermCommitment - line.termCommitment)} •{" "}
-              Proposed {currency(line.termCommitment)} Total Contract Value
-            </Text>
-          )}
         </Stack>
       );
     }
-    if (line.volume === 0) {
-      return (
-        <Stack distance="flush">
-          <Text>
-            Base rate {rateCurrency(line.baseUnitRate)} / unit / month
-          </Text>
-        </Stack>
-      );
-    }
-    return (
-      <Stack distance="flush">
-        <Text variant="microcopy">
-          List {rateCurrency(line.displayListUnitRate)} per unit per month •{" "}
-          {percent(discount)} discount saves{" "}
-          {rateCurrency(
-            line.displayListUnitRate - line.displayProposedUnitRate,
-          )}{" "}
-          • Proposed {rateCurrency(line.displayProposedUnitRate)} per unit per
-          month
-        </Text>
-        <Text variant="microcopy">
-          List {currency(line.listTermCommitment)} Total Contract Value •{" "}
-          {percent(discount)} discount saves{" "}
-          {currency(line.listTermCommitment - line.termCommitment)} • Proposed{" "}
-          {currency(line.termCommitment)} Total Contract Value
-        </Text>
-      </Stack>
-    );
+    return <Text>{rateCurrency(line.displayProposedUnitRate)}</Text>;
   };
 
   const productTable = (tableProducts: typeof products) => (
     <Table density="compact" flush>
       <TableHead>
         <TableRow>
-          <TableHeader width={300}>Product</TableHeader>
-          <TableHeader width={300}>Monthly volume</TableHeader>
-          <TableHeader width={160}>Discount</TableHeader>
-          <TableHeader width="max">Price</TableHeader>
+          <TableHeader>Product</TableHeader>
+          <TableHeader>Unit</TableHeader>
+          <TableHeader align="right">Volume / mo.</TableHeader>
+          <TableHeader align="right">List Rate</TableHeader>
+          <TableHeader align="right">Discount</TableHeader>
+          <TableHeader align="right">Proposed Rate</TableHeader>
+          <TableHeader align="right">Savings / Term</TableHeader>
+          <TableHeader align="right">Fees / Term</TableHeader>
         </TableRow>
       </TableHead>
       <TableBody>
-        {tableProducts.map((product) => (
-          <Fragment key={product.key}>
-            <TableRow>
-              <TableCell>
-                <Stack distance="flush">
-                  <Text>{product.label}</Text>
-                  <Text variant="microcopy">{product.description}</Text>
-                </Stack>
-              </TableCell>
-              <TableCell>
-                <NumberInput
-                  label={product.inputUnit}
-                  name={product.key}
-                  value={option.input.volumes[product.key]}
-                  min={0}
-                  max={1_000_000_000}
-                  precision={0}
-                  onChange={(value) =>
-                    onInputChange("volumes", {
-                      ...option.input.volumes,
-                      [product.key]: value || 0,
-                    })
-                  }
-                />
-              </TableCell>
-              <TableCell>
-                <NumberInput
-                  label="%"
-                  name={`${product.key}_discount`}
-                  value={
-                    (option.input.productDiscounts?.[product.key] || 0) * 100
-                  }
-                  min={0}
-                  max={100}
-                  precision={2}
-                  formatStyle="percentage"
-                  tooltip="Optional. Enter the approved discretionary discount for this product."
-                  onChange={(value) =>
-                    onInputChange("productDiscounts", {
-                      ...(option.input.productDiscounts ||
-                        emptyProductDiscounts()),
-                      [product.key]: (value || 0) / 100,
-                    })
-                  }
-                />
-              </TableCell>
-              <TableCell>
-                {productPricePreview(
-                  previewResult?.lines.find(
-                    ({ productKey }) => productKey === product.key,
-                  ),
-                  option.input.productDiscounts?.[product.key] || 0,
-                )}
-              </TableCell>
-            </TableRow>
-          </Fragment>
-        ))}
+        {tableProducts.map((product) => {
+          const line = previewResult?.lines.find(
+            ({ productKey }) => productKey === product.key,
+          );
+          const listRate = line?.displayListUnitRate ?? line?.baseUnitRate;
+          return (
+            <Fragment key={product.key}>
+              <TableRow>
+                <TableCell>
+                  <Stack distance="flush">
+                    <Text>{product.label}</Text>
+                    <Text variant="microcopy">{product.description}</Text>
+                  </Stack>
+                </TableCell>
+                <TableCell>{product.inputUnit}</TableCell>
+                <TableCell>
+                  <NumberInput
+                    label=""
+                    name={product.key}
+                    value={option.input.volumes[product.key]}
+                    min={0}
+                    max={1_000_000_000}
+                    precision={0}
+                    onChange={(value) =>
+                      onInputChange("volumes", {
+                        ...option.input.volumes,
+                        [product.key]: value || 0,
+                      })
+                    }
+                  />
+                </TableCell>
+                <TableCell align="right">
+                  {line?.productKey === "agent_email_thousands" ? (
+                    <Stack distance="flush">
+                      {line.baseBandRates.map((band) => (
+                        <Text
+                          key={`${band.lower}-${band.upper ?? "plus"}`}
+                          variant="microcopy"
+                        >
+                          {rateCurrency(
+                            band.rate *
+                              (1 - (previewResult?.termDiscount || 0)) *
+                              (1 + (previewResult?.paymentPremium || 0)),
+                          )}
+                        </Text>
+                      ))}
+                    </Stack>
+                  ) : (
+                    rateCurrency(listRate)
+                  )}
+                </TableCell>
+                <TableCell>
+                  <NumberInput
+                    label=""
+                    name={`${product.key}_discount`}
+                    value={
+                      (option.input.productDiscounts?.[product.key] || 0) * 100
+                    }
+                    min={0}
+                    max={100}
+                    precision={2}
+                    formatStyle="percentage"
+                    tooltip="Optional. Enter the approved discretionary discount for this product."
+                    onChange={(value) =>
+                      onInputChange("productDiscounts", {
+                        ...(option.input.productDiscounts ||
+                          emptyProductDiscounts()),
+                        [product.key]: (value || 0) / 100,
+                      })
+                    }
+                  />
+                </TableCell>
+                <TableCell align="right">{proposedRatePreview(line)}</TableCell>
+                <TableCell align="right">
+                  {currency(
+                    (line?.listTermCommitment || 0) -
+                      (line?.termCommitment || 0),
+                  )}
+                </TableCell>
+                <TableCell align="right">
+                  {currency(line?.termCommitment || 0)}
+                </TableCell>
+              </TableRow>
+            </Fragment>
+          );
+        })}
       </TableBody>
     </Table>
   );
