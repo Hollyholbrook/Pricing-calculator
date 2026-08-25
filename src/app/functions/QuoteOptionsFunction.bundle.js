@@ -1303,7 +1303,11 @@ var require_lineItemModel = __commonJS({
         "presentation",
         "includeUncommittedRateSchedule",
         "includeRenewalTerms",
-        "includeSpecialTerms"
+        "includeSpecialTerms",
+        // Part of the content, not a side channel: the template changes what the customer sees, so
+        // it belongs in the hash. Switching template on an already-generated quote must produce a new
+        // quote rather than silently reusing the old one.
+        "templateId"
       ]);
       for (const key of Object.keys(raw)) {
         if (!allowed.has(key)) throw new Error("INVALID_QUOTE_CONTENT");
@@ -1312,8 +1316,11 @@ var require_lineItemModel = __commonJS({
       if (!title || title.length > 160) throw new Error("INVALID_QUOTE_CONTENT");
       const presentation = raw.presentation || "itemized_products";
       if (!PRESENTATIONS.includes(presentation)) throw new Error("INVALID_QUOTE_CONTENT");
+      const templateId = raw.templateId == null ? "" : String(raw.templateId);
+      if (templateId && !/^\d{1,20}$/.test(templateId)) throw new Error("INVALID_QUOTE_CONTENT");
       return {
         title,
+        templateId,
         expirationDate: normalizeDate(raw.expirationDate, defaultExpirationDate()),
         presentation,
         includeUncommittedRateSchedule: raw.includeUncommittedRateSchedule === true,
@@ -2100,6 +2107,50 @@ var syncDealLineItems = async (client, dealId, state, settings) => {
 };
 var quoteRecordUrl = (portalId, quoteId) => portalId ? `https://app.hubspot.com/contacts/${portalId}/record/0-14/${quoteId}` : "";
 var REQUIRED_QUOTE_TEMPLATE_TYPE = "customizable_quote_template";
+var QUOTE_TEMPLATE_OBJECT_TYPES = ["quote_template", "quote_templates"];
+var readQuoteTemplatePage = async (client, after) => {
+  let lastError;
+  for (const objectType of QUOTE_TEMPLATE_OBJECT_TYPES) {
+    try {
+      return await client.crm.objects.basicApi.getPage(
+        objectType,
+        100,
+        after,
+        ["hs_name", "hs_type"],
+        void 0,
+        void 0,
+        false
+      );
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError;
+};
+var usableQuoteTemplates = async (client) => {
+  const templates = [];
+  let after;
+  try {
+    do {
+      const page = await readQuoteTemplatePage(client, after);
+      for (const template of page?.results || []) {
+        if (template?.properties?.hs_type !== REQUIRED_QUOTE_TEMPLATE_TYPE) continue;
+        templates.push({
+          id: String(template.id),
+          name: String(template.properties?.hs_name || `Quote template ${template.id}`).slice(0, 160)
+        });
+      }
+      after = page?.paging?.next?.after;
+    } while (after != null && templates.length < 200);
+  } catch (error) {
+    console.warn(
+      "Nylas pricing: could not list quote templates.",
+      safeProviderDiagnostics(error, "list_quote_templates")
+    );
+    return [];
+  }
+  return templates.sort((left, right) => left.name.localeCompare(right.name));
+};
 var assertUsableQuoteTemplate = async (client, templateId) => {
   let template;
   try {
@@ -2125,13 +2176,13 @@ var assertUsableQuoteTemplate = async (client, templateId) => {
 var generateQuote = async (client, dealId, state, parameters, portalId, settings) => {
   const option = selectedOptionForDraft(state);
   assertCurrentSettings(option, settings);
-  const templateId = String(process.env.QUOTE_TEMPLATE_ID || "");
-  if (!/^\d+$/.test(templateId)) throw new Error("QUOTE_CONFIGURATION_REQUIRED");
-  await assertUsableQuoteTemplate(client, templateId);
   const content = normalizeQuoteContent(
     parameters.quoteContent,
     `${state.dealName} \u2013 ${option.name}`
   );
+  const templateId = content.templateId || String(process.env.QUOTE_TEMPLATE_ID || "");
+  if (!/^\d+$/.test(templateId)) throw new Error("QUOTE_CONFIGURATION_REQUIRED");
+  await assertUsableQuoteTemplate(client, templateId);
   const hash = contentHash(option, content);
   if (state.quoteContentHash === hash && state.latestQuoteId) {
     return {
@@ -2280,7 +2331,9 @@ exports.main = async (context) => {
     if (action === "list") {
       return response(200, {
         success: true,
-        ...stateResponse(state)
+        ...stateResponse(state),
+        quoteTemplates: await usableQuoteTemplates(client),
+        defaultQuoteTemplateId: String(process.env.QUOTE_TEMPLATE_ID || "")
       });
     }
     if (action === "preview") {

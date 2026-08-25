@@ -190,10 +190,13 @@ interface ServerlessBody {
   quoteUrl?: string;
   reused?: boolean;
   previewResult?: QuoteResult;
+  quoteTemplates?: { id: string; name: string }[];
+  defaultQuoteTemplateId?: string;
 }
 
 interface QuoteContent {
   title: string;
+  templateId: string;
   expirationDate: string;
   presentation: "itemized_products" | "subscription_summary";
   includeUncommittedRateSchedule: boolean;
@@ -441,10 +444,17 @@ hubspot.extend<"crm.record.tab">(({ context, actions }: CrmExtensionProps) => (
 const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
   const dealId = String(context.crm.objectId);
   const [latestQuoteUrl, setLatestQuoteUrl] = useState<string | null>(null);
-  // The card exposes no controls for these, so they are constants rather than state whose
-  // setter is never called.
+  const [quoteTemplates, setQuoteTemplates] = useState<
+    { id: string; name: string }[]
+  >([]);
+  const [templateId, setTemplateId] = useState("");
+  // The card exposes no controls for the rest of these, so they are constants rather than state
+  // whose setter is never called.
   const quoteContent: QuoteContent = {
     title: "Nylas Enterprise Quote",
+    // Empty means "use the QUOTE_TEMPLATE_ID secret", which is what happens when the portal
+    // exposes no customizable templates to pick from.
+    templateId,
     expirationDate: dateAfterDays(30),
     presentation: "itemized_products",
     includeUncommittedRateSchedule: true,
@@ -464,6 +474,18 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
   const updateFromBody = (body: ServerlessBody) => {
     if (body.latestQuoteUrl !== undefined)
       setLatestQuoteUrl(body.latestQuoteUrl || null);
+    if (body.quoteTemplates) {
+      setQuoteTemplates(body.quoteTemplates);
+      // Preselect the configured default when it is one of the usable templates, so the picker
+      // shows what would happen anyway rather than silently differing from it.
+      const preferred = body.defaultQuoteTemplateId || "";
+      setTemplateId((current) => {
+        if (current) return current;
+        return body.quoteTemplates?.some(({ id }) => id === preferred)
+          ? preferred
+          : body.quoteTemplates?.[0]?.id || "";
+      });
+    }
   };
 
   const runAction = async (parameters: Record<string, unknown>) => {
@@ -621,6 +643,9 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
       <OptionEditor
         option={editing}
         saving={saving}
+        quoteTemplates={quoteTemplates}
+        templateId={templateId}
+        onTemplateChange={setTemplateId}
         onInputChange={updateInput}
         onPreview={previewQuote}
         onLock={lockAndCreateQuote}
@@ -632,12 +657,18 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
 const OptionEditor = ({
   option,
   saving,
+  quoteTemplates,
+  templateId,
+  onTemplateChange,
   onInputChange,
   onPreview,
   onLock,
 }: {
   option: QuoteOption;
   saving: boolean;
+  quoteTemplates: { id: string; name: string }[];
+  templateId: string;
+  onTemplateChange: (value: string) => void;
   onInputChange: <K extends keyof QuoteInput>(
     field: K,
     value: QuoteInput[K],
@@ -1001,6 +1032,19 @@ const OptionEditor = ({
               discount.
             </Text>
             <AutoGrid columnWidth={165} flexible gap="sm">
+              {quoteTemplates.length > 0 && (
+                <Select
+                  label="Quote Template"
+                  name="quote_template"
+                  value={templateId}
+                  options={quoteTemplates.map(({ id, name }) => ({
+                    value: id,
+                    label: name,
+                  }))}
+                  tooltip="Only customizable quote templates are listed. HubSpot rejects CPQ templates when the Quote is finalized."
+                  onChange={(value) => onTemplateChange(String(value))}
+                />
+              )}
               <Select
                 label="Support"
                 name="support_level"

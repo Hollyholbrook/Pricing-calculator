@@ -152,6 +152,10 @@ const normalizeQuoteContent = (raw = {}, fallbackTitle = 'Nylas Enterprise Quote
     'includeUncommittedRateSchedule',
     'includeRenewalTerms',
     'includeSpecialTerms',
+    // Part of the content, not a side channel: the template changes what the customer sees, so
+    // it belongs in the hash. Switching template on an already-generated quote must produce a new
+    // quote rather than silently reusing the old one.
+    'templateId',
   ]);
   for (const key of Object.keys(raw)) {
     if (!allowed.has(key)) throw new Error('INVALID_QUOTE_CONTENT');
@@ -161,8 +165,12 @@ const normalizeQuoteContent = (raw = {}, fallbackTitle = 'Nylas Enterprise Quote
   const presentation = raw.presentation || 'itemized_products';
   if (!PRESENTATIONS.includes(presentation)) throw new Error('INVALID_QUOTE_CONTENT');
 
+  const templateId = raw.templateId == null ? '' : String(raw.templateId);
+  if (templateId && !/^\d{1,20}$/.test(templateId)) throw new Error('INVALID_QUOTE_CONTENT');
+
   return {
     title,
+    templateId,
     expirationDate: normalizeDate(raw.expirationDate, defaultExpirationDate()),
     presentation,
     includeUncommittedRateSchedule: raw.includeUncommittedRateSchedule === true,

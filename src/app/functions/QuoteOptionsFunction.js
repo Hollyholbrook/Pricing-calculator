@@ -669,6 +669,59 @@ const quoteRecordUrl = (portalId, quoteId) =>
 // than blocking a quote that might have worked.
 const REQUIRED_QUOTE_TEMPLATE_TYPE = 'customizable_quote_template';
 
+// HubSpot's object type name for quote templates is not consistent across its APIs, so both
+// spellings are tried rather than guessing one and failing the whole listing.
+const QUOTE_TEMPLATE_OBJECT_TYPES = ['quote_template', 'quote_templates'];
+
+const readQuoteTemplatePage = async (client, after) => {
+  let lastError;
+  for (const objectType of QUOTE_TEMPLATE_OBJECT_TYPES) {
+    try {
+      return await client.crm.objects.basicApi.getPage(
+        objectType,
+        100,
+        after,
+        ['hs_name', 'hs_type'],
+        undefined,
+        undefined,
+        false,
+      );
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError;
+};
+
+// Only customizable templates are offered. A CPQ template is accepted by every call up to the
+// final DRAFT transition and rejected there, so listing one would just move the failure later.
+const usableQuoteTemplates = async (client) => {
+  const templates = [];
+  let after;
+  try {
+    do {
+      const page = await readQuoteTemplatePage(client, after);
+      for (const template of page?.results || []) {
+        if (template?.properties?.hs_type !== REQUIRED_QUOTE_TEMPLATE_TYPE) continue;
+        templates.push({
+          id: String(template.id),
+          name: String(template.properties?.hs_name || `Quote template ${template.id}`).slice(0, 160),
+        });
+      }
+      after = page?.paging?.next?.after;
+    } while (after != null && templates.length < 200);
+  } catch (error) {
+    // The picker is a convenience. If templates cannot be listed the card falls back to the
+    // configured secret rather than blocking the whole card from loading.
+    console.warn(
+      'Nylas pricing: could not list quote templates.',
+      safeProviderDiagnostics(error, 'list_quote_templates'),
+    );
+    return [];
+  }
+  return templates.sort((left, right) => left.name.localeCompare(right.name));
+};
+
 const assertUsableQuoteTemplate = async (client, templateId) => {
   let template;
   try {
@@ -696,14 +749,14 @@ const assertUsableQuoteTemplate = async (client, templateId) => {
 const generateQuote = async (client, dealId, state, parameters, portalId, settings) => {
   const option = selectedOptionForDraft(state);
   assertCurrentSettings(option, settings);
-  const templateId = String(process.env.QUOTE_TEMPLATE_ID || '');
-  if (!/^\d+$/.test(templateId)) throw new Error('QUOTE_CONFIGURATION_REQUIRED');
-  await assertUsableQuoteTemplate(client, templateId);
-
   const content = normalizeQuoteContent(
     parameters.quoteContent,
     `${state.dealName} – ${option.name}`,
   );
+  // The rep's choice wins; QUOTE_TEMPLATE_ID remains the default for anyone who does not pick.
+  const templateId = content.templateId || String(process.env.QUOTE_TEMPLATE_ID || '');
+  if (!/^\d+$/.test(templateId)) throw new Error('QUOTE_CONFIGURATION_REQUIRED');
+  await assertUsableQuoteTemplate(client, templateId);
   const hash = contentHash(option, content);
   if (state.quoteContentHash === hash && state.latestQuoteId) {
     return {
@@ -872,6 +925,8 @@ exports.main = async (context) => {
       return response(200, {
         success: true,
         ...stateResponse(state),
+        quoteTemplates: await usableQuoteTemplates(client),
+        defaultQuoteTemplateId: String(process.env.QUOTE_TEMPLATE_ID || ''),
       });
     }
     if (action === 'preview') {
