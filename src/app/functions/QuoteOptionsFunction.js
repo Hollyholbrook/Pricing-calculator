@@ -214,9 +214,8 @@ const calculateAndSaveOption = async (client, dealId, state, parameters, setting
 
 const deleteOption = async (client, dealId, state, parameters) => {
   assertRevision(state.document, parameters.expectedRevision);
-  if (!parameters.optionId || parameters.optionId === state.selectedOptionId) {
-    throw new Error('INVALID_OPTION');
-  }
+  if (!parameters.optionId) throw new Error('INVALID_OPTION');
+  const deletingSelected = parameters.optionId === state.selectedOptionId;
   const options = state.document.options.filter(({ id }) => id !== parameters.optionId);
   if (options.length === state.document.options.length) throw new Error('OPTION_NOT_FOUND');
   const document = {
@@ -224,8 +223,41 @@ const deleteOption = async (client, dealId, state, parameters) => {
     revision: state.document.revision + 1,
     options,
   };
+  if (deletingSelected) {
+    const existingLineItemIds = await associatedIds(
+      client,
+      'deals',
+      dealId,
+      'line_items',
+      1_000,
+    );
+    await inBatches(existingLineItemIds, (id) => client.crm.lineItems.basicApi.archive(id));
+    await client.crm.deals.basicApi.update(dealId, {
+      properties: {
+        pricing_selected_option_id: '',
+        pricing_selected_option_name: '',
+        pricing_quote_inputs_payload: '',
+        pricing_calculation_payload: '',
+        pricing_calculation_status: '',
+        pricing_arr: '',
+        pricing_tcv: '',
+        pricing_list_price_tcv: '',
+        pricing_approval_tier_required: '',
+        pricing_approval_status: 'draft',
+        pricing_approval_reasons: '',
+        pricing_line_item_sync_status: 'not_started',
+        pricing_line_items_synced_at: '',
+      },
+    });
+  }
   await writeDocument(client, dealId, document);
-  return { document };
+  return {
+    document,
+    selectedOptionId: deletingSelected ? null : state.selectedOptionId,
+    selectedOptionName: deletingSelected ? null : state.selectedOptionName,
+    approvalStatus: deletingSelected ? 'draft' : state.approvalStatus,
+    lineItemSyncStatus: deletingSelected ? 'not_started' : state.lineItemSyncStatus,
+  };
 };
 
 const toHubSpotDate = (date) => (date ? String(Date.parse(`${date}T00:00:00.000Z`)) : '');
@@ -656,9 +688,10 @@ exports.main = async (context) => {
       return response(200, {
         success: true,
         optionSet: deleted.document,
-        selectedOptionId: state.selectedOptionId,
-        selectedOptionName: state.selectedOptionName,
-        approvalStatus: state.approvalStatus,
+        selectedOptionId: deleted.selectedOptionId,
+        selectedOptionName: deleted.selectedOptionName,
+        approvalStatus: deleted.approvalStatus,
+        lineItemSyncStatus: deleted.lineItemSyncStatus,
       });
     }
     if (action === 'select') {
@@ -717,4 +750,4 @@ exports.main = async (context) => {
   }
 };
 
-exports._test = Object.freeze({ associatedIds, syncDealLineItems });
+exports._test = Object.freeze({ associatedIds, deleteOption, syncDealLineItems });

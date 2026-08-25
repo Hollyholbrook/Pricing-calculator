@@ -278,10 +278,13 @@ const calculateDates = (input) => {
       nonRenewalNoticeDate: null,
     };
   }
-  const renewalDate = addMonthsUtc(input.startDate, input.termMonths);
-  const endDate = new Date(renewalDate.getTime());
+  const contractBoundary = addMonthsUtc(input.startDate, input.termMonths);
+  const endDate = new Date(contractBoundary.getTime());
   endDate.setUTCDate(endDate.getUTCDate() - 1);
-  const noticeDate = new Date(renewalDate.getTime());
+  const renewalDate = new Date(
+    Date.UTC(endDate.getUTCFullYear(), endDate.getUTCMonth() + 1, 1),
+  );
+  const noticeDate = new Date(endDate.getTime());
   noticeDate.setUTCDate(noticeDate.getUTCDate() - input.nonRenewalNoticeDays);
   return {
     contractStartDate: input.startDate,
@@ -344,6 +347,9 @@ const buildApproval = (
       `Redlining was requested below the ${currencyLabel(activeRules.redliningMinimumArr)} ARR threshold.`,
     );
     blockingReasons.push('REDLINING_BELOW_THRESHOLD');
+  }
+  if (input.redliningRequested) {
+    reasons.push('Customer-requested redlines require Legal approval.');
   }
   if (hasOauthDependencyFailure) {
     blockingReasons.push('OAUTH_REQUIRES_PROFESSIONAL_SERVICES');

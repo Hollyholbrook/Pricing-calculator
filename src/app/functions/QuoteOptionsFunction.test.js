@@ -5,6 +5,46 @@ const { calculateQuote } = require('./calculator');
 const { defaultSettings } = require('./appSettings');
 const { _test } = require('./QuoteOptionsFunction');
 
+test('deleting the customer-selected option clears its Deal line items and selection', async () => {
+  const archived = [];
+  const updates = [];
+  const client = {
+    crm: {
+      associations: {
+        v4: {
+          basicApi: {
+            getPage: async () => ({ results: [{ toObjectId: 'line-1' }] }),
+          },
+        },
+      },
+      lineItems: { basicApi: { archive: async (id) => archived.push(id) } },
+      deals: {
+        basicApi: { update: async (_id, payload) => updates.push(payload) },
+      },
+    },
+  };
+  const state = {
+    document: {
+      schemaVersion: '1.0',
+      revision: 2,
+      options: [{ id: 'selected' }],
+    },
+    selectedOptionId: 'selected',
+    selectedOptionName: 'Selected option',
+    approvalStatus: 'draft',
+    lineItemSyncStatus: 'synced',
+  };
+
+  const result = await _test.deleteOption(client, 'deal-1', state, {
+    expectedRevision: 2,
+    optionId: 'selected',
+  });
+  assert.deepEqual(archived, ['line-1']);
+  assert.equal(result.selectedOptionId, null);
+  assert.equal(result.document.options.length, 0);
+  assert.equal(updates[0].properties.pricing_selected_option_id, '');
+});
+
 test('locking an option archives every existing Deal line item before creating replacements', async () => {
   const settings = defaultSettings();
   const input = {

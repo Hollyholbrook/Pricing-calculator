@@ -448,10 +448,13 @@ var require_calculator = __commonJS({
           nonRenewalNoticeDate: null
         };
       }
-      const renewalDate = addMonthsUtc(input.startDate, input.termMonths);
-      const endDate = new Date(renewalDate.getTime());
+      const contractBoundary = addMonthsUtc(input.startDate, input.termMonths);
+      const endDate = new Date(contractBoundary.getTime());
       endDate.setUTCDate(endDate.getUTCDate() - 1);
-      const noticeDate = new Date(renewalDate.getTime());
+      const renewalDate = new Date(
+        Date.UTC(endDate.getUTCFullYear(), endDate.getUTCMonth() + 1, 1)
+      );
+      const noticeDate = new Date(endDate.getTime());
       noticeDate.setUTCDate(noticeDate.getUTCDate() - input.nonRenewalNoticeDays);
       return {
         contractStartDate: input.startDate,
@@ -499,6 +502,9 @@ var require_calculator = __commonJS({
           `Redlining was requested below the ${currencyLabel(activeRules.redliningMinimumArr)} ARR threshold.`
         );
         blockingReasons.push("REDLINING_BELOW_THRESHOLD");
+      }
+      if (input.redliningRequested) {
+        reasons.push("Customer-requested redlines require Legal approval.");
       }
       if (hasOauthDependencyFailure) {
         blockingReasons.push("OAUTH_REQUIRES_PROFESSIONAL_SERVICES");
@@ -1080,6 +1086,7 @@ var require_appSettings = __commonJS({
       if (settings.renewalPipelineIds.includes(pipelineId)) return "renewal";
       if (settings.newBusinessPipelineIds.includes(pipelineId)) return "new_business";
       const normalized = String(dealType || "").toLowerCase().replace(/[^a-z]/g, "");
+      if (!normalized) return "new_business";
       if (normalized === "newbusiness") return "new_business";
       if (normalized === "renewal") return "renewal";
       return "unsupported";
@@ -1658,9 +1665,8 @@ var calculateAndSaveOption = async (client, dealId, state, parameters, settings)
 };
 var deleteOption = async (client, dealId, state, parameters) => {
   assertRevision(state.document, parameters.expectedRevision);
-  if (!parameters.optionId || parameters.optionId === state.selectedOptionId) {
-    throw new Error("INVALID_OPTION");
-  }
+  if (!parameters.optionId) throw new Error("INVALID_OPTION");
+  const deletingSelected = parameters.optionId === state.selectedOptionId;
   const options = state.document.options.filter(({ id }) => id !== parameters.optionId);
   if (options.length === state.document.options.length) throw new Error("OPTION_NOT_FOUND");
   const document = {
@@ -1668,8 +1674,41 @@ var deleteOption = async (client, dealId, state, parameters) => {
     revision: state.document.revision + 1,
     options
   };
+  if (deletingSelected) {
+    const existingLineItemIds = await associatedIds(
+      client,
+      "deals",
+      dealId,
+      "line_items",
+      1e3
+    );
+    await inBatches(existingLineItemIds, (id) => client.crm.lineItems.basicApi.archive(id));
+    await client.crm.deals.basicApi.update(dealId, {
+      properties: {
+        pricing_selected_option_id: "",
+        pricing_selected_option_name: "",
+        pricing_quote_inputs_payload: "",
+        pricing_calculation_payload: "",
+        pricing_calculation_status: "",
+        pricing_arr: "",
+        pricing_tcv: "",
+        pricing_list_price_tcv: "",
+        pricing_approval_tier_required: "",
+        pricing_approval_status: "draft",
+        pricing_approval_reasons: "",
+        pricing_line_item_sync_status: "not_started",
+        pricing_line_items_synced_at: ""
+      }
+    });
+  }
   await writeDocument(client, dealId, document);
-  return { document };
+  return {
+    document,
+    selectedOptionId: deletingSelected ? null : state.selectedOptionId,
+    selectedOptionName: deletingSelected ? null : state.selectedOptionName,
+    approvalStatus: deletingSelected ? "draft" : state.approvalStatus,
+    lineItemSyncStatus: deletingSelected ? "not_started" : state.lineItemSyncStatus
+  };
 };
 var toHubSpotDate = (date) => date ? String(Date.parse(`${date}T00:00:00.000Z`)) : "";
 var onboardingHubSpotValue = Object.freeze({
@@ -2046,9 +2085,10 @@ exports.main = async (context) => {
       return response(200, {
         success: true,
         optionSet: deleted.document,
-        selectedOptionId: state.selectedOptionId,
-        selectedOptionName: state.selectedOptionName,
-        approvalStatus: state.approvalStatus
+        selectedOptionId: deleted.selectedOptionId,
+        selectedOptionName: deleted.selectedOptionName,
+        approvalStatus: deleted.approvalStatus,
+        lineItemSyncStatus: deleted.lineItemSyncStatus
       });
     }
     if (action === "select") {
@@ -2106,4 +2146,4 @@ exports.main = async (context) => {
     return safeError("WRITE_FAILED", 500);
   }
 };
-exports._test = Object.freeze({ associatedIds, syncDealLineItems });
+exports._test = Object.freeze({ associatedIds, deleteOption, syncDealLineItems });
