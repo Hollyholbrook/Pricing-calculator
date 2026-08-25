@@ -64,8 +64,8 @@ test('Deal line items reconcile to the approved calculation', () => {
   );
   assert.equal(recurringItems.length, 1);
   assert.equal(recurringItems[0].key, 'subscription:nylas_enterprise');
-  assert.equal(recurringItems[0].properties.hs_product_id, '46037350773');
-  assert.equal(recurringItems[0].properties.name, 'Nylas Enterprise');
+  assert.equal(recurringItems[0].properties.hs_product_id, '47269087321');
+  assert.equal(recurringItems[0].properties.name, 'Enterprise OneSub');
   assert.equal(recurringItems[0].properties.quantity, '1');
   assert.equal(
     recurringItems[0].properties.nylas_pricing_component,
