@@ -41,8 +41,6 @@ const SAFE_ERRORS = Object.freeze({
   PAYLOAD_TOO_LARGE: 'The saved quote options exceed the allowed storage size.',
   PRODUCT_MAPPING_REQUIRED: 'A selected item is not mapped to the HubSpot product library.',
   QUOTE_CONFIGURATION_REQUIRED: 'The New Customer quote template has not been configured for the app.',
-  QUOTE_TEMPLATE_TYPE_INVALID:
-    'The configured quote template is a CPQ template. HubSpot requires a customizable quote template. Update the QUOTE_TEMPLATE_ID secret to a customizable template.',
   QUOTE_CREATE_FAILED: 'HubSpot could not create the Quote. No partial Quote was retained.',
   SETTINGS_CONFIGURATION_REQUIRED: 'Pricing settings have not been initialized yet.',
   SETTINGS_CONFLICT: 'Another administrator changed the pricing settings. Reload and try again.',
@@ -734,27 +732,29 @@ const usableQuoteTemplates = async (client) => {
   return templates.sort((left, right) => left.name.localeCompare(right.name));
 };
 
-const assertUsableQuoteTemplate = async (client, templateId) => {
-  let template;
+// Observational only. HubSpot rejected one template for having hs_type 'cpq_template' when it
+// wanted 'customizable_quote_template', but that single message is not enough to know the full
+// rule, and blocking on it turned a diagnostic into a gate that refused every template in the
+// portal. HubSpot decides; this just records what the template actually is so the failure -- if
+// there is one -- names the type instead of leaving it to be guessed.
+const describeQuoteTemplate = async (client, templateId) => {
   try {
-    template = await client.crm.objects.basicApi.getById('quote_template', templateId, [
+    const template = await client.crm.objects.basicApi.getById('quote_template', templateId, [
       'hs_name',
       'hs_type',
     ]);
+    const type = template?.properties?.hs_type || 'unknown';
+    console.log(
+      `Nylas pricing: quote template ${templateId} ("${template?.properties?.hs_name || ''}") ` +
+        `has hs_type "${type}" (HubSpot has previously required "${REQUIRED_QUOTE_TEMPLATE_TYPE}").`,
+    );
+    return type;
   } catch (error) {
     console.warn(
-      'Nylas pricing: could not read the quote template to verify its type.',
+      'Nylas pricing: could not read the quote template.',
       safeProviderDiagnostics(error, 'read_quote_template'),
     );
-    return;
-  }
-  const type = template?.properties?.hs_type;
-  if (type && type !== REQUIRED_QUOTE_TEMPLATE_TYPE) {
-    console.error(
-      `Nylas pricing: quote template ${templateId} ("${template?.properties?.hs_name || ''}") ` +
-        `has hs_type "${type}"; HubSpot requires "${REQUIRED_QUOTE_TEMPLATE_TYPE}".`,
-    );
-    throw new Error('QUOTE_TEMPLATE_TYPE_INVALID');
+    return 'unknown';
   }
 };
 
@@ -768,7 +768,7 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
   // The rep's choice wins; QUOTE_TEMPLATE_ID remains the default for anyone who does not pick.
   const templateId = content.templateId || String(process.env.QUOTE_TEMPLATE_ID || '');
   if (!/^\d+$/.test(templateId)) throw new Error('QUOTE_CONFIGURATION_REQUIRED');
-  await assertUsableQuoteTemplate(client, templateId);
+  const templateType = await describeQuoteTemplate(client, templateId);
   const hash = contentHash(option, content);
   if (state.quoteContentHash === hash && state.latestQuoteId) {
     return {
@@ -869,7 +869,13 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
     // normalizeQuoteContent and buildQuoteLineItems both run before the try, so
     // INVALID_QUOTE_CONTENT and PRODUCT_MAPPING_REQUIRED cannot reach this catch. Everything that
     // does reach it is a HubSpot failure, and its detail is the only diagnostic that exists.
-    const diagnostics = safeProviderDiagnostics(error, 'generate_quote');
+    const diagnostics = {
+      ...safeProviderDiagnostics(error, 'generate_quote'),
+      // Which template was used, and what HubSpot says it is. Without this the rep sees a
+      // template complaint with no way to tell which template caused it.
+      quoteTemplateId: templateId,
+      quoteTemplateType: templateType,
+    };
     console.error('Nylas pricing quote creation failed.', diagnostics, error?.stack || error);
     if (error?.message === 'TOO_MANY_LINE_ITEMS') throw new Error('TOO_MANY_LINE_ITEMS');
     const failure = new Error('QUOTE_CREATE_FAILED');

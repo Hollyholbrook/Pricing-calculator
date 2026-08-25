@@ -176,6 +176,8 @@ interface ServerlessBody {
     providerCategory?: string;
     errorType?: string;
     providerMessage?: string;
+    quoteTemplateId?: string;
+    quoteTemplateType?: string;
   };
   optionSet?: OptionDocument;
   option?: QuoteOption;
@@ -508,6 +510,9 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
           ? `HTTP ${d.providerStatus}`
           : undefined,
         d?.providerCategory !== "unknown" ? d?.providerCategory : undefined,
+        d?.quoteTemplateType
+          ? `template ${d.quoteTemplateId} is ${d.quoteTemplateType}`
+          : undefined,
         d?.providerMessage,
       ].filter(Boolean);
       const detail = diagnostic.length ? ` (${diagnostic.join(" · ")})` : "";
