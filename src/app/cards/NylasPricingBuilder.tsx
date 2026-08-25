@@ -963,12 +963,20 @@ const OptionEditor = ({
     <Table density="compact" flush>
       <TableHead>
         <TableRow>
-          <TableHeader>Product</TableHeader>
-          <TableHeader>Unit</TableHeader>
-          <TableHeader align="right">Volume / mo.</TableHeader>
-          <TableHeader align="right">List Rate</TableHeader>
-          <TableHeader align="right">Discount</TableHeader>
-          <TableHeader align="right">Proposed Rate</TableHeader>
+          <TableHeader width={220}>Product</TableHeader>
+          <TableHeader width={180}>Unit</TableHeader>
+          <TableHeader width={150} align="right">
+            Volume / mo.
+          </TableHeader>
+          <TableHeader width={220} align="right">
+            List Rate
+          </TableHeader>
+          <TableHeader width={130} align="right">
+            Discount
+          </TableHeader>
+          <TableHeader width={300} align="right">
+            Proposed Rate
+          </TableHeader>
         </TableRow>
       </TableHead>
       <TableBody>
@@ -980,14 +988,14 @@ const OptionEditor = ({
           return (
             <Fragment key={product.key}>
               <TableRow>
-                <TableCell>
+                <TableCell width={220}>
                   <Stack distance="flush">
                     <Text>{product.label}</Text>
                     <Text variant="microcopy">{product.description}</Text>
                   </Stack>
                 </TableCell>
-                <TableCell>{product.inputUnit}</TableCell>
-                <TableCell>
+                <TableCell width={180}>{product.inputUnit}</TableCell>
+                <TableCell width={150}>
                   <NumberInput
                     label=""
                     name={product.key}
@@ -1003,7 +1011,7 @@ const OptionEditor = ({
                     }
                   />
                 </TableCell>
-                <TableCell align="right">
+                <TableCell width={220} align="right">
                   {line?.productKey === "agent_email_thousands" ? (
                     <Stack distance="flush">
                       {line.baseBandRates.map((band) => (
@@ -1023,7 +1031,7 @@ const OptionEditor = ({
                     rateCurrency(listRate)
                   )}
                 </TableCell>
-                <TableCell>
+                <TableCell width={130}>
                   <NumberInput
                     label=""
                     name={`${product.key}_discount`}
@@ -1044,7 +1052,9 @@ const OptionEditor = ({
                     }
                   />
                 </TableCell>
-                <TableCell align="right">{proposedRatePreview(line)}</TableCell>
+                <TableCell width={300} align="right">
+                  {proposedRatePreview(line)}
+                </TableCell>
               </TableRow>
             </Fragment>
           );
@@ -1449,29 +1459,37 @@ const _ResultSummary = ({
       <Table density="condensed">
         <TableHead>
           <TableRow>
-            <TableHeader>Product</TableHeader>
-            <TableHeader>Unit</TableHeader>
-            <TableHeader align="right">Volume / mo.</TableHeader>
-            <TableHeader align="right">List Rate</TableHeader>
-            <TableHeader align="right">Discount</TableHeader>
-            <TableHeader align="right">Proposed Rate</TableHeader>
+            <TableHeader width={220}>Product</TableHeader>
+            <TableHeader width={180}>Unit</TableHeader>
+            <TableHeader width={150} align="right">
+              Volume / mo.
+            </TableHeader>
+            <TableHeader width={220} align="right">
+              List Rate
+            </TableHeader>
+            <TableHeader width={130} align="right">
+              Discount
+            </TableHeader>
+            <TableHeader width={300} align="right">
+              Proposed Rate
+            </TableHeader>
           </TableRow>
         </TableHead>
         <TableBody>
           {result.lines.map((line) => (
             <TableRow key={line.productKey}>
-              <TableCell>{line.productName}</TableCell>
-              <TableCell>{line.unitOfMeasure}</TableCell>
-              <TableCell align="right">
+              <TableCell width={220}>{line.productName}</TableCell>
+              <TableCell width={180}>{line.unitOfMeasure}</TableCell>
+              <TableCell width={150} align="right">
                 {line.volume.toLocaleString()}
               </TableCell>
-              <TableCell align="right">
+              <TableCell width={220} align="right">
                 {rateCurrency(line.displayListUnitRate)}
               </TableCell>
-              <TableCell align="right">
+              <TableCell width={130} align="right">
                 {percent(line.discretionaryDiscount)}
               </TableCell>
-              <TableCell align="right">
+              <TableCell width={300} align="right">
                 {rateCurrency(line.displayProposedUnitRate)}
               </TableCell>
             </TableRow>
