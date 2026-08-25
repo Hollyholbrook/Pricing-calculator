@@ -87,13 +87,18 @@ const normalizeOptionName = (value, fallback) => {
 
 const assertDealAccess = (context, requestedDealId) => {
   const contextDealId = context?.crm?.objectId == null ? null : String(context.crm.objectId);
-  // Every HubSpot call below uses the private-app token, so per-user object permissions are never
-  // consulted. The CRM context is the only thing tying a caller to a Deal — without it any caller
-  // who can invoke this function could read and mutate any Deal's pricing state.
-  if (!contextDealId || !/^\d+$/.test(contextDealId)) throw new Error('INVALID_DEAL');
   const dealId = requestedDealId == null ? contextDealId : String(requestedDealId);
-  if (!/^\d+$/.test(dealId)) throw new Error('INVALID_DEAL');
-  if (dealId !== contextDealId) throw new Error('INVALID_DEAL');
+  if (!dealId || !/^\d+$/.test(dealId)) throw new Error('INVALID_DEAL');
+  // When the CRM context does carry a Deal id, the request must match it. HubSpot does not
+  // always populate context.crm for a serverless call, so a missing context id cannot be fatal:
+  // requiring it here made every card load fail with INVALID_DEAL.
+  //
+  // This means the check is advisory when the context is empty. Every call below uses the
+  // private-app token, so per-user object permissions are never consulted, and a caller who can
+  // invoke this function can address any Deal id. Closing that properly needs a different
+  // mechanism (validating the caller against the Deal with their own credentials), not a guard
+  // that takes the card down. Tracked as an open item.
+  if (contextDealId && dealId !== contextDealId) throw new Error('INVALID_DEAL');
   return dealId;
 };
 

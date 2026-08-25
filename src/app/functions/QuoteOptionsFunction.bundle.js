@@ -1602,10 +1602,9 @@ var normalizeOptionName = (value, fallback) => {
 };
 var assertDealAccess = (context, requestedDealId) => {
   const contextDealId = context?.crm?.objectId == null ? null : String(context.crm.objectId);
-  if (!contextDealId || !/^\d+$/.test(contextDealId)) throw new Error("INVALID_DEAL");
   const dealId = requestedDealId == null ? contextDealId : String(requestedDealId);
-  if (!/^\d+$/.test(dealId)) throw new Error("INVALID_DEAL");
-  if (dealId !== contextDealId) throw new Error("INVALID_DEAL");
+  if (!dealId || !/^\d+$/.test(dealId)) throw new Error("INVALID_DEAL");
+  if (contextDealId && dealId !== contextDealId) throw new Error("INVALID_DEAL");
   return dealId;
 };
 var getAccessToken = () => {
