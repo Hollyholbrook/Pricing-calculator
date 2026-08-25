@@ -635,7 +635,7 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
     }
   };
 
-  const chooseOption = async (option: QuoteOption) => {
+  const _chooseOption = async (option: QuoteOption) => {
     if (!option.id) return;
     setSaving(true);
     setError(null);
@@ -803,7 +803,6 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
           onCalculate={calculateAndSave}
           onPreview={previewQuote}
           onBack={() => setView("list")}
-          onChoose={chooseOption}
         />
       )}
     </Stack>
@@ -818,7 +817,7 @@ const _OptionList = ({
   onEdit,
   onDuplicate,
   onDelete,
-  onChoose,
+  onChoose: _onChoose,
 }: {
   optionSet: OptionDocument;
   selectedOptionId: string | null;
@@ -860,7 +859,6 @@ const _OptionList = ({
       <TableBody>
         {optionSet.options.map((option) => {
           const isSelected = option.id === selectedOptionId;
-          const isBlocked = (option.result?.blockingReasons.length || 0) > 0;
           return (
             <TableRow key={option.id || option.name}>
               <TableCell>
@@ -899,16 +897,6 @@ const _OptionList = ({
                   >
                     Duplicate
                   </Button>
-                  <Button
-                    size="xs"
-                    variant={isSelected ? "secondary" : "primary"}
-                    onClick={() => onChoose(option)}
-                    disabled={!option.result || isBlocked || saving}
-                  >
-                    {isSelected
-                      ? "Customer Choice"
-                      : "Select as Customer Choice"}
-                  </Button>
                   {!isSelected && (
                     <Button
                       size="xs"
@@ -945,7 +933,6 @@ const OptionEditor = ({
   onCalculate,
   onPreview,
   onBack,
-  onChoose,
 }: {
   option: QuoteOption;
   saving: boolean;
@@ -957,33 +944,22 @@ const OptionEditor = ({
   onCalculate: () => void;
   onPreview: (input: QuoteInput) => Promise<QuoteResult>;
   onBack: () => void;
-  onChoose: (option: QuoteOption) => void;
 }) => {
   const [step, setStep] = useState(0);
   const [previewResult, setPreviewResult] = useState<QuoteResult | undefined>(
     option.result,
   );
-  const [previewLoading, setPreviewLoading] = useState(false);
   useEffect(() => {
     let cancelled = false;
-    const loadingTimeout = setTimeout(() => {
-      if (!cancelled) setPreviewLoading(true);
-    }, 0);
     const timeout = setTimeout(() => {
       void onPreview(option.input)
         .then((result) => {
           if (!cancelled) setPreviewResult(result);
         })
-        .catch(() => {
-          if (!cancelled) setPreviewResult(undefined);
-        })
-        .finally(() => {
-          if (!cancelled) setPreviewLoading(false);
-        });
+        .catch(() => undefined);
     }, 350);
     return () => {
       cancelled = true;
-      clearTimeout(loadingTimeout);
       clearTimeout(timeout);
     };
   }, [onPreview, option.input]);
@@ -1010,9 +986,6 @@ const OptionEditor = ({
     proposedAmount: number | undefined,
     unit: string,
   ) => {
-    if (previewLoading) {
-      return <Text variant="microcopy">Updating price…</Text>;
-    }
     if (listAmount == null || proposedAmount == null) {
       return (
         <Text variant="microcopy">
@@ -1033,9 +1006,6 @@ const OptionEditor = ({
     line: QuoteLine | undefined,
     discount: number,
   ) => {
-    if (previewLoading) {
-      return <Text variant="microcopy">Updating price…</Text>;
-    }
     if (!line) {
       return <Text variant="microcopy">Loading workbook base rate…</Text>;
     }
@@ -1504,22 +1474,10 @@ const OptionEditor = ({
             Save &amp; continue
           </Button>
         )}
-        {step === editorSteps.length - 1 &&
-          option.id &&
-          option.result &&
-          option.result.blockingReasons.length === 0 && (
-            <Button onClick={() => onChoose(option)} disabled={saving}>
-              Select as Customer Choice
-            </Button>
-          )}
       </Flex>
 
       {previewResult && (
-        <ResultSummary
-          result={previewResult}
-          title="Live Pricing Summary"
-          updating={previewLoading}
-        />
+        <ResultSummary result={previewResult} title="Live Pricing Summary" />
       )}
     </Stack>
   );
@@ -1784,11 +1742,11 @@ const ResultSummary = ({
 // eslint-disable-next-line unused-imports/no-unused-vars
 const LegacyComparison = ({
   options,
-  selectedOptionId,
+  selectedOptionId: _selectedOptionId,
   saving,
   onBack,
   onEdit,
-  onChoose,
+  onChoose: _onChoose,
 }: {
   options: QuoteOption[];
   selectedOptionId: string | null;
@@ -1892,20 +1850,6 @@ const LegacyComparison = ({
                     disabled={saving}
                   >
                     Edit
-                  </Button>
-                  <Button
-                    size="xs"
-                    variant={
-                      option.id === selectedOptionId ? "secondary" : "primary"
-                    }
-                    onClick={() => onChoose(option)}
-                    disabled={
-                      saving || (option.result?.blockingReasons.length || 0) > 0
-                    }
-                  >
-                    {option.id === selectedOptionId
-                      ? "Customer Choice"
-                      : "Select This Option"}
                   </Button>
                 </Stack>
               </TableCell>
