@@ -681,6 +681,26 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
           hs_title: content.title,
           hs_expiration_date: content.expirationDate,
         },
+        associations: [
+          {
+            to: { id: dealId },
+            types: [
+              {
+                associationCategory: 'HUBSPOT_DEFINED',
+                associationTypeId: 64,
+              },
+            ],
+          },
+          {
+            to: { id: templateId },
+            types: [
+              {
+                associationCategory: 'HUBSPOT_DEFINED',
+                associationTypeId: 286,
+              },
+            ],
+          },
+        ],
       },
     });
     const quoteBody = await quoteResponse.json().catch(() => ({}));
@@ -691,21 +711,6 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
       throw error;
     }
     quote = quoteBody;
-
-    await client.crm.associations.v4.basicApi.createDefault(
-      'quotes',
-      String(quote.id),
-      'deals',
-      dealId,
-    );
-    await client.crm.associations.v4.basicApi
-      .createDefault('quotes', String(quote.id), 'quote_template', templateId)
-      .catch((error) => {
-        console.error(
-          'Nylas pricing optional quote-template association skipped.',
-          JSON.stringify(lineItemFailureDiagnostic(error)),
-        );
-      });
 
     const createdLineItems = await Promise.all(lineItems.map(async (item) => {
       const created = await createProductLineItem(
