@@ -747,9 +747,7 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
   }
 
   return (
-    <Stack distance="sm">
-      <Heading>Nylas Pricing Calculator</Heading>
-
+    <Stack distance="xs">
       {error && (
         <Alert title="Couldn’t complete the pricing action" variant="error">
           {error}
@@ -1064,311 +1062,306 @@ const OptionEditor = ({
   );
 
   return (
-    <Stack distance="sm">
+    <Stack distance="xs">
+      <Flex justify="between" align="center" wrap gap="sm">
+        <Heading>Nylas Pricing Calculator</Heading>
+        <Flex justify="end" align="center" wrap gap="md">
+          <Text format={{ fontWeight: "bold" }}>
+            ARR {currency(previewResult?.committedArr)}
+          </Text>
+          <Text format={{ fontWeight: "bold" }}>
+            One-time {currency(previewResult?.oneTime)}
+          </Text>
+          <Text format={{ fontWeight: "bold" }}>
+            TCV {currency(previewResult?.tcv)}
+          </Text>
+        </Flex>
+      </Flex>
+
       {previewResult && (
-        <Card>
-          <Stack distance="flush">
-            <AutoGrid columnWidth={145} flexible gap="sm">
-              <Text>ARR: {currency(previewResult.committedArr)}</Text>
-              <Text>One-time: {currency(previewResult.oneTime)}</Text>
-              <Text>TCV: {currency(previewResult.tcv)}</Text>
-              <Flex gap="xs" align="center" wrap>
-                <Text format={{ fontWeight: "bold" }}>Approval</Text>
-                <StatusTag
-                  variant={
-                    previewResult.blockingReasons.length > 0
-                      ? "danger"
-                      : previewResult.approvalTierRequired === "none"
-                        ? "success"
-                        : "warning"
-                  }
-                >
-                  {previewResult.blockingReasons.length > 0
-                    ? "Blocked"
-                    : previewResult.approvalTierRequired === "none"
-                      ? "Not required"
-                      : approvalLabel(previewResult.approvalTierRequired)}
-                </StatusTag>
-              </Flex>
-            </AutoGrid>
-            {previewResult.approvalReasons.length > 0 && (
-              <Text variant="microcopy">
-                {previewResult.approvalReasons.join(" ")}
-              </Text>
-            )}
-          </Stack>
-        </Card>
+        <Alert
+          title={
+            previewResult.blockingReasons.length > 0
+              ? "Blocked"
+              : previewResult.approvalTierRequired === "none"
+                ? "No approval required"
+                : `Approval: ${approvalLabel(previewResult.approvalTierRequired)}`
+          }
+          variant={
+            previewResult.blockingReasons.length > 0
+              ? "danger"
+              : previewResult.approvalTierRequired === "none"
+                ? "success"
+                : "warning"
+          }
+        >
+          {previewResult.approvalReasons.join(" ") ||
+            "Pricing is within the configured approval policy."}
+        </Alert>
       )}
 
-      <Card>
-        <Stack distance="xs">
-          {
-            <>
-              <Box>
-                <Heading>Contract Basics</Heading>
-                <Text variant="microcopy">
-                  Name the scenario and enter the customer’s proposed contract
-                  terms.
-                </Text>
-              </Box>
-              <AutoGrid columnWidth={155} flexible gap="sm">
-                <DateInput
-                  label="Start Date"
-                  name="start_date"
-                  value={dateValue(option.input.startDate) || undefined}
-                  format="YYYY-MM-DD"
-                  onChange={(value) =>
-                    onInputChange("startDate", formatDateInput(value))
-                  }
-                />
-                <Select
-                  label="Initial Term"
-                  name="term_months"
-                  value={option.input.termMonths}
-                  options={termOptions}
-                  onChange={(value) =>
-                    onInputChange("termMonths", Number(value))
-                  }
-                />
-                <Select
-                  label="Payment Schedule"
-                  name="payment_frequency"
-                  value={option.input.paymentFrequency}
-                  options={paymentOptions}
-                  onChange={(value) =>
-                    onInputChange("paymentFrequency", String(value))
-                  }
-                />
-              </AutoGrid>
-              {!option.input.startDate && (
-                <Alert title="Complete the required fields" variant="warning">
-                  Add a subscription start date to continue.
-                </Alert>
-              )}
-            </>
-          }
+      <Stack distance="xs">
+        {
+          <>
+            <Box>
+              <Heading>Contract Basics</Heading>
+              <Text variant="microcopy">
+                Name the scenario and enter the customer’s proposed contract
+                terms.
+              </Text>
+            </Box>
+            <AutoGrid columnWidth={220} flexible gap="sm">
+              <DateInput
+                label="Start Date"
+                name="start_date"
+                value={dateValue(option.input.startDate) || undefined}
+                format="YYYY-MM-DD"
+                onChange={(value) =>
+                  onInputChange("startDate", formatDateInput(value))
+                }
+              />
+              <Select
+                label="Initial Term"
+                name="term_months"
+                value={option.input.termMonths}
+                options={termOptions}
+                onChange={(value) => onInputChange("termMonths", Number(value))}
+              />
+              <Select
+                label="Payment Schedule"
+                name="payment_frequency"
+                value={option.input.paymentFrequency}
+                options={paymentOptions}
+                onChange={(value) =>
+                  onInputChange("paymentFrequency", String(value))
+                }
+              />
+            </AutoGrid>
+            {!option.input.startDate && (
+              <Alert title="Complete the required fields" variant="warning">
+                Add a subscription start date to continue.
+              </Alert>
+            )}
+            <Divider />
+          </>
+        }
 
-          {
-            <>
-              <Box>
-                <Heading>Monthly Product Commitments</Heading>
-                <Text variant="microcopy">
-                  Enter committed monthly usage. Discounts are optional, entered
-                  manually, and determine the required approval level.
-                </Text>
-              </Box>
-              {productTable(products)}
-              {committedProductCount === 0 && (
-                <Alert title="Add at least one commitment" variant="warning">
-                  Add committed usage for at least one product.
-                </Alert>
-              )}
-            </>
-          }
+        {
+          <>
+            <Box>
+              <Heading>Monthly Product Commitments</Heading>
+              <Text variant="microcopy">
+                Enter committed monthly usage. Discounts are optional, entered
+                manually, and determine the required approval level.
+              </Text>
+            </Box>
+            {productTable(products)}
+            {committedProductCount === 0 && (
+              <Alert title="Add at least one commitment" variant="warning">
+                Add committed usage for at least one product.
+              </Alert>
+            )}
+          </>
+        }
 
-          {
-            <>
-              <Box>
-                <Heading>Services and Pricing</Heading>
-                <Text variant="microcopy">
-                  Choose support, onboarding, optional services, and any
-                  requested discount.
-                </Text>
-              </Box>
-              <AutoGrid columnWidth={165} flexible gap="sm">
-                <Select
-                  label="Support"
-                  name="support_level"
-                  value={option.input.supportLevel}
-                  options={supportOptions}
+        {
+          <>
+            <Box>
+              <Heading>Services and Pricing</Heading>
+              <Text variant="microcopy">
+                Choose support, onboarding, optional services, and any requested
+                discount.
+              </Text>
+            </Box>
+            <AutoGrid columnWidth={165} flexible gap="sm">
+              <Select
+                label="Support"
+                name="support_level"
+                value={option.input.supportLevel}
+                options={supportOptions}
+                onChange={(value) =>
+                  onInputChange("supportLevel", String(value))
+                }
+              />
+              <Select
+                label="Onboarding"
+                name="onboarding_package"
+                value={option.input.onboardingPackage}
+                options={onboardingOptions}
+                onChange={(value) =>
+                  onInputChange("onboardingPackage", String(value))
+                }
+              />
+              <Stack distance="xs">
+                <NumberInput
+                  label="Support Discount"
+                  name="support_discount"
+                  value={(option.input.supportDiscount || 0) * 100}
+                  min={0}
+                  max={100}
+                  precision={2}
+                  formatStyle="percentage"
                   onChange={(value) =>
-                    onInputChange("supportLevel", String(value))
+                    onInputChange("supportDiscount", (value || 0) / 100)
                   }
                 />
-                <Select
-                  label="Onboarding"
-                  name="onboarding_package"
-                  value={option.input.onboardingPackage}
-                  options={onboardingOptions}
+                {discountPreview(
+                  previewResult?.listSupportAnnual,
+                  option.input.supportDiscount,
+                  previewResult?.supportAnnual,
+                  "per year",
+                )}
+              </Stack>
+              <Stack distance="xs">
+                <NumberInput
+                  label="Onboarding Discount"
+                  name="onboarding_discount"
+                  value={(option.input.onboardingDiscount || 0) * 100}
+                  min={0}
+                  max={100}
+                  precision={2}
+                  formatStyle="percentage"
                   onChange={(value) =>
-                    onInputChange("onboardingPackage", String(value))
+                    onInputChange("onboardingDiscount", (value || 0) / 100)
                   }
                 />
-                <Stack distance="xs">
-                  <NumberInput
-                    label="Support Discount"
-                    name="support_discount"
-                    value={(option.input.supportDiscount || 0) * 100}
-                    min={0}
-                    max={100}
-                    precision={2}
-                    formatStyle="percentage"
+                {discountPreview(
+                  previewResult?.listOnboardingAmount,
+                  option.input.onboardingDiscount,
+                  previewResult?.onboardingAmount,
+                  "one-time",
+                )}
+              </Stack>
+            </AutoGrid>
+            <Card>
+              <Stack distance="xs">
+                <Heading>Add-ons and professional services</Heading>
+                <AutoGrid columnWidth={190} flexible gap="sm">
+                  <MultiSelect
+                    label="Subscription Add-ons"
+                    name="add_ons"
+                    value={option.input.addOns}
+                    options={addOnOptions}
                     onChange={(value) =>
-                      onInputChange("supportDiscount", (value || 0) / 100)
+                      onInputChange("addOns", value.map(String))
                     }
                   />
-                  {discountPreview(
-                    previewResult?.listSupportAnnual,
-                    option.input.supportDiscount,
-                    previewResult?.supportAnnual,
-                    "per year",
-                  )}
-                </Stack>
-                <Stack distance="xs">
-                  <NumberInput
-                    label="Onboarding Discount"
-                    name="onboarding_discount"
-                    value={(option.input.onboardingDiscount || 0) * 100}
-                    min={0}
-                    max={100}
-                    precision={2}
-                    formatStyle="percentage"
-                    onChange={(value) =>
-                      onInputChange("onboardingDiscount", (value || 0) / 100)
-                    }
-                  />
-                  {discountPreview(
-                    previewResult?.listOnboardingAmount,
-                    option.input.onboardingDiscount,
-                    previewResult?.onboardingAmount,
-                    "one-time",
-                  )}
-                </Stack>
-              </AutoGrid>
-              <Card>
-                <Stack distance="xs">
-                  <Heading>Add-ons and professional services</Heading>
-                  <AutoGrid columnWidth={190} flexible gap="sm">
-                    <MultiSelect
-                      label="Subscription Add-ons"
-                      name="add_ons"
-                      value={option.input.addOns}
-                      options={addOnOptions}
-                      onChange={(value) =>
-                        onInputChange("addOns", value.map(String))
-                      }
-                    />
-                    {addOnOptions.map(({ value, label }) => (
-                      <Stack key={value} distance="xs">
-                        <NumberInput
-                          label={`${label} Discount`}
-                          name={`${value}_discount`}
-                          value={
-                            (option.input.addOnDiscounts?.[String(value)] ||
-                              0) * 100
-                          }
-                          min={0}
-                          max={100}
-                          precision={2}
-                          formatStyle="percentage"
-                          readOnly={
-                            !option.input.addOns.includes(String(value))
-                          }
-                          onChange={(discount) =>
-                            onInputChange("addOnDiscounts", {
-                              ...(option.input.addOnDiscounts || {}),
-                              [String(value)]: (discount || 0) / 100,
-                            })
-                          }
-                        />
-                        {option.input.addOns.includes(String(value)) &&
-                          discountPreview(
-                            previewResult?.selectedAddOns.find(
-                              ({ key }) => key === value,
-                            )?.listAnnualAmount,
-                            option.input.addOnDiscounts?.[String(value)] || 0,
-                            previewResult?.selectedAddOns.find(
-                              ({ key }) => key === value,
-                            )?.annualAmount,
-                            "per year",
-                          )}
-                      </Stack>
-                    ))}
-                    <MultiSelect
-                      label="Professional Services"
-                      name="professional_services"
-                      value={option.input.professionalServices}
-                      options={professionalServiceOptions}
-                      onChange={(value) =>
-                        onInputChange("professionalServices", value.map(String))
-                      }
-                    />
-                    <Stack distance="xs">
+                  {addOnOptions.map(({ value, label }) => (
+                    <Stack key={value} distance="xs">
                       <NumberInput
-                        label="Professional Services Discount"
-                        name="professional_services_discount"
+                        label={`${label} Discount`}
+                        name={`${value}_discount`}
                         value={
-                          (option.input.professionalServicesDiscount || 0) * 100
+                          (option.input.addOnDiscounts?.[String(value)] || 0) *
+                          100
                         }
                         min={0}
                         max={100}
                         precision={2}
                         formatStyle="percentage"
-                        readOnly={
-                          option.input.professionalServices.length === 0
-                        }
-                        onChange={(value) =>
-                          onInputChange(
-                            "professionalServicesDiscount",
-                            (value || 0) / 100,
-                          )
+                        readOnly={!option.input.addOns.includes(String(value))}
+                        onChange={(discount) =>
+                          onInputChange("addOnDiscounts", {
+                            ...(option.input.addOnDiscounts || {}),
+                            [String(value)]: (discount || 0) / 100,
+                          })
                         }
                       />
-                      {option.input.professionalServices.length > 0 &&
+                      {option.input.addOns.includes(String(value)) &&
                         discountPreview(
-                          previewResult?.listProfessionalServicesAmount,
-                          option.input.professionalServicesDiscount,
-                          previewResult?.professionalServicesAmount,
-                          "one-time",
+                          previewResult?.selectedAddOns.find(
+                            ({ key }) => key === value,
+                          )?.listAnnualAmount,
+                          option.input.addOnDiscounts?.[String(value)] || 0,
+                          previewResult?.selectedAddOns.find(
+                            ({ key }) => key === value,
+                          )?.annualAmount,
+                          "per year",
                         )}
                     </Stack>
-                  </AutoGrid>
-                </Stack>
-              </Card>
-            </>
-          }
+                  ))}
+                  <MultiSelect
+                    label="Professional Services"
+                    name="professional_services"
+                    value={option.input.professionalServices}
+                    options={professionalServiceOptions}
+                    onChange={(value) =>
+                      onInputChange("professionalServices", value.map(String))
+                    }
+                  />
+                  <Stack distance="xs">
+                    <NumberInput
+                      label="Professional Services Discount"
+                      name="professional_services_discount"
+                      value={
+                        (option.input.professionalServicesDiscount || 0) * 100
+                      }
+                      min={0}
+                      max={100}
+                      precision={2}
+                      formatStyle="percentage"
+                      readOnly={option.input.professionalServices.length === 0}
+                      onChange={(value) =>
+                        onInputChange(
+                          "professionalServicesDiscount",
+                          (value || 0) / 100,
+                        )
+                      }
+                    />
+                    {option.input.professionalServices.length > 0 &&
+                      discountPreview(
+                        previewResult?.listProfessionalServicesAmount,
+                        option.input.professionalServicesDiscount,
+                        previewResult?.professionalServicesAmount,
+                        "one-time",
+                      )}
+                  </Stack>
+                </AutoGrid>
+              </Stack>
+            </Card>
+          </>
+        }
 
-          {
-            <>
-              <Box>
-                <Heading>Renewal and Contract Terms</Heading>
-                <Text variant="microcopy">
-                  Standard terms automatically renew for 12 months. Non-renewal
-                  notice must be provided at least 60 days before the
-                  subscription end date.
-                </Text>
-              </Box>
-              <Checkbox
-                name="non_renewal"
-                checked={!option.input.autoRenewal}
-                onChange={(checked) => onInputChange("autoRenewal", !checked)}
-              >
-                Non-renewal
-              </Checkbox>
-              <Divider />
-              <Checkbox
-                name="redlining_requested"
-                checked={option.input.redliningRequested}
-                onChange={(checked) =>
-                  onInputChange("redliningRequested", checked)
-                }
-              >
-                Customer requests redlines
-              </Checkbox>
-              {option.input.redliningRequested && (
-                <TextArea
-                  label="Describe the Requested Terms"
-                  name="special_terms"
-                  value={option.input.specialTerms}
-                  rows={3}
-                  maxLength={4_000}
-                  onChange={(value) => onInputChange("specialTerms", value)}
-                />
-              )}
-            </>
-          }
-        </Stack>
-      </Card>
+        {
+          <>
+            <Box>
+              <Heading>Renewal and Contract Terms</Heading>
+              <Text variant="microcopy">
+                Standard terms automatically renew for 12 months. Non-renewal
+                notice must be provided at least 60 days before the subscription
+                end date.
+              </Text>
+            </Box>
+            <Checkbox
+              name="non_renewal"
+              checked={!option.input.autoRenewal}
+              onChange={(checked) => onInputChange("autoRenewal", !checked)}
+            >
+              Non-renewal
+            </Checkbox>
+            <Divider />
+            <Checkbox
+              name="redlining_requested"
+              checked={option.input.redliningRequested}
+              onChange={(checked) =>
+                onInputChange("redliningRequested", checked)
+              }
+            >
+              Customer requests redlines
+            </Checkbox>
+            {option.input.redliningRequested && (
+              <TextArea
+                label="Describe the Requested Terms"
+                name="special_terms"
+                value={option.input.specialTerms}
+                rows={3}
+                maxLength={4_000}
+                onChange={(value) => onInputChange("specialTerms", value)}
+              />
+            )}
+          </>
+        }
+      </Stack>
       <Flex justify="end">
         <LoadingButton
           variant="primary"
