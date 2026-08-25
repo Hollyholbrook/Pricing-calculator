@@ -841,7 +841,7 @@ const _OptionList = ({
   );
 };
 
-const editorSteps = ["Contract", "Products", "Services", "Terms", "Summary"];
+const editorSteps = ["Contract", "Products", "Services", "Terms"];
 
 const OptionEditor = ({
   option,
@@ -880,17 +880,6 @@ const OptionEditor = ({
   ).length;
   const canContinue = step !== 0 || Boolean(option.input.startDate);
   const canReview = step !== 1 || committedProductCount > 0;
-  const paymentLabel =
-    paymentOptions.find(({ value }) => value === option.input.paymentFrequency)
-      ?.label || "";
-  const supportLabel =
-    supportOptions.find(({ value }) => value === option.input.supportLevel)
-      ?.label || "";
-  const onboardingLabel =
-    onboardingOptions.find(
-      ({ value }) => value === option.input.onboardingPackage,
-    )?.label || "";
-
   const discountPreview = (
     listAmount: number | undefined,
     discount: number,
@@ -1042,6 +1031,34 @@ const OptionEditor = ({
           <Tab key={label} tabId={index} title={label} disabled={saving} />
         ))}
       </Tabs>
+
+      {previewResult && (
+        <Stack distance="flush">
+          <Flex gap="xs" align="center" wrap>
+            <Text format={{ fontWeight: "bold" }}>Approval</Text>
+            <StatusTag
+              variant={
+                previewResult.blockingReasons.length > 0
+                  ? "danger"
+                  : previewResult.approvalTierRequired === "none"
+                    ? "success"
+                    : "warning"
+              }
+            >
+              {previewResult.blockingReasons.length > 0
+                ? "Blocked"
+                : previewResult.approvalTierRequired === "none"
+                  ? "No approval required"
+                  : `${approvalLabel(previewResult.approvalTierRequired)} approval required`}
+            </StatusTag>
+          </Flex>
+          {previewResult.approvalReasons.length > 0 && (
+            <Text variant="microcopy">
+              {previewResult.approvalReasons.join(" ")}
+            </Text>
+          )}
+        </Stack>
+      )}
 
       <Card>
         <Stack distance="xs">
@@ -1310,39 +1327,6 @@ const OptionEditor = ({
               )}
             </>
           )}
-
-          {step === 4 && (
-            <>
-              <Box>
-                <Heading>Live Pricing Summary</Heading>
-                <Text variant="microcopy">
-                  These details update automatically from the workbook rate card
-                  as inputs change.
-                </Text>
-              </Box>
-              {option.result && (
-                <Alert title="Pricing calculated" variant="success">
-                  ARR {currency(option.result.committedArr)} · TCV{" "}
-                  {currency(option.result.tcv)} · Approval{" "}
-                  {approvalLabel(option.result.approvalTierRequired)}
-                </Alert>
-              )}
-              <AutoGrid columnWidth={185} flexible gap="sm">
-                <Text>Start Date: {option.input.startDate || "Missing"}</Text>
-                <Text>Initial Term: {option.input.termMonths} months</Text>
-                <Text>Payment: {paymentLabel}</Text>
-                <Text>Support: {supportLabel}</Text>
-                <Text>Onboarding: {onboardingLabel}</Text>
-                <Text>Committed Products: {committedProductCount}</Text>
-                <Text>
-                  Renewal:{" "}
-                  {option.input.autoRenewal
-                    ? "12-month automatic renewal · 60-day notice"
-                    : "Non-renewal · 60-day notice"}
-                </Text>
-              </AutoGrid>
-            </>
-          )}
         </Stack>
       </Card>
 
@@ -1362,15 +1346,11 @@ const OptionEditor = ({
           </Button>
         )}
       </Flex>
-
-      {previewResult && (
-        <ResultSummary result={previewResult} title="Live Pricing Summary" />
-      )}
     </Stack>
   );
 };
 
-const ResultSummary = ({
+const _ResultSummary = ({
   result,
   title = "Quote Summary",
   updating = false,
