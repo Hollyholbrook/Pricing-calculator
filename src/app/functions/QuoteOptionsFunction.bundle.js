@@ -803,7 +803,7 @@ var require_appSettings = __commonJS({
         pricingRules.products.map(({ key, bands }) => [key, bands.map((band) => band[2])])
       )
     });
-    var defaultSettings2 = () => ({
+    var defaultSettings = () => ({
       schemaVersion: "1.0",
       version: 0,
       allowNewBusiness: true,
@@ -1026,12 +1026,12 @@ var require_appSettings = __commonJS({
         });
       } catch (error) {
         if (error.statusCode === 400 || error.statusCode === 404) {
-          return { recordId: null, settings: defaultSettings2(), configured: false };
+          return { recordId: null, settings: defaultSettings(), configured: false };
         }
         throw error;
       }
       const record = result.results?.[0];
-      if (!record) return { recordId: null, settings: defaultSettings2(), configured: true };
+      if (!record) return { recordId: null, settings: defaultSettings(), configured: true };
       try {
         const parsed = JSON.parse(record.properties?.configuration_json || "{}");
         const version = Number.isInteger(parsed.version) && parsed.version >= 0 ? parsed.version : 0;
@@ -1100,7 +1100,7 @@ var require_appSettings = __commonJS({
     module2.exports = {
       accountIdFromContext: accountIdFromContext2,
       defaultPricingPolicy,
-      defaultSettings: defaultSettings2,
+      defaultSettings,
       isDealAllowed: isDealAllowed2,
       isSettingsAdmin: isSettingsAdmin2,
       normalizeSettings,
@@ -1487,7 +1487,6 @@ var hubspot = require("@hubspot/api-client");
 var { QuoteValidationError, calculateQuote } = require_calculator();
 var {
   accountIdFromContext,
-  defaultSettings,
   isDealAllowed,
   isSettingsAdmin,
   readDealPipelines,
@@ -1568,15 +1567,6 @@ var getAccessToken = () => {
   return accessToken;
 };
 var getClient = () => new hubspot.Client({ accessToken: getAccessToken() });
-var readOperationalSettings = async (accessToken, accountId, reader = readSettings) => {
-  try {
-    const state = await reader(accessToken, accountId);
-    if (state?.configured && state.settings) return state;
-  } catch (error) {
-    console.error(`Nylas pricing settings fallback: ${error?.name || "unknown"}.`);
-  }
-  return { recordId: null, settings: defaultSettings(), configured: true };
-};
 var readDealState = async (client, dealId) => {
   try {
     const deal = await client.crm.deals.basicApi.getById(dealId, [
@@ -1844,39 +1834,6 @@ var chooseOption = async (client, dealId, state, parameters, settings) => {
     lineItemsSyncedAt: synced.syncedAt
   };
 };
-var lockLiveCalculation = async (client, dealId, state, parameters, portalId, settings) => {
-  const input = parameters.input;
-  const result = calculateQuote(input, settings.pricingPolicy, settings.version);
-  if (result.blockingReasons.length > 0) throw new Error("OPTION_BLOCKED");
-  const liveOption = {
-    id: `live-${result.stateHash.slice(0, 16)}`,
-    name: "Live calculation",
-    status: "draft",
-    input,
-    result
-  };
-  const properties = buildSelectedProperties(liveOption, "draft");
-  properties[SELECTED_OPTION_ID_PROPERTY] = "";
-  properties[SELECTED_OPTION_NAME_PROPERTY] = "";
-  await client.crm.deals.basicApi.update(dealId, { properties });
-  const liveState = {
-    ...state,
-    document: { schemaVersion: "1.0", revision: 0, options: [liveOption] },
-    selectedOptionId: liveOption.id,
-    selectedOptionName: liveOption.name,
-    selectedStateHash: result.stateHash
-  };
-  const synced = await syncDealLineItems(client, dealId, liveState, settings);
-  const quote = await generateQuote(
-    client,
-    dealId,
-    liveState,
-    { quoteContent: parameters.quoteContent || {} },
-    portalId,
-    settings
-  );
-  return { result, lineItemCount: synced.count, ...quote };
-};
 var selectedOptionForDraft = (state) => {
   const option = state.document.options.find(({ id }) => id === state.selectedOptionId);
   if (!option?.result || option.result.blockingReasons.length > 0) {
@@ -2096,9 +2053,10 @@ exports.main = async (context) => {
     const client = getClient();
     const [state, settingsState] = await Promise.all([
       readDealState(client, dealId),
-      readOperationalSettings(accessToken, accountId)
+      readSettings(accessToken, accountId)
     ]);
     console.log("Nylas pricing action: deal state and settings loaded.");
+    if (!settingsState.configured) throw new Error("SETTINGS_CONFIGURATION_REQUIRED");
     const settings = settingsState.settings;
     if (!isDealAllowed(settings, state.dealType, state.pipelineId)) throw new Error("INVALID_DEAL");
     if (action === "list") {
@@ -2112,17 +2070,6 @@ exports.main = async (context) => {
         success: true,
         previewResult: calculateQuote(parameters.input, settings.pricingPolicy, settings.version)
       });
-    }
-    if (action === "lock_live") {
-      const locked = await lockLiveCalculation(
-        client,
-        dealId,
-        state,
-        parameters,
-        accountId,
-        settings
-      );
-      return response(200, { success: true, ...locked });
     }
     if (action === "calculate_and_save") {
       const saved = await calculateAndSaveOption(client, dealId, state, parameters, settings);
@@ -2201,10 +2148,4 @@ exports.main = async (context) => {
     return safeError("WRITE_FAILED", 500);
   }
 };
-exports._test = Object.freeze({
-  associatedIds,
-  deleteOption,
-  lockLiveCalculation,
-  readOperationalSettings,
-  syncDealLineItems
-});
+exports._test = Object.freeze({ associatedIds, deleteOption, syncDealLineItems });

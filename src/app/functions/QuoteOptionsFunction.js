@@ -4,7 +4,6 @@ const hubspot = require('@hubspot/api-client');
 const { QuoteValidationError, calculateQuote } = require('./calculator');
 const {
   accountIdFromContext,
-  defaultSettings,
   isDealAllowed,
   isSettingsAdmin,
   readDealPipelines,
@@ -100,16 +99,6 @@ const getAccessToken = () => {
 };
 
 const getClient = () => new hubspot.Client({ accessToken: getAccessToken() });
-
-const readOperationalSettings = async (accessToken, accountId, reader = readSettings) => {
-  try {
-    const state = await reader(accessToken, accountId);
-    if (state?.configured && state.settings) return state;
-  } catch (error) {
-    console.error(`Nylas pricing settings fallback: ${error?.name || 'unknown'}.`);
-  }
-  return { recordId: null, settings: defaultSettings(), configured: true };
-};
 
 const readDealState = async (client, dealId) => {
   try {
@@ -414,48 +403,6 @@ const chooseOption = async (client, dealId, state, parameters, settings) => {
   };
 };
 
-const lockLiveCalculation = async (
-  client,
-  dealId,
-  state,
-  parameters,
-  portalId,
-  settings,
-) => {
-  const input = parameters.input;
-  const result = calculateQuote(input, settings.pricingPolicy, settings.version);
-  if (result.blockingReasons.length > 0) throw new Error('OPTION_BLOCKED');
-  const liveOption = {
-    id: `live-${result.stateHash.slice(0, 16)}`,
-    name: 'Live calculation',
-    status: 'draft',
-    input,
-    result,
-  };
-  const properties = buildSelectedProperties(liveOption, 'draft');
-  properties[SELECTED_OPTION_ID_PROPERTY] = '';
-  properties[SELECTED_OPTION_NAME_PROPERTY] = '';
-  await client.crm.deals.basicApi.update(dealId, { properties });
-
-  const liveState = {
-    ...state,
-    document: { schemaVersion: '1.0', revision: 0, options: [liveOption] },
-    selectedOptionId: liveOption.id,
-    selectedOptionName: liveOption.name,
-    selectedStateHash: result.stateHash,
-  };
-  const synced = await syncDealLineItems(client, dealId, liveState, settings);
-  const quote = await generateQuote(
-    client,
-    dealId,
-    liveState,
-    { quoteContent: parameters.quoteContent || {} },
-    portalId,
-    settings,
-  );
-  return { result, lineItemCount: synced.count, ...quote };
-};
-
 const selectedOptionForDraft = (state) => {
   const option = state.document.options.find(({ id }) => id === state.selectedOptionId);
   if (!option?.result || option.result.blockingReasons.length > 0) {
@@ -706,9 +653,10 @@ exports.main = async (context) => {
     const client = getClient();
     const [state, settingsState] = await Promise.all([
       readDealState(client, dealId),
-      readOperationalSettings(accessToken, accountId),
+      readSettings(accessToken, accountId),
     ]);
     console.log('Nylas pricing action: deal state and settings loaded.');
+    if (!settingsState.configured) throw new Error('SETTINGS_CONFIGURATION_REQUIRED');
     const settings = settingsState.settings;
     if (!isDealAllowed(settings, state.dealType, state.pipelineId)) throw new Error('INVALID_DEAL');
 
@@ -723,17 +671,6 @@ exports.main = async (context) => {
         success: true,
         previewResult: calculateQuote(parameters.input, settings.pricingPolicy, settings.version),
       });
-    }
-    if (action === 'lock_live') {
-      const locked = await lockLiveCalculation(
-        client,
-        dealId,
-        state,
-        parameters,
-        accountId,
-        settings,
-      );
-      return response(200, { success: true, ...locked });
     }
     if (action === 'calculate_and_save') {
       const saved = await calculateAndSaveOption(client, dealId, state, parameters, settings);
@@ -813,10 +750,4 @@ exports.main = async (context) => {
   }
 };
 
-exports._test = Object.freeze({
-  associatedIds,
-  deleteOption,
-  lockLiveCalculation,
-  readOperationalSettings,
-  syncDealLineItems,
-});
+exports._test = Object.freeze({ associatedIds, deleteOption, syncDealLineItems });
