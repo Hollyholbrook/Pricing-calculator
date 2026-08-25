@@ -490,6 +490,21 @@ const inBatches = async (values, action, batchSize = 10) => {
   }
 };
 
+const lineItemFailureDiagnostic = (error) => {
+  const body = error?.body || error?.response?.body || error?.response?.data || {};
+  const details = Array.isArray(body?.errors) ? body.errors : [];
+  const propertyNames = details
+    .flatMap((detail) => [detail?.context?.propertyName, detail?.context?.propertyNames])
+    .flat()
+    .filter((value) => typeof value === 'string' && /^[a-z0-9_]{1,100}$/i.test(value));
+  return {
+    statusCode: Number(error?.statusCode || error?.response?.status || 0) || undefined,
+    category: typeof body?.category === 'string' ? body.category.slice(0, 80) : undefined,
+    subCategory: typeof body?.subCategory === 'string' ? body.subCategory.slice(0, 120) : undefined,
+    propertyNames: [...new Set(propertyNames)].slice(0, 20),
+  };
+};
+
 const syncDealLineItems = async (client, dealId, state, settings) => {
   const option = selectedOptionForDraft(state);
   assertCurrentSettings(option, settings);
@@ -497,7 +512,6 @@ const syncDealLineItems = async (client, dealId, state, settings) => {
   const createdIds = [];
   try {
     const existingIds = await associatedIds(client, 'deals', dealId, 'line_items', 1_000);
-    await inBatches(existingIds, (id) => client.crm.lineItems.basicApi.archive(id));
     await inBatches(desired, async (item) => {
         const created = await client.crm.lineItems.basicApi.create({
           properties: item.properties,
@@ -505,6 +519,8 @@ const syncDealLineItems = async (client, dealId, state, settings) => {
         });
         createdIds.push(String(created.id));
     });
+    // Only remove the previous set after every replacement has been accepted.
+    await inBatches(existingIds, (id) => client.crm.lineItems.basicApi.archive(id));
 
     const syncedAt = new Date().toISOString();
     await client.crm.deals.basicApi.update(dealId, {
@@ -515,6 +531,10 @@ const syncDealLineItems = async (client, dealId, state, settings) => {
     });
     return { count: desired.length, syncedAt };
   } catch (error) {
+    console.error(
+      'Nylas pricing line-item sync failed.',
+      JSON.stringify(lineItemFailureDiagnostic(error)),
+    );
     await inBatches(
       createdIds,
       (id) => client.crm.lineItems.basicApi.archive(id).catch(() => undefined),
