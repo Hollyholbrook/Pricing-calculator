@@ -163,9 +163,14 @@ const oneTimeProperties = ({ option, key, component, product, price, description
   description: String(description || '').slice(0, 5_000),
 });
 
-const formatBand = ({ lower, upper, rate }) =>
-  `${lower.toLocaleString('en-US')}–${upper == null ? '+' : upper.toLocaleString('en-US')}: ` +
-  `$${rate.toFixed(2)} per 1,000 emails`;
+// Band boundaries are expressed in thousands of emails, so printing them raw beside
+// "per 1,000 emails" read as "0-50 emails" on the customer-facing Quote. Use the same K notation
+// the card shows, and give the open-ended top band a real "500K+" instead of "500–+".
+const formatBand = ({ lower, upper, rate }) => {
+  const from = lower === 0 ? '0' : `${lower.toLocaleString('en-US')}K`;
+  const range = upper == null ? `${from}+` : `${from}–${upper.toLocaleString('en-US')}K`;
+  return `${range}: $${rate.toFixed(2)} per 1,000 emails`;
+};
 
 const productDescription = (line) => {
   const bandDetail = line.proposedBandRates?.length

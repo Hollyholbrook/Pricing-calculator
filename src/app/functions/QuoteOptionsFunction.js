@@ -1,7 +1,7 @@
 const crypto = require('node:crypto');
 const hubspot = require('@hubspot/api-client');
 
-const { QuoteValidationError, calculateQuote } = require('./calculator');
+const { QuoteValidationError, calculateQuote, normalizeStoredInput } = require('./calculator');
 const {
   accountIdFromContext,
   isDealAllowed,
@@ -37,6 +37,7 @@ const SAFE_ERRORS = Object.freeze({
   OPTION_REQUIRED: 'Select or calculate a quote option first.',
   OPTION_RECALCULATION_REQUIRED: 'Pricing rules changed after this option was calculated. Recalculate it before continuing.',
   TOO_MANY_OPTIONS: `A Deal can contain no more than ${MAX_OPTIONS} active quote options.`,
+  TOO_MANY_LINE_ITEMS: 'This Deal has more line items than the pricing app can manage. Reduce them and try again.',
   PAYLOAD_TOO_LARGE: 'The saved quote options exceed the allowed storage size.',
   PRODUCT_MAPPING_REQUIRED: 'A selected item is not mapped to the HubSpot product library.',
   QUOTE_CONFIGURATION_REQUIRED: 'The New Customer quote template has not been configured for the app.',
@@ -86,9 +87,13 @@ const normalizeOptionName = (value, fallback) => {
 
 const assertDealAccess = (context, requestedDealId) => {
   const contextDealId = context?.crm?.objectId == null ? null : String(context.crm.objectId);
+  // Every HubSpot call below uses the private-app token, so per-user object permissions are never
+  // consulted. The CRM context is the only thing tying a caller to a Deal — without it any caller
+  // who can invoke this function could read and mutate any Deal's pricing state.
+  if (!contextDealId || !/^\d+$/.test(contextDealId)) throw new Error('INVALID_DEAL');
   const dealId = requestedDealId == null ? contextDealId : String(requestedDealId);
-  if (!dealId || !/^\d+$/.test(dealId)) throw new Error('INVALID_DEAL');
-  if (contextDealId && dealId !== contextDealId) throw new Error('INVALID_DEAL');
+  if (!/^\d+$/.test(dealId)) throw new Error('INVALID_DEAL');
+  if (dealId !== contextDealId) throw new Error('INVALID_DEAL');
   return dealId;
 };
 
@@ -184,14 +189,7 @@ const calculateAndSaveOption = async (client, dealId, state, parameters, setting
     id: previous?.id || crypto.randomUUID(),
     name: normalizeOptionName(incoming.name, `Option ${state.document.options.length + 1}`),
     status: previous?.status === 'approved' ? 'pending_re_approval' : 'calculated',
-    input: {
-      ...incoming.input,
-      nonStandardTerms: false,
-      specialTerms:
-        incoming.input?.redliningRequested === true && typeof incoming.input.specialTerms === 'string'
-          ? incoming.input.specialTerms
-          : '',
-    },
+    input: normalizeStoredInput(incoming.input, settings.pricingPolicy),
     result,
     createdAt: previous?.createdAt || now,
     updatedAt: now,
@@ -280,6 +278,10 @@ const productVolumeProperties = Object.freeze({
 
 const buildSelectedProperties = (option, approvalStatus) => {
   const { input, result } = option;
+  // A stored option can predate normalizeStoredInput or arrive from an import, and validation
+  // accepts an input with no volumes at all. Reading input.volumes.connect_ca directly turned that
+  // into an unhandled TypeError and a generic 500 with no field detail.
+  const volumes = input.volumes || {};
   const selectedProducts = result.quotedProducts.join(';');
   const effectiveDiscount = result.listTcv > 0 ? 1 - result.tcv / result.listTcv : 0;
   const properties = {
@@ -314,7 +316,7 @@ const buildSelectedProperties = (option, approvalStatus) => {
     pricing_approval_status: approvalStatus,
     pricing_approval_reasons: result.approvalReasons.join('\n'),
     pricing_primary_product: 'multi',
-    pricing_ca_count: String(input.volumes.connect_ca || 0),
+    pricing_ca_count: String(volumes.connect_ca || 0),
     contract_start_date: toHubSpotDate(input.startDate),
     pricing_contract_end_date: toHubSpotDate(result.dates.contractEndDate),
     pricing_auto_renewal: String(input.autoRenewal === true),
@@ -332,7 +334,7 @@ const buildSelectedProperties = (option, approvalStatus) => {
   }
 
   for (const [productKey, propertyName] of Object.entries(productVolumeProperties)) {
-    properties[propertyName] = String(input.volumes[productKey] || 0);
+    properties[propertyName] = String(volumes[productKey] || 0);
   }
   return properties;
 };
@@ -411,9 +413,12 @@ const lockLiveCalculation = async (
   portalId,
   settings,
 ) => {
-  const input = parameters.input;
-  const result = calculateQuote(input, settings.pricingPolicy, settings.version);
+  const result = calculateQuote(parameters.input, settings.pricingPolicy, settings.version);
   if (result.blockingReasons.length > 0) throw new Error('OPTION_BLOCKED');
+  // Never carry the raw card input forward. It can hold human labels the CATALOG cannot key on,
+  // duplicate professional-services entries, and — worst — redline text the rep already retracted
+  // by unchecking redliningRequested, which would otherwise reach the customer-facing Quote.
+  const input = normalizeStoredInput(parameters.input, settings.pricingPolicy);
   const liveOption = {
     id: `live-${result.stateHash.slice(0, 16)}`,
     name: 'Live calculation',
@@ -522,10 +527,12 @@ const syncDealLineItems = async (client, dealId, state, settings) => {
     await client.crm.deals.basicApi
       .update(dealId, { properties: { pricing_line_item_sync_status: 'failed' } })
       .catch(() => undefined);
+    // buildDealLineItems runs before the try, so PRODUCT_MAPPING_REQUIRED can never arrive here.
+    // Log what HubSpot actually said before flattening it — otherwise every sync failure is
+    // indistinguishable and undiagnosable.
+    console.error('Nylas pricing line item sync failed.', error?.message || error);
     throw new Error(
-      error?.message === 'PRODUCT_MAPPING_REQUIRED'
-        ? 'PRODUCT_MAPPING_REQUIRED'
-        : 'LINE_ITEM_SYNC_FAILED',
+      error?.message === 'TOO_MANY_LINE_ITEMS' ? 'TOO_MANY_LINE_ITEMS' : 'LINE_ITEM_SYNC_FAILED',
     );
   }
 };
@@ -581,14 +588,16 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
       templateId,
     );
 
-    const createdLineItems = await Promise.all(lineItems.map(async (item) => {
+    // Record each id as soon as it exists. Collecting them from Promise.all only records them
+    // when every create succeeds, so the rollback below archived nothing in exactly the case it
+    // was written for and leaked orphaned quote line items on every failed attempt.
+    await Promise.all(lineItems.map(async (item) => {
       const created = await client.crm.lineItems.basicApi.create({
         properties: item.properties,
         associations: [createAssociation(quote.id, 68)],
       });
-      return String(created.id);
+      createdLineItemIds.push(String(created.id));
     }));
-    createdLineItemIds.push(...createdLineItems);
 
     const [contactIds, companyIds] = await Promise.all([
       associatedIds(client, 'deals', dealId, 'contacts', 10),
@@ -637,13 +646,13 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
     await client.crm.deals.basicApi
       .update(dealId, { properties: { pricing_quote_generation_status: 'failed' } })
       .catch(() => undefined);
-    if (
-      error?.message === 'INVALID_QUOTE_CONTENT' ||
-      error?.message === 'PRODUCT_MAPPING_REQUIRED'
-    ) {
-      throw error;
-    }
-    throw new Error('QUOTE_CREATE_FAILED');
+    // normalizeQuoteContent and buildQuoteLineItems both run before the try, so
+    // INVALID_QUOTE_CONTENT and PRODUCT_MAPPING_REQUIRED cannot reach this catch. Everything that
+    // does reach it is a HubSpot failure, and its detail is the only diagnostic that exists.
+    console.error('Nylas pricing quote creation failed.', error?.message || error);
+    throw new Error(
+      error?.message === 'TOO_MANY_LINE_ITEMS' ? 'TOO_MANY_LINE_ITEMS' : 'QUOTE_CREATE_FAILED',
+    );
   }
 };
 
@@ -798,7 +807,10 @@ exports.main = async (context) => {
       });
     }
     if (SAFE_ERRORS[error?.message]) return safeError(error.message);
-    console.error('Nylas pricing action failed.');
+    // Unrecognized errors still reach the user as a generic message, but they must leave a trace.
+    // Logging the bare string left genuine bugs (e.g. a TypeError on a malformed payload)
+    // completely invisible in the function logs.
+    console.error('Nylas pricing action failed.', error?.stack || error?.message || error);
     return safeError('WRITE_FAILED', 500);
   }
 };

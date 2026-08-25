@@ -425,6 +425,7 @@ const calculateQuote = (rawInput, pricingPolicy = {}, settingsVersion = 0) => {
     let exactListMrr = volume * exactListUnitRate;
     let exactProposedMrr = volume * exactProposedUnitRate;
     let proposedBandRates = [];
+    let listBandRates = [];
     if (product.pricingModel === 'graduated_adjusted_bands') {
       const adjusted = calculateAdjustedBandPricing(
         volume,
@@ -442,6 +443,14 @@ const calculateQuote = (rawInput, pricingPolicy = {}, settingsVersion = 0) => {
         lower,
         upper,
         rate: proposedRate,
+      }));
+      // The card must never recompute list band rates itself — the adjustment is additive
+      // (rate * (1 - termDiscount + paymentPremium)) and rounded here, and a UI-side
+      // reimplementation drifts from the rates the quote is actually built from.
+      listBandRates = adjusted.bandRates.map(({ lower, upper, listRate }) => ({
+        lower,
+        upper,
+        rate: listRate,
       }));
     }
     const listUnitRate = round(exactListUnitRate, 2);
@@ -466,6 +475,7 @@ const calculateQuote = (rawInput, pricingPolicy = {}, settingsVersion = 0) => {
       displayProposedUnitRate,
       billingUnitRate,
       baseBandRates: product.bands.map(([lower, upper, rate]) => ({ lower, upper, rate })),
+      listBandRates,
       proposedBandRates,
       availableUnitRate: proposedUnitRate,
       discretionaryDiscount,
@@ -486,12 +496,23 @@ const calculateQuote = (rawInput, pricingPolicy = {}, settingsVersion = 0) => {
   );
   const listSupportAnnual = round(
     Math.min(
+      listPlatformArr * input.support.percentOfPlatformArr,
+      input.support.annualCap,
+    ),
+    2,
+  );
+  const proposedSupportBeforeDiscount = round(
+    Math.min(
       proposedPlatformArr * input.support.percentOfPlatformArr,
       input.support.annualCap,
     ),
     2,
   );
-  const supportAnnual = round(listSupportAnnual * (1 - input.supportDiscount), 2);
+  // Charged support stays a percentage of the ARR the customer actually pays
+  // (proposedPlatformArr). listSupportAnnual above is the list-price counterpart and must be
+  // derived from listPlatformArr, otherwise product discounts leak into the "list" figure and
+  // understate the blended effective discount.
+  const supportAnnual = round(proposedSupportBeforeDiscount * (1 - input.supportDiscount), 2);
   const selectedAddOns = activeRules.addOnRules
     .filter(({ key }) => input.addOns.includes(key))
     .map(({ key, label, annualAmount }) => {
@@ -539,14 +560,21 @@ const calculateQuote = (rawInput, pricingPolicy = {}, settingsVersion = 0) => {
   const recurringPerPeriod = round(committedArr / input.payment.paymentsPerYear, 2);
   const hasOauthDependencyFailure =
     input.addOns.includes('verified_oauth') && input.psItemCount === 0;
-  const largestDiscretionaryDiscount = Math.max(
-    0,
-    ...Object.values(input.productDiscounts),
-    ...Object.values(input.addOnDiscounts),
-    input.supportDiscount,
-    input.onboardingDiscount,
-    input.professionalServicesDiscount,
-  );
+  // Only discounts that actually move money count toward approval routing. A discount typed
+  // against a product with no volume, an add-on that is not selected, or a $0 support/onboarding/
+  // professional-services line changes no total, so it must not escalate the approval tier.
+  const effectiveDiscounts = [
+    ...Object.entries(input.productDiscounts)
+      .filter(([key]) => input.volumes[key] > 0)
+      .map(([, discount]) => discount),
+    ...Object.entries(input.addOnDiscounts)
+      .filter(([key]) => input.addOns.includes(key))
+      .map(([, discount]) => discount),
+    ...(listSupportAnnual > 0 ? [input.supportDiscount] : []),
+    ...(listOnboardingAmount > 0 ? [input.onboardingDiscount] : []),
+    ...(listProfessionalServicesAmount > 0 ? [input.professionalServicesDiscount] : []),
+  ];
+  const largestDiscretionaryDiscount = Math.max(0, ...effectiveDiscounts);
   const approval = buildApproval(
     input,
     largestDiscretionaryDiscount,
@@ -626,11 +654,44 @@ const calculateQuote = (rawInput, pricingPolicy = {}, settingsVersion = 0) => {
   return result;
 };
 
+// The shape that must be persisted on the Deal. normalizeInput resolves paymentFrequency /
+// supportLevel / onboardingPackage to rule OBJECTS for pricing, but storage and the line-item
+// CATALOG need their keys. Persisting the raw card input instead lets a human label such as
+// 'Full Support' calculate fine and then fail later with PRODUCT_MAPPING_REQUIRED, and lets
+// duplicate professionalServices entries become duplicate line items.
+const normalizeStoredInput = (rawInput, pricingPolicy = {}) => {
+  const input = normalizeInput(rawInput, buildActiveRules(pricingPolicy));
+  return {
+    startDate: input.startDate,
+    termMonths: input.termMonths,
+    paymentFrequency: input.payment.key,
+    supportLevel: input.support.key,
+    onboardingPackage: input.onboarding.key,
+    discretionaryDiscount: input.discretionaryDiscount,
+    productDiscounts: input.productDiscounts,
+    addOnDiscounts: input.addOnDiscounts,
+    supportDiscount: input.supportDiscount,
+    onboardingDiscount: input.onboardingDiscount,
+    professionalServicesDiscount: input.professionalServicesDiscount,
+    volumes: input.volumes,
+    professionalServices: input.professionalServices,
+    psItemCount: input.psItemCount,
+    addOns: input.addOns,
+    autoRenewal: input.autoRenewal,
+    renewalTermMonths: input.renewalTermMonths,
+    nonRenewalNoticeDays: input.nonRenewalNoticeDays,
+    redliningRequested: input.redliningRequested,
+    nonStandardTerms: input.nonStandardTerms,
+    specialTerms: input.specialTerms,
+  };
+};
+
 module.exports = {
   QuoteValidationError,
   calculateQuote,
   buildActiveRules,
   normalizeInput,
+  normalizeStoredInput,
   round,
   rules,
 };

@@ -1,20 +1,17 @@
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import {
-  Accordion,
   Alert,
   AutoGrid,
   Box,
-  Button,
   Card,
   Checkbox,
   DateInput,
-  DescriptionList,
-  DescriptionListItem,
   Divider,
   EmptyState,
   ExtensionPointApiActions,
   Flex,
   Heading,
+  Link,
   LoadingButton,
   LoadingSpinner,
   MultiSelect,
@@ -85,6 +82,11 @@ interface QuoteLine {
   listTermCommitment: number;
   termCommitment: number;
   baseBandRates: {
+    lower: number;
+    upper: number | null;
+    rate: number;
+  }[];
+  listBandRates: {
     lower: number;
     upper: number | null;
     rate: number;
@@ -387,43 +389,6 @@ const approvalLabel = (value?: string) =>
   value ||
   "Not calculated";
 
-const statusLabel = (value: string) =>
-  ({
-    draft: "Draft",
-    calculated: "Calculated",
-    selected: "Customer Choice",
-    pending: "Awaiting Approval",
-    approved: "Approved",
-    pending_re_approval: "Re-approval Required",
-  })[value] || value;
-
-const statusVariant = (
-  value: string,
-): "success" | "warning" | "info" | "danger" | "default" => {
-  if (value === "approved") return "success";
-  if (value === "pending" || value === "pending_re_approval") return "warning";
-  if (value === "selected") return "info";
-  return "default";
-};
-
-const cloneInput = (input: QuoteInput): QuoteInput => {
-  const cloned = JSON.parse(JSON.stringify(input)) as QuoteInput;
-  const defaults = emptyInput();
-  return {
-    ...defaults,
-    ...cloned,
-    volumes: { ...defaults.volumes, ...(cloned.volumes || {}) },
-    productDiscounts: {
-      ...defaults.productDiscounts,
-      ...(cloned.productDiscounts || {}),
-    },
-    addOnDiscounts: {
-      ...defaults.addOnDiscounts,
-      ...(cloned.addOnDiscounts || {}),
-    },
-  };
-};
-
 const dateValue = (value: string | null) => {
   if (!value) return null;
   const [year, month, date] = value.split("-").map(Number);
@@ -453,43 +418,28 @@ hubspot.extend<"crm.record.tab">(({ context, actions }: CrmExtensionProps) => (
 
 const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
   const dealId = String(context.crm.objectId);
-  const [optionSet, setOptionSet] = useState<OptionDocument>({
-    schemaVersion: "1.0",
-    revision: 0,
-    options: [],
-  });
-  const [selectedOptionId, setSelectedOptionId] = useState<string | null>(null);
-  const [_approvalStatus, setApprovalStatus] = useState("draft");
-  const [_lineItemSyncStatus, setLineItemSyncStatus] = useState("not_started");
-  const [_latestQuoteId, setLatestQuoteId] = useState<string | null>(null);
-  const [_latestQuoteUrl, setLatestQuoteUrl] = useState<string | null>(null);
-  const [quoteContent, _setQuoteContent] = useState<QuoteContent>({
-    title: "",
+  const [latestQuoteUrl, setLatestQuoteUrl] = useState<string | null>(null);
+  // The card exposes no controls for these, so they are constants rather than state whose
+  // setter is never called.
+  const quoteContent: QuoteContent = {
+    title: "Nylas Enterprise Quote",
     expirationDate: dateAfterDays(30),
     presentation: "itemized_products",
     includeUncommittedRateSchedule: true,
     includeRenewalTerms: true,
     includeSpecialTerms: true,
-  });
+  };
   const [editing, setEditing] = useState<QuoteOption>({
     name: "Live calculator",
     status: "draft",
     input: emptyInput(),
   });
-  const [_view, setView] = useState<"list" | "edit" | "compare">("list");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [unsupportedDeal, setUnsupportedDeal] = useState(false);
 
   const updateFromBody = (body: ServerlessBody) => {
-    if (body.optionSet) setOptionSet(body.optionSet);
-    if (body.selectedOptionId !== undefined)
-      setSelectedOptionId(body.selectedOptionId || null);
-    if (body.approvalStatus) setApprovalStatus(body.approvalStatus);
-    if (body.lineItemSyncStatus) setLineItemSyncStatus(body.lineItemSyncStatus);
-    if (body.latestQuoteId !== undefined)
-      setLatestQuoteId(body.latestQuoteId || null);
     if (body.latestQuoteUrl !== undefined)
       setLatestQuoteUrl(body.latestQuoteUrl || null);
   };
@@ -545,29 +495,6 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dealId]);
 
-  const _beginNew = () => {
-    setEditing({
-      name: `Option ${optionSet.options.length + 1}`,
-      status: "draft",
-      input: emptyInput(),
-    });
-    setView("edit");
-  };
-
-  const _beginEdit = (option: QuoteOption) => {
-    setEditing({ ...option, input: cloneInput(option.input) });
-    setView("edit");
-  };
-
-  const _beginDuplicate = (option: QuoteOption) => {
-    setEditing({
-      name: `${option.name} Copy`.slice(0, 80),
-      status: "draft",
-      input: cloneInput(option.input),
-    });
-    setView("edit");
-  };
-
   const updateInput = <K extends keyof QuoteInput>(
     field: K,
     value: QuoteInput[K],
@@ -596,14 +523,20 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
       const body = await runAction({
         action: "lock_live",
         input: editing.input,
-        quoteContent: {
-          ...quoteContent,
-          title: quoteContent.title || "Nylas Enterprise Quote",
-        },
+        quoteContent,
       });
+      // generateQuote is idempotent on the quote content hash, so a repeat lock reuses the
+      // existing Quote rather than creating one. Saying "created" either way misreports what
+      // happened. Surface the URL too — lock_live returns it and the card used to drop it,
+      // leaving the rep told to "review the draft Quote" with no way to reach it.
+      setLatestQuoteUrl(body.quoteUrl || null);
       actions.addAlert({
-        title: "Pricing locked in and draft Quote created",
-        message: `${body.lineItemCount || 0} calculated line items were added to the Deal. Review the draft Quote before publishing it.`,
+        title: body.reused
+          ? "Pricing locked in — existing draft Quote reused"
+          : "Pricing locked in and draft Quote created",
+        message: `${body.lineItemCount || 0} calculated line items replaced the Deal line items.${
+          body.quoteUrl ? " The draft Quote link is on the card." : ""
+        }`,
         type: "success",
       });
     } catch (lockError) {
@@ -611,116 +544,6 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
         lockError instanceof Error
           ? lockError.message
           : "Unable to add the Deal line items and create the Quote.",
-      );
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const _removeOption = async (option: QuoteOption) => {
-    if (!option.id) return;
-    setSaving(true);
-    setError(null);
-    try {
-      await runAction({
-        action: "delete",
-        expectedRevision: optionSet.revision,
-        optionId: option.id,
-      });
-      actions.addAlert({
-        title: "Draft option removed",
-        message: `${option.name} was removed.`,
-        type: "success",
-      });
-    } catch (deleteError) {
-      setError(
-        deleteError instanceof Error
-          ? deleteError.message
-          : "Unable to remove this option.",
-      );
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const _chooseOption = async (option: QuoteOption) => {
-    if (!option.id) return;
-    setSaving(true);
-    setError(null);
-    try {
-      const body = await runAction({
-        action: "select",
-        expectedRevision: optionSet.revision,
-        optionId: option.id,
-      });
-      actions.addAlert({
-        title: "Customer choice and Deal line items updated",
-        message: `${option.name} is selected and ${body.lineItemCount || 0} line items now drive the Deal's native totals. Approval is not requested until the HubSpot Quote is submitted.`,
-        type: "success",
-      });
-      setView("list");
-    } catch (selectError) {
-      setError(
-        selectError instanceof Error
-          ? selectError.message
-          : "Unable to select this option.",
-      );
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const _syncLineItems = async () => {
-    setSaving(true);
-    setError(null);
-    try {
-      const body = await runAction({ action: "sync_line_items" });
-      actions.addAlert({
-        title: "Deal line items updated",
-        message: `${body.lineItemCount || 0} selected pricing items are now on the Deal.`,
-        type: "success",
-      });
-    } catch (syncError) {
-      setError(
-        syncError instanceof Error
-          ? syncError.message
-          : "Unable to update line items.",
-      );
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const _generateQuote = async () => {
-    setSaving(true);
-    setError(null);
-    try {
-      const selected = optionSet.options.find(
-        ({ id }) => id === selectedOptionId,
-      );
-      const body = await runAction({
-        action: "generate_quote",
-        quoteContent: {
-          ...quoteContent,
-          title:
-            quoteContent.title ||
-            `Nylas Enterprise – ${selected?.name || "Customer Choice"}`,
-        },
-      });
-      actions.addAlert({
-        title: body.reused
-          ? "Existing draft Quote opened"
-          : "Draft Quote created",
-        message: body.reused
-          ? "The same selected configuration already had a draft Quote."
-          : "Review the HubSpot draft before publishing or sending it.",
-        type: "success",
-      });
-    } catch (quoteError) {
-      setError(
-        quoteError instanceof Error
-          ? quoteError.message
-          : "Unable to create the Quote.",
       );
     } finally {
       setSaving(false);
@@ -756,6 +579,12 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
         </Alert>
       )}
 
+      {latestQuoteUrl && (
+        <Alert title="Draft Quote ready" variant="success">
+          <Link href={latestQuoteUrl}>Open the draft Quote</Link>
+        </Alert>
+      )}
+
       <OptionEditor
         option={editing}
         saving={saving}
@@ -764,114 +593,6 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
         onLock={lockAndCreateQuote}
       />
     </Stack>
-  );
-};
-
-const _OptionList = ({
-  optionSet,
-  selectedOptionId,
-  saving,
-  onNew,
-  onEdit,
-  onDuplicate,
-  onDelete,
-  onChoose: _onChoose,
-}: {
-  optionSet: OptionDocument;
-  selectedOptionId: string | null;
-  saving: boolean;
-  onNew: () => void;
-  onEdit: (option: QuoteOption) => void;
-  onDuplicate: (option: QuoteOption) => void;
-  onDelete: (option: QuoteOption) => void;
-  onChoose: (option: QuoteOption) => void;
-}) => {
-  if (optionSet.options.length === 0) {
-    return (
-      <EmptyState title="No quote options yet" layout="vertical">
-        <Stack distance="sm">
-          <Text>
-            Create the first commercial option for this New Business Deal.
-          </Text>
-          <Button variant="primary" onClick={onNew}>
-            Create First Option
-          </Button>
-        </Stack>
-      </EmptyState>
-    );
-  }
-
-  return (
-    <Table density="condensed">
-      <TableHead>
-        <TableRow>
-          <TableHeader>Option</TableHeader>
-          <TableHeader>Status</TableHeader>
-          <TableHeader align="right">Term</TableHeader>
-          <TableHeader align="right">ARR</TableHeader>
-          <TableHeader align="right">TCV</TableHeader>
-          <TableHeader>Approval</TableHeader>
-          <TableHeader>Actions</TableHeader>
-        </TableRow>
-      </TableHead>
-      <TableBody>
-        {optionSet.options.map((option) => {
-          const isSelected = option.id === selectedOptionId;
-          return (
-            <TableRow key={option.id || option.name}>
-              <TableCell>
-                <Text format={{ fontWeight: isSelected ? "bold" : "regular" }}>
-                  {option.name}
-                </Text>
-              </TableCell>
-              <TableCell>
-                <StatusTag variant={statusVariant(option.status)}>
-                  {statusLabel(option.status)}
-                </StatusTag>
-              </TableCell>
-              <TableCell align="right">{option.input.termMonths} mo.</TableCell>
-              <TableCell align="right">
-                {currency(option.result?.committedArr)}
-              </TableCell>
-              <TableCell align="right">
-                {currency(option.result?.tcv)}
-              </TableCell>
-              <TableCell>
-                {approvalLabel(option.result?.approvalTierRequired)}
-              </TableCell>
-              <TableCell>
-                <Flex gap="xs" wrap>
-                  <Button
-                    size="xs"
-                    onClick={() => onEdit(option)}
-                    disabled={saving}
-                  >
-                    Edit
-                  </Button>
-                  <Button
-                    size="xs"
-                    onClick={() => onDuplicate(option)}
-                    disabled={saving}
-                  >
-                    Duplicate
-                  </Button>
-                  {!isSelected && (
-                    <Button
-                      size="xs"
-                      variant="destructive"
-                      onClick={() => onDelete(option)}
-                      disabled={saving}
-                    >
-                      Remove
-                    </Button>
-                  )}
-                </Flex>
-              </TableCell>
-            </TableRow>
-          );
-        })}
-      </TableBody>
-    </Table>
   );
 };
 
@@ -891,23 +612,44 @@ const OptionEditor = ({
   onPreview: (input: QuoteInput) => Promise<QuoteResult>;
   onLock: () => void;
 }) => {
-  const [previewResult, setPreviewResult] = useState<QuoteResult | undefined>(
-    option.result,
-  );
+  // Keep the result together with the input that produced it. Freshness is then a fact about
+  // the data rather than a flag that has to be kept in sync — updateInput allocates a new input
+  // object on every edit, so reference identity is an exact "these numbers describe what is on
+  // screen" test. A bare previewResult could not distinguish current figures from the previous
+  // entry's, which is what let a failed preview leave stale pricing on screen, silently, with
+  // the Lock button still enabled over it.
+  const [preview, setPreview] = useState<
+    { input: QuoteInput; result: QuoteResult } | undefined
+  >(option.result ? { input: option.input, result: option.result } : undefined);
+  const [previewError, setPreviewError] = useState<string | undefined>();
   useEffect(() => {
     let cancelled = false;
+    const requestedInput = option.input;
     const timeout = setTimeout(() => {
-      void onPreview(option.input)
+      void onPreview(requestedInput)
         .then((result) => {
-          if (!cancelled) setPreviewResult(result);
+          if (cancelled) return;
+          setPreview({ input: requestedInput, result });
+          setPreviewError(undefined);
         })
-        .catch(() => undefined);
+        .catch((error: unknown) => {
+          if (cancelled) return;
+          setPreviewError(
+            error instanceof Error
+              ? error.message
+              : "Pricing could not be calculated. Check your inputs and try again.",
+          );
+        });
     }, 350);
     return () => {
       cancelled = true;
       clearTimeout(timeout);
     };
   }, [onPreview, option.input]);
+
+  const previewResult = preview?.result;
+  const pricingIsCurrent = preview?.input === option.input && !previewError;
+  const previewLoading = !pricingIsCurrent && !previewError;
   const committedProductCount = products.filter(
     ({ key }) => option.input.volumes[key] > 0,
   ).length;
@@ -933,30 +675,49 @@ const OptionEditor = ({
     );
   };
 
+  // Band labels must match the ones printed on the customer-facing Quote (lineItemModel.js
+  // formatBand), so a rep reading the card and a customer reading the quote see the same ranges.
+  const bandRange = (lower: number, upper: number | null) => {
+    const from = lower === 0 ? "0" : `${lower.toLocaleString()}K`;
+    return upper == null ? `${from}+` : `${from}–${upper.toLocaleString()}K`;
+  };
+
   const proposedRatePreview = (line: QuoteLine | undefined) => {
-    if (!line) {
-      return <Text variant="microcopy">Updating…</Text>;
-    }
+    if (!line) return <Text variant="microcopy">—</Text>;
     if (line.productKey === "agent_email_thousands") {
       return (
         <Stack distance="flush">
-          {line.baseBandRates.map((band, index) => {
-            const range =
-              band.upper == null
-                ? `${band.lower.toLocaleString()}K+`
-                : `${band.lower === 0 ? "1" : band.lower.toLocaleString()}K–${band.upper.toLocaleString()}K`;
-            const proposedRate =
-              line.proposedBandRates[index]?.rate ?? band.rate;
-            return (
-              <Text key={range} variant="microcopy">
-                {range}: {rateCurrency(proposedRate)}
-              </Text>
-            );
-          })}
+          {line.baseBandRates.map((band, index) => (
+            <Text key={bandRange(band.lower, band.upper)} variant="microcopy">
+              {bandRange(band.lower, band.upper)}:{" "}
+              {rateCurrency(line.proposedBandRates[index]?.rate)}
+            </Text>
+          ))}
         </Stack>
       );
     }
     return <Text>{rateCurrency(line.displayProposedUnitRate)}</Text>;
+  };
+
+  const listRatePreview = (line: QuoteLine | undefined) => {
+    if (!line) return <Text variant="microcopy">—</Text>;
+    if (line.productKey === "agent_email_thousands") {
+      return (
+        <Stack distance="flush">
+          {/* Read the adjusted list rates the calculator published. Recomputing them here as
+              rate * (1 - termDiscount) * (1 + paymentPremium) used the multiplicative form, but
+              the server applies the adjustment additively and rounds to cents — so the displayed
+              list rates could not reproduce the Savings and Fees columns beside them, and always
+              understated the discount the rep was giving. */}
+          {line.listBandRates.map((band) => (
+            <Text key={bandRange(band.lower, band.upper)} variant="microcopy">
+              {rateCurrency(band.rate)}
+            </Text>
+          ))}
+        </Stack>
+      );
+    }
+    return <Text>{rateCurrency(line.displayListUnitRate)}</Text>;
   };
 
   const productTable = (tableProducts: typeof products) => (
@@ -978,7 +739,7 @@ const OptionEditor = ({
           const line = previewResult?.lines.find(
             ({ productKey }) => productKey === product.key,
           );
-          const listRate = line?.displayListUnitRate ?? line?.baseUnitRate;
+          const quoted = (option.input.volumes[product.key] || 0) > 0;
           return (
             <Fragment key={product.key}>
               <TableRow>
@@ -989,14 +750,15 @@ const OptionEditor = ({
                   </Stack>
                 </TableCell>
                 <TableCell>{product.inputUnit}</TableCell>
-                <TableCell>
+                <TableCell align="right">
                   <NumberInput
-                    label=""
+                    label={`${product.label} volume`}
                     name={product.key}
                     value={option.input.volumes[product.key]}
                     min={0}
                     max={1_000_000_000}
                     precision={0}
+                    tooltip={`Committed ${product.inputUnit} per month.`}
                     onChange={(value) =>
                       onInputChange("volumes", {
                         ...option.input.volumes,
@@ -1005,29 +767,10 @@ const OptionEditor = ({
                     }
                   />
                 </TableCell>
+                <TableCell align="right">{listRatePreview(line)}</TableCell>
                 <TableCell align="right">
-                  {line?.productKey === "agent_email_thousands" ? (
-                    <Stack distance="flush">
-                      {line.baseBandRates.map((band) => (
-                        <Text
-                          key={`${band.lower}-${band.upper ?? "plus"}`}
-                          variant="microcopy"
-                        >
-                          {rateCurrency(
-                            band.rate *
-                              (1 - (previewResult?.termDiscount || 0)) *
-                              (1 + (previewResult?.paymentPremium || 0)),
-                          )}
-                        </Text>
-                      ))}
-                    </Stack>
-                  ) : (
-                    rateCurrency(listRate)
-                  )}
-                </TableCell>
-                <TableCell>
                   <NumberInput
-                    label=""
+                    label={`${product.label} discount %`}
                     name={`${product.key}_discount`}
                     value={
                       (option.input.productDiscounts?.[product.key] || 0) * 100
@@ -1036,7 +779,14 @@ const OptionEditor = ({
                     max={100}
                     precision={2}
                     formatStyle="percentage"
-                    tooltip="Optional. Enter the approved discretionary discount for this product."
+                    // A discount on a product with no committed volume changes no total, so it
+                    // is disabled rather than silently accepted.
+                    readOnly={!quoted}
+                    tooltip={
+                      quoted
+                        ? "Optional. Enter the approved discretionary discount for this product."
+                        : "Enter a monthly volume before discounting this product."
+                    }
                     onChange={(value) =>
                       onInputChange("productDiscounts", {
                         ...(option.input.productDiscounts ||
@@ -1048,13 +798,12 @@ const OptionEditor = ({
                 </TableCell>
                 <TableCell align="right">{proposedRatePreview(line)}</TableCell>
                 <TableCell align="right">
-                  {currency(
-                    (line?.listTermCommitment || 0) -
-                      (line?.termCommitment || 0),
-                  )}
+                  {line
+                    ? currency(line.listTermCommitment - line.termCommitment)
+                    : "—"}
                 </TableCell>
                 <TableCell align="right">
-                  {currency(line?.termCommitment || 0)}
+                  {line ? currency(line.termCommitment) : "—"}
                 </TableCell>
               </TableRow>
             </Fragment>
@@ -1066,9 +815,21 @@ const OptionEditor = ({
 
   return (
     <Stack distance="sm">
+      {previewError && (
+        <Alert title="Pricing is not up to date" variant="error">
+          {previewError} The figures below are from your previous entry.
+        </Alert>
+      )}
+
       {previewResult && (
         <Card>
           <Stack distance="flush">
+            {previewLoading && (
+              <Flex gap="xs" align="center">
+                <LoadingSpinner size="xs" label="Updating pricing" />
+                <Text variant="microcopy">Updating pricing…</Text>
+              </Flex>
+            )}
             <AutoGrid columnWidth={145} flexible gap="sm">
               <Text>ARR: {currency(previewResult.committedArr)}</Text>
               <Text>One-time: {currency(previewResult.oneTime)}</Text>
@@ -1108,8 +869,7 @@ const OptionEditor = ({
               <Box>
                 <Heading>Contract Basics</Heading>
                 <Text variant="microcopy">
-                  Name the scenario and enter the customer’s proposed contract
-                  terms.
+                  Enter the customer’s proposed contract terms.
                 </Text>
               </Box>
               <AutoGrid columnWidth={155} flexible gap="sm">
@@ -1346,6 +1106,25 @@ const OptionEditor = ({
               >
                 Non-renewal
               </Checkbox>
+              {/* The copy above promises a renewal term and a notice deadline. The dates the
+                  calculator derives from them used to live in a summary panel that is no longer
+                  rendered, so the rep was told a deadline existed and never shown it. */}
+              {previewResult && (
+                <AutoGrid columnWidth={175} flexible gap="sm">
+                  <Text variant="microcopy">
+                    Ends{" "}
+                    {previewResult.dates.contractEndDate || "Not calculated"}
+                  </Text>
+                  <Text variant="microcopy">
+                    Renews {previewResult.dates.renewalDate || "Not applicable"}
+                  </Text>
+                  <Text variant="microcopy">
+                    Notice by{" "}
+                    {previewResult.dates.nonRenewalNoticeDate ||
+                      "Not applicable"}
+                  </Text>
+                </AutoGrid>
+              )}
               <Divider />
               <Checkbox
                 name="redlining_requested"
@@ -1375,9 +1154,13 @@ const OptionEditor = ({
           variant="primary"
           loading={saving}
           onClick={onLock}
+          // pricingIsCurrent is the important guard: without it a failed or in-flight preview
+          // left this button enabled over the previous input's numbers, so one click could push
+          // pricing the rep was no longer looking at to the Deal and a customer-facing Quote.
           disabled={
             !option.input.startDate ||
             committedProductCount === 0 ||
+            !pricingIsCurrent ||
             !previewResult ||
             previewResult.blockingReasons.length > 0
           }
@@ -1385,389 +1168,6 @@ const OptionEditor = ({
           Lock in &amp; create quote
         </LoadingButton>
       </Flex>
-    </Stack>
-  );
-};
-
-const _ResultSummary = ({
-  result,
-  title = "Quote Summary",
-  updating = false,
-}: {
-  result: QuoteResult;
-  title?: string;
-  updating?: boolean;
-}) => (
-  <Stack distance="md">
-    {result.blockingReasons.length > 0 && (
-      <Alert title="This calculation cannot proceed" variant="error">
-        {result.approvalReasons.join(" ")}
-      </Alert>
-    )}
-    <Card>
-      <Stack distance="md">
-        <Flex justify="between" align="center" wrap>
-          <Box>
-            <Heading>{title}</Heading>
-            <Text variant="microcopy">
-              {updating
-                ? "Updating prices…"
-                : "Prices include the current term, payment schedule, and line discounts."}
-            </Text>
-          </Box>
-          <Flex gap="xs" align="center">
-            {updating && <LoadingSpinner label="Updating live prices" />}
-            <StatusTag
-              variant={result.blockingReasons.length ? "danger" : "info"}
-            >
-              {approvalLabel(result.approvalTierRequired)}
-            </StatusTag>
-          </Flex>
-        </Flex>
-        <DescriptionList direction="row">
-          <DescriptionListItem label="Pre-Approved Term Discount">
-            {percent(result.termDiscount)}
-          </DescriptionListItem>
-          <DescriptionListItem label="Payment Frequency Adjustment">
-            {percent(result.paymentPremium)}
-          </DescriptionListItem>
-          <DescriptionListItem label="Annual Subscription Commitment">
-            {currency(result.proposedPlatformArr)}
-          </DescriptionListItem>
-          <DescriptionListItem label="Recurring Amount per Billing Period">
-            {currency(result.recurringPerPeriod)}
-          </DescriptionListItem>
-          <DescriptionListItem label="Annual Recurring Revenue">
-            {currency(result.committedArr)}
-          </DescriptionListItem>
-          <DescriptionListItem label="One-Time Fees">
-            {currency(result.oneTime)}
-          </DescriptionListItem>
-          <DescriptionListItem label="Total Contract Value">
-            {currency(result.tcv)}
-          </DescriptionListItem>
-          <DescriptionListItem label="Highest Line Discount">
-            {percent(result.largestDiscretionaryDiscount)}
-          </DescriptionListItem>
-          <DescriptionListItem label="Approval Required From">
-            {approvalLabel(result.approvalTierRequired)}
-          </DescriptionListItem>
-        </DescriptionList>
-      </Stack>
-    </Card>
-
-    <Accordion title="Product Rate Schedule">
-      <Table density="condensed">
-        <TableHead>
-          <TableRow>
-            <TableHeader>Product</TableHeader>
-            <TableHeader>Unit</TableHeader>
-            <TableHeader align="right">Volume / mo.</TableHeader>
-            <TableHeader align="right">List Rate</TableHeader>
-            <TableHeader align="right">Discount</TableHeader>
-            <TableHeader align="right">Proposed Rate</TableHeader>
-            <TableHeader align="right">Savings / Term</TableHeader>
-            <TableHeader align="right">Fees / Term</TableHeader>
-          </TableRow>
-        </TableHead>
-        <TableBody>
-          {result.lines.map((line) => (
-            <TableRow key={line.productKey}>
-              <TableCell>{line.productName}</TableCell>
-              <TableCell>{line.unitOfMeasure}</TableCell>
-              <TableCell align="right">
-                {line.volume.toLocaleString()}
-              </TableCell>
-              <TableCell align="right">
-                {rateCurrency(line.displayListUnitRate)}
-              </TableCell>
-              <TableCell align="right">
-                {percent(line.discretionaryDiscount)}
-              </TableCell>
-              <TableCell align="right">
-                {rateCurrency(line.displayProposedUnitRate)}
-              </TableCell>
-              <TableCell align="right">
-                {currency(line.listTermCommitment - line.termCommitment)}
-              </TableCell>
-              <TableCell align="right">
-                {currency(line.termCommitment)}
-              </TableCell>
-            </TableRow>
-          ))}
-        </TableBody>
-      </Table>
-    </Accordion>
-
-    <Accordion title="Services, Add-ons, and One-Time Fees">
-      <Table density="condensed">
-        <TableHead>
-          <TableRow>
-            <TableHeader>Charge</TableHeader>
-            <TableHeader>Frequency</TableHeader>
-            <TableHeader align="right">List Price</TableHeader>
-            <TableHeader align="right">Savings</TableHeader>
-            <TableHeader align="right">Proposed Price</TableHeader>
-          </TableRow>
-        </TableHead>
-        <TableBody>
-          <TableRow>
-            <TableCell>Subscription Support</TableCell>
-            <TableCell>Annual</TableCell>
-            <TableCell align="right">
-              {currency(result.listSupportAnnual)}
-            </TableCell>
-            <TableCell align="right">
-              {currency(result.listSupportAnnual - result.supportAnnual)}
-            </TableCell>
-            <TableCell align="right">
-              {currency(result.supportAnnual)}
-            </TableCell>
-          </TableRow>
-          {result.selectedAddOns.map((addOn) => (
-            <TableRow key={addOn.key}>
-              <TableCell>{addOn.label}</TableCell>
-              <TableCell>Annual</TableCell>
-              <TableCell align="right">
-                {currency(addOn.listAnnualAmount)}
-              </TableCell>
-              <TableCell align="right">
-                {currency(addOn.listAnnualAmount - addOn.annualAmount)}
-              </TableCell>
-              <TableCell align="right">
-                {currency(addOn.annualAmount)}
-              </TableCell>
-            </TableRow>
-          ))}
-          <TableRow>
-            <TableCell>Onboarding</TableCell>
-            <TableCell>One-time</TableCell>
-            <TableCell align="right">
-              {currency(result.listOnboardingAmount)}
-            </TableCell>
-            <TableCell align="right">
-              {currency(result.listOnboardingAmount - result.onboardingAmount)}
-            </TableCell>
-            <TableCell align="right">
-              {currency(result.onboardingAmount)}
-            </TableCell>
-          </TableRow>
-          <TableRow>
-            <TableCell>Professional Services</TableCell>
-            <TableCell>One-time</TableCell>
-            <TableCell align="right">
-              {currency(result.listProfessionalServicesAmount)}
-            </TableCell>
-            <TableCell align="right">
-              {currency(
-                result.listProfessionalServicesAmount -
-                  result.professionalServicesAmount,
-              )}
-            </TableCell>
-            <TableCell align="right">
-              {currency(result.professionalServicesAmount)}
-            </TableCell>
-          </TableRow>
-        </TableBody>
-      </Table>
-    </Accordion>
-
-    <Accordion title="Contract Summary">
-      <Table density="condensed">
-        <TableHead>
-          <TableRow>
-            <TableHeader>Measure</TableHeader>
-            <TableHeader align="right">List</TableHeader>
-            <TableHeader align="right">Savings</TableHeader>
-            <TableHeader align="right">Proposed</TableHeader>
-          </TableRow>
-        </TableHead>
-        <TableBody>
-          <TableRow>
-            <TableCell>Subscription Drawdown / Year</TableCell>
-            <TableCell align="right">
-              {currency(result.listPlatformArr)}
-            </TableCell>
-            <TableCell align="right">
-              {currency(result.listPlatformArr - result.proposedPlatformArr)}
-            </TableCell>
-            <TableCell align="right">
-              {currency(result.proposedPlatformArr)}
-            </TableCell>
-          </TableRow>
-          <TableRow>
-            <TableCell>Total Recurring Fees / Year</TableCell>
-            <TableCell align="right">
-              {currency(result.listCommittedArr)}
-            </TableCell>
-            <TableCell align="right">
-              {currency(result.listCommittedArr - result.committedArr)}
-            </TableCell>
-            <TableCell align="right">{currency(result.committedArr)}</TableCell>
-          </TableRow>
-          <TableRow>
-            <TableCell>One-Time Fees</TableCell>
-            <TableCell align="right">{currency(result.listOneTime)}</TableCell>
-            <TableCell align="right">
-              {currency(result.listOneTime - result.oneTime)}
-            </TableCell>
-            <TableCell align="right">{currency(result.oneTime)}</TableCell>
-          </TableRow>
-          <TableRow>
-            <TableCell>Total Contract Value</TableCell>
-            <TableCell align="right">{currency(result.listTcv)}</TableCell>
-            <TableCell align="right">
-              {currency(result.listTcv - result.tcv)}
-            </TableCell>
-            <TableCell align="right">{currency(result.tcv)}</TableCell>
-          </TableRow>
-        </TableBody>
-      </Table>
-    </Accordion>
-
-    <Accordion title="Contract and Renewal Dates">
-      <DescriptionList direction="row">
-        <DescriptionListItem label="Contract Start">
-          {result.dates.contractStartDate || "Not set"}
-        </DescriptionListItem>
-        <DescriptionListItem label="Contract End">
-          {result.dates.contractEndDate || "Not set"}
-        </DescriptionListItem>
-        <DescriptionListItem label="First Renewal Date">
-          {result.dates.renewalDate || "Does not automatically renew"}
-        </DescriptionListItem>
-        <DescriptionListItem label="Non-Renewal Notice Deadline">
-          {result.dates.nonRenewalNoticeDate || "Not applicable"}
-        </DescriptionListItem>
-      </DescriptionList>
-    </Accordion>
-  </Stack>
-);
-
-// Retained only for compatibility with saved comparison data; it is not rendered.
-// eslint-disable-next-line unused-imports/no-unused-vars
-const LegacyComparison = ({
-  options,
-  selectedOptionId: _selectedOptionId,
-  saving,
-  onBack,
-  onEdit,
-  onChoose: _onChoose,
-}: {
-  options: QuoteOption[];
-  selectedOptionId: string | null;
-  saving: boolean;
-  onBack: () => void;
-  onEdit: (option: QuoteOption) => void;
-  onChoose: (option: QuoteOption) => void;
-}) => {
-  const comparisonRows = useMemo(
-    () => [
-      {
-        label: "Contract Term",
-        value: (option: QuoteOption) => `${option.input.termMonths} months`,
-      },
-      {
-        label: "Billing Frequency",
-        value: (option: QuoteOption) =>
-          paymentOptions.find(
-            ({ value }) => value === option.input.paymentFrequency,
-          )?.label || "",
-      },
-      {
-        label: "Committed Products",
-        value: (option: QuoteOption) =>
-          String(option.result?.quotedProducts.length || 0),
-      },
-      {
-        label: "Annual Drawdown",
-        value: (option: QuoteOption) =>
-          currency(option.result?.proposedPlatformArr),
-      },
-      {
-        label: "ARR",
-        value: (option: QuoteOption) => currency(option.result?.committedArr),
-      },
-      {
-        label: "Per Billing Period",
-        value: (option: QuoteOption) =>
-          currency(option.result?.recurringPerPeriod),
-      },
-      {
-        label: "One-Time Fees",
-        value: (option: QuoteOption) => currency(option.result?.oneTime),
-      },
-      {
-        label: "TCV",
-        value: (option: QuoteOption) => currency(option.result?.tcv),
-      },
-      {
-        label: "Highest Discount",
-        value: (option: QuoteOption) =>
-          percent(option.result?.largestDiscretionaryDiscount),
-      },
-      {
-        label: "Approval",
-        value: (option: QuoteOption) =>
-          approvalLabel(option.result?.approvalTierRequired),
-      },
-    ],
-    [],
-  );
-
-  return (
-    <Stack distance="md">
-      <Flex justify="between" align="center">
-        <Heading>Compare Quote Options</Heading>
-        <Button onClick={onBack}>Back to Options</Button>
-      </Flex>
-      <Table density="condensed">
-        <TableHead>
-          <TableRow>
-            <TableHeader>Measure</TableHeader>
-            {options.map((option) => (
-              <TableHeader key={option.id || option.name}>
-                {option.name}
-              </TableHeader>
-            ))}
-          </TableRow>
-        </TableHead>
-        <TableBody>
-          {comparisonRows.map((row) => (
-            <TableRow key={row.label}>
-              <TableCell>
-                <Text format={{ fontWeight: "demibold" }}>{row.label}</Text>
-              </TableCell>
-              {options.map((option) => (
-                <TableCell key={`${row.label}-${option.id}`}>
-                  {row.value(option)}
-                </TableCell>
-              ))}
-            </TableRow>
-          ))}
-          <TableRow>
-            <TableCell>Actions</TableCell>
-            {options.map((option) => (
-              <TableCell key={`actions-${option.id}`}>
-                <Stack distance="xs">
-                  <Button
-                    size="xs"
-                    onClick={() => onEdit(option)}
-                    disabled={saving}
-                  >
-                    Edit
-                  </Button>
-                </Stack>
-              </TableCell>
-            ))}
-          </TableRow>
-        </TableBody>
-      </Table>
-      <Divider />
-      <Text variant="microcopy">
-        Selecting an option updates the reportable quote fields on the Deal.
-        Line items are not created until the selected option is approved.
-      </Text>
     </Stack>
   );
 };

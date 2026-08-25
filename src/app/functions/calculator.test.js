@@ -2,7 +2,13 @@ const assert = require('node:assert/strict');
 const path = require('node:path');
 const test = require('node:test');
 
-const { QuoteValidationError, calculateQuote, normalizeInput } = require('./calculator');
+const {
+  QuoteValidationError,
+  calculateQuote,
+  normalizeInput,
+  normalizeStoredInput,
+  round,
+} = require('./calculator');
 
 const goldenTests = require(path.resolve(
   __dirname,
@@ -317,7 +323,16 @@ test('uses the largest line discount for approval and discounts each charge inde
   assert.equal(result.onboardingAmount, 3_250);
   assert.equal(result.professionalServicesAmount, 1_800);
   assert.equal(result.selectedAddOns[0].annualAmount, 1_920);
-  assert.equal(result.supportAnnual, result.listSupportAnnual * 0.85);
+
+  // Support is charged as a percentage of the ARR the customer actually pays, so the 5% product
+  // discount flows through to it, and the 15% support discount applies on top of that.
+  // listSupportAnnual is the list-price counterpart and must stay derived from listPlatformArr —
+  // asserting supportAnnual === listSupportAnnual * 0.85 previously passed only because the
+  // "list" figure was itself computed from the discounted ARR, which understated the blended
+  // effective discount written to the Deal.
+  const supportPercent = result.listSupportAnnual / result.listPlatformArr;
+  assert.equal(result.supportAnnual, round(result.proposedPlatformArr * supportPercent * 0.85, 2));
+  assert.ok(result.listSupportAnnual > result.supportAnnual / 0.85);
 });
 
 test('uses editable product band rates without changing protected band boundaries', () => {
@@ -335,4 +350,93 @@ test('uses editable product band rates without changing protected band boundarie
   assert.equal(line.baseBlendedRate, 0.35);
   assert.equal(line.proposedUnitRate, 0.35);
   assert.equal(result.settingsVersion, 2);
+});
+
+test('discounts on items that are not quoted do not escalate the approval tier', () => {
+  const base = {
+    termMonths: 12,
+    paymentFrequency: 'annual_in_advance',
+    volumes: { connect_ca: 20_000 },
+    supportLevel: 'basic',
+    onboardingPackage: 'quick_launch',
+    professionalServices: [],
+    addOns: [],
+  };
+  const baseline = calculateQuote(base);
+  assert.equal(baseline.approvalTierRequired, 'none');
+
+  // A discount typed against a product with no volume, an add-on that was deselected, or a $0
+  // support/onboarding line moves no money. It must not route the deal for approval.
+  const phantom = calculateQuote({
+    ...base,
+    productDiscounts: { notetaker_bot_hours: 0.4 },
+    addOnDiscounts: { privacy_filter: 1 },
+    supportDiscount: 0.35,
+    onboardingDiscount: 0.2,
+    professionalServicesDiscount: 0.5,
+  });
+  assert.equal(phantom.committedArr, baseline.committedArr);
+  assert.equal(phantom.tcv, baseline.tcv);
+  assert.equal(phantom.largestDiscretionaryDiscount, 0);
+  assert.equal(phantom.approvalTierRequired, 'none');
+
+  // A discount on a product that is actually quoted still routes normally.
+  const real = calculateQuote({ ...base, productDiscounts: { connect_ca: 0.4 } });
+  assert.equal(real.largestDiscretionaryDiscount, 0.4);
+  assert.notEqual(real.approvalTierRequired, 'none');
+});
+
+test('graduated list band rates come from the calculator, not from a UI reimplementation', () => {
+  const result = calculateQuote({
+    termMonths: 36,
+    paymentFrequency: 'monthly_in_advance',
+    volumes: { agent_email_thousands: 600 },
+    supportLevel: 'basic',
+    onboardingPackage: 'quick_launch',
+    professionalServices: [],
+    addOns: [],
+  });
+  const line = result.lines.find(({ productKey }) => productKey === 'agent_email_thousands');
+
+  assert.equal(line.listBandRates.length, line.baseBandRates.length);
+  // The adjustment is additive and rounded to cents. The multiplicative form the card used to
+  // compute, rate * (1 - termDiscount) * (1 + paymentPremium), understates every band.
+  for (const [index, band] of line.baseBandRates.entries()) {
+    assert.equal(
+      line.listBandRates[index].rate,
+      round(band.rate * (1 - result.termDiscount + result.paymentPremium), 2),
+    );
+    assert.equal(line.listBandRates[index].lower, band.lower);
+    assert.equal(line.listBandRates[index].upper, band.upper);
+  }
+  // The published list rates must reproduce the list MRR the quote totals are built from.
+  const rebuiltListMrr = line.listBandRates.reduce((total, band, index) => {
+    const upper = band.upper == null ? line.volume : Math.min(line.volume, band.upper);
+    return total + Math.max(upper - band.lower, 0) * band.rate;
+  }, 0);
+  assert.equal(round(rebuiltListMrr, 2), line.listMrr);
+});
+
+test('stored input is normalized to catalog keys and drops retracted redline text', () => {
+  const stored = normalizeStoredInput({
+    termMonths: 12,
+    paymentFrequency: 'Annual In Advance',
+    volumes: { connect_ca: 1_000 },
+    supportLevel: 'Full Support',
+    onboardingPackage: 'Quick Launch +',
+    professionalServices: ['gtm_review', 'gtm_review'],
+    addOns: [],
+    redliningRequested: false,
+    specialTerms: 'INTERNAL: customer demands uncapped liability',
+  });
+
+  // Human labels calculate fine but are not CATALOG keys, and would fail later with
+  // PRODUCT_MAPPING_REQUIRED once they were persisted verbatim.
+  assert.equal(stored.paymentFrequency, 'annual_in_advance');
+  assert.equal(stored.supportLevel, 'full');
+  assert.equal(stored.onboardingPackage, 'quick_launch_plus');
+  // Duplicates would otherwise become duplicate line items on the Deal and the Quote.
+  assert.deepEqual(stored.professionalServices, ['gtm_review']);
+  // Retracted redlines must never survive into a customer-facing Quote.
+  assert.equal(stored.specialTerms, '');
 });

@@ -570,6 +570,7 @@ var require_calculator = __commonJS({
         let exactListMrr = volume * exactListUnitRate;
         let exactProposedMrr = volume * exactProposedUnitRate;
         let proposedBandRates = [];
+        let listBandRates = [];
         if (product.pricingModel === "graduated_adjusted_bands") {
           const adjusted = calculateAdjustedBandPricing(
             volume,
@@ -586,6 +587,11 @@ var require_calculator = __commonJS({
             lower,
             upper,
             rate: proposedRate
+          }));
+          listBandRates = adjusted.bandRates.map(({ lower, upper, listRate }) => ({
+            lower,
+            upper,
+            rate: listRate
           }));
         }
         const listUnitRate = round(exactListUnitRate, 2);
@@ -609,6 +615,7 @@ var require_calculator = __commonJS({
           displayProposedUnitRate,
           billingUnitRate,
           baseBandRates: product.bands.map(([lower, upper, rate]) => ({ lower, upper, rate })),
+          listBandRates,
           proposedBandRates,
           availableUnitRate: proposedUnitRate,
           discretionaryDiscount,
@@ -628,12 +635,19 @@ var require_calculator = __commonJS({
       );
       const listSupportAnnual = round(
         Math.min(
+          listPlatformArr * input.support.percentOfPlatformArr,
+          input.support.annualCap
+        ),
+        2
+      );
+      const proposedSupportBeforeDiscount = round(
+        Math.min(
           proposedPlatformArr * input.support.percentOfPlatformArr,
           input.support.annualCap
         ),
         2
       );
-      const supportAnnual = round(listSupportAnnual * (1 - input.supportDiscount), 2);
+      const supportAnnual = round(proposedSupportBeforeDiscount * (1 - input.supportDiscount), 2);
       const selectedAddOns = activeRules.addOnRules.filter(({ key }) => input.addOns.includes(key)).map(({ key, label, annualAmount }) => {
         const exactListMonthlyAmount = activeRules.calculationMethod === "excel_compatible" ? annualAmount / 12 * (1 - termRule.discount + input.payment.premium) : round(annualAmount / 12 * (1 - termRule.discount) * (1 + input.payment.premium), 2);
         const listMonthlyAmount = round(exactListMonthlyAmount, 2);
@@ -674,14 +688,14 @@ var require_calculator = __commonJS({
       const listTcv = round(listCommittedArr * (input.termMonths / 12) + listOneTime, 2);
       const recurringPerPeriod = round(committedArr / input.payment.paymentsPerYear, 2);
       const hasOauthDependencyFailure = input.addOns.includes("verified_oauth") && input.psItemCount === 0;
-      const largestDiscretionaryDiscount = Math.max(
-        0,
-        ...Object.values(input.productDiscounts),
-        ...Object.values(input.addOnDiscounts),
-        input.supportDiscount,
-        input.onboardingDiscount,
-        input.professionalServicesDiscount
-      );
+      const effectiveDiscounts = [
+        ...Object.entries(input.productDiscounts).filter(([key]) => input.volumes[key] > 0).map(([, discount]) => discount),
+        ...Object.entries(input.addOnDiscounts).filter(([key]) => input.addOns.includes(key)).map(([, discount]) => discount),
+        ...listSupportAnnual > 0 ? [input.supportDiscount] : [],
+        ...listOnboardingAmount > 0 ? [input.onboardingDiscount] : [],
+        ...listProfessionalServicesAmount > 0 ? [input.professionalServicesDiscount] : []
+      ];
+      const largestDiscretionaryDiscount = Math.max(0, ...effectiveDiscounts);
       const approval = buildApproval(
         input,
         largestDiscretionaryDiscount,
@@ -747,11 +761,38 @@ var require_calculator = __commonJS({
       ).digest("hex");
       return result;
     };
+    var normalizeStoredInput2 = (rawInput, pricingPolicy = {}) => {
+      const input = normalizeInput(rawInput, buildActiveRules(pricingPolicy));
+      return {
+        startDate: input.startDate,
+        termMonths: input.termMonths,
+        paymentFrequency: input.payment.key,
+        supportLevel: input.support.key,
+        onboardingPackage: input.onboarding.key,
+        discretionaryDiscount: input.discretionaryDiscount,
+        productDiscounts: input.productDiscounts,
+        addOnDiscounts: input.addOnDiscounts,
+        supportDiscount: input.supportDiscount,
+        onboardingDiscount: input.onboardingDiscount,
+        professionalServicesDiscount: input.professionalServicesDiscount,
+        volumes: input.volumes,
+        professionalServices: input.professionalServices,
+        psItemCount: input.psItemCount,
+        addOns: input.addOns,
+        autoRenewal: input.autoRenewal,
+        renewalTermMonths: input.renewalTermMonths,
+        nonRenewalNoticeDays: input.nonRenewalNoticeDays,
+        redliningRequested: input.redliningRequested,
+        nonStandardTerms: input.nonStandardTerms,
+        specialTerms: input.specialTerms
+      };
+    };
     module2.exports = {
       QuoteValidationError: QuoteValidationError2,
       calculateQuote: calculateQuote2,
       buildActiveRules,
       normalizeInput,
+      normalizeStoredInput: normalizeStoredInput2,
       round,
       rules
     };
@@ -1266,7 +1307,11 @@ var require_lineItemModel = __commonJS({
       price: String(round(price)),
       description: String(description || "").slice(0, 5e3)
     });
-    var formatBand = ({ lower, upper, rate }) => `${lower.toLocaleString("en-US")}\u2013${upper == null ? "+" : upper.toLocaleString("en-US")}: $${rate.toFixed(2)} per 1,000 emails`;
+    var formatBand = ({ lower, upper, rate }) => {
+      const from = lower === 0 ? "0" : `${lower.toLocaleString("en-US")}K`;
+      const range = upper == null ? `${from}+` : `${from}\u2013${upper.toLocaleString("en-US")}K`;
+      return `${range}: $${rate.toFixed(2)} per 1,000 emails`;
+    };
     var productDescription = (line) => {
       const bandDetail = line.proposedBandRates?.length ? ` Graduated monthly rates: ${line.proposedBandRates.map(formatBand).join("; ")}.` : "";
       return `${line.volume.toLocaleString("en-US")} ${line.unitOfMeasure} committed average per month at $${line.proposedUnitRate.toFixed(2)} blended per ${line.unitOfMeasure} per month.` + bandDetail + " Usage draws down from the shared prepaid subscription pool at these rates.";
@@ -1484,7 +1529,7 @@ ${rateScheduleText(option, true)}`);
 // QuoteOptionsFunction.js
 var crypto = require("node:crypto");
 var hubspot = require("@hubspot/api-client");
-var { QuoteValidationError, calculateQuote } = require_calculator();
+var { QuoteValidationError, calculateQuote, normalizeStoredInput } = require_calculator();
 var {
   accountIdFromContext,
   isDealAllowed,
@@ -1518,6 +1563,7 @@ var SAFE_ERRORS = Object.freeze({
   OPTION_REQUIRED: "Select or calculate a quote option first.",
   OPTION_RECALCULATION_REQUIRED: "Pricing rules changed after this option was calculated. Recalculate it before continuing.",
   TOO_MANY_OPTIONS: `A Deal can contain no more than ${MAX_OPTIONS} active quote options.`,
+  TOO_MANY_LINE_ITEMS: "This Deal has more line items than the pricing app can manage. Reduce them and try again.",
   PAYLOAD_TOO_LARGE: "The saved quote options exceed the allowed storage size.",
   PRODUCT_MAPPING_REQUIRED: "A selected item is not mapped to the HubSpot product library.",
   QUOTE_CONFIGURATION_REQUIRED: "The New Customer quote template has not been configured for the app.",
@@ -1556,9 +1602,10 @@ var normalizeOptionName = (value, fallback) => {
 };
 var assertDealAccess = (context, requestedDealId) => {
   const contextDealId = context?.crm?.objectId == null ? null : String(context.crm.objectId);
+  if (!contextDealId || !/^\d+$/.test(contextDealId)) throw new Error("INVALID_DEAL");
   const dealId = requestedDealId == null ? contextDealId : String(requestedDealId);
-  if (!dealId || !/^\d+$/.test(dealId)) throw new Error("INVALID_DEAL");
-  if (contextDealId && dealId !== contextDealId) throw new Error("INVALID_DEAL");
+  if (!/^\d+$/.test(dealId)) throw new Error("INVALID_DEAL");
+  if (dealId !== contextDealId) throw new Error("INVALID_DEAL");
   return dealId;
 };
 var getAccessToken = () => {
@@ -1643,11 +1690,7 @@ var calculateAndSaveOption = async (client, dealId, state, parameters, settings)
     id: previous?.id || crypto.randomUUID(),
     name: normalizeOptionName(incoming.name, `Option ${state.document.options.length + 1}`),
     status: previous?.status === "approved" ? "pending_re_approval" : "calculated",
-    input: {
-      ...incoming.input,
-      nonStandardTerms: false,
-      specialTerms: incoming.input?.redliningRequested === true && typeof incoming.input.specialTerms === "string" ? incoming.input.specialTerms : ""
-    },
+    input: normalizeStoredInput(incoming.input, settings.pricingPolicy),
     result,
     createdAt: previous?.createdAt || now,
     updatedAt: now
@@ -1729,6 +1772,7 @@ var productVolumeProperties = Object.freeze({
 });
 var buildSelectedProperties = (option, approvalStatus) => {
   const { input, result } = option;
+  const volumes = input.volumes || {};
   const selectedProducts = result.quotedProducts.join(";");
   const effectiveDiscount = result.listTcv > 0 ? 1 - result.tcv / result.listTcv : 0;
   const properties = {
@@ -1762,7 +1806,7 @@ var buildSelectedProperties = (option, approvalStatus) => {
     pricing_approval_status: approvalStatus,
     pricing_approval_reasons: result.approvalReasons.join("\n"),
     pricing_primary_product: "multi",
-    pricing_ca_count: String(input.volumes.connect_ca || 0),
+    pricing_ca_count: String(volumes.connect_ca || 0),
     contract_start_date: toHubSpotDate(input.startDate),
     pricing_contract_end_date: toHubSpotDate(result.dates.contractEndDate),
     pricing_auto_renewal: String(input.autoRenewal === true),
@@ -1778,7 +1822,7 @@ var buildSelectedProperties = (option, approvalStatus) => {
     properties.pricing_line_item_sync_status = "ready";
   }
   for (const [productKey, propertyName] of Object.entries(productVolumeProperties)) {
-    properties[propertyName] = String(input.volumes[productKey] || 0);
+    properties[propertyName] = String(volumes[productKey] || 0);
   }
   return properties;
 };
@@ -1835,9 +1879,9 @@ var chooseOption = async (client, dealId, state, parameters, settings) => {
   };
 };
 var lockLiveCalculation = async (client, dealId, state, parameters, portalId, settings) => {
-  const input = parameters.input;
-  const result = calculateQuote(input, settings.pricingPolicy, settings.version);
+  const result = calculateQuote(parameters.input, settings.pricingPolicy, settings.version);
   if (result.blockingReasons.length > 0) throw new Error("OPTION_BLOCKED");
+  const input = normalizeStoredInput(parameters.input, settings.pricingPolicy);
   const liveOption = {
     id: `live-${result.stateHash.slice(0, 16)}`,
     name: "Live calculation",
@@ -1934,8 +1978,9 @@ var syncDealLineItems = async (client, dealId, state, settings) => {
       (id) => client.crm.lineItems.basicApi.archive(id).catch(() => void 0)
     );
     await client.crm.deals.basicApi.update(dealId, { properties: { pricing_line_item_sync_status: "failed" } }).catch(() => void 0);
+    console.error("Nylas pricing line item sync failed.", error?.message || error);
     throw new Error(
-      error?.message === "PRODUCT_MAPPING_REQUIRED" ? "PRODUCT_MAPPING_REQUIRED" : "LINE_ITEM_SYNC_FAILED"
+      error?.message === "TOO_MANY_LINE_ITEMS" ? "TOO_MANY_LINE_ITEMS" : "LINE_ITEM_SYNC_FAILED"
     );
   }
 };
@@ -1984,14 +2029,13 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
       "quote_template",
       templateId
     );
-    const createdLineItems = await Promise.all(lineItems.map(async (item) => {
+    await Promise.all(lineItems.map(async (item) => {
       const created = await client.crm.lineItems.basicApi.create({
         properties: item.properties,
         associations: [createAssociation(quote.id, 68)]
       });
-      return String(created.id);
+      createdLineItemIds.push(String(created.id));
     }));
-    createdLineItemIds.push(...createdLineItems);
     const [contactIds, companyIds] = await Promise.all([
       associatedIds(client, "deals", dealId, "contacts", 10),
       associatedIds(client, "deals", dealId, "companies", 1)
@@ -2035,10 +2079,10 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
     }
     if (quote?.id) await client.crm.quotes.basicApi.archive(quote.id).catch(() => void 0);
     await client.crm.deals.basicApi.update(dealId, { properties: { pricing_quote_generation_status: "failed" } }).catch(() => void 0);
-    if (error?.message === "INVALID_QUOTE_CONTENT" || error?.message === "PRODUCT_MAPPING_REQUIRED") {
-      throw error;
-    }
-    throw new Error("QUOTE_CREATE_FAILED");
+    console.error("Nylas pricing quote creation failed.", error?.message || error);
+    throw new Error(
+      error?.message === "TOO_MANY_LINE_ITEMS" ? "TOO_MANY_LINE_ITEMS" : "QUOTE_CREATE_FAILED"
+    );
   }
 };
 var stateResponse = (state) => ({
@@ -2188,7 +2232,7 @@ exports.main = async (context) => {
       });
     }
     if (SAFE_ERRORS[error?.message]) return safeError(error.message);
-    console.error("Nylas pricing action failed.");
+    console.error("Nylas pricing action failed.", error?.stack || error?.message || error);
     return safeError("WRITE_FAILED", 500);
   }
 };
