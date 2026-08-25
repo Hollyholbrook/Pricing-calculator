@@ -255,7 +255,7 @@ const buildDealBundleLine = (option) => ({
   properties: recurringProperties({
     option,
     key: 'subscription:nylas_enterprise',
-    component: 'subscription_bundle',
+    component: 'subscription_drawdown',
     product: CATALOG.enterprise,
     quantity: 1,
     price: option.result.recurringPerPeriod,
