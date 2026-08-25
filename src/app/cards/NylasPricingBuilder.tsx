@@ -18,7 +18,6 @@ import {
   Input,
   LoadingButton,
   LoadingSpinner,
-  Link,
   MultiSelect,
   NumberInput,
   Select,
@@ -30,6 +29,8 @@ import {
   TableHead,
   TableHeader,
   TableRow,
+  Tab,
+  Tabs,
   Text,
   TextArea,
   hubspot,
@@ -215,41 +216,49 @@ const products: {
   key: ProductKey;
   label: string;
   description: string;
+  inputUnit: string;
 }[] = [
   {
     key: "connect_ca",
     label: "Connect",
-    description: "Monthly connected accounts",
+    description: "Connected accounts",
+    inputUnit: "CA/month",
   },
   {
     key: "calendar_ca",
     label: "Calendar Only",
-    description: "Monthly calendar accounts",
+    description: "Calendar-only accounts",
+    inputUnit: "calendars/month",
   },
   {
     key: "notetaker_bot_hours",
     label: "Notetaker",
-    description: "Monthly bot hours",
+    description: "Bot hours",
+    inputUnit: "bot hours/month",
   },
   {
     key: "agent_accounts",
     label: "Agent Accounts",
-    description: "Monthly accounts",
+    description: "Agent accounts",
+    inputUnit: "accounts/month",
   },
   {
     key: "agent_email_thousands",
     label: "Agent Email",
-    description: "Monthly email volume in thousands",
+    description: "Emails in thousands",
+    inputUnit: "1,000 emails",
   },
   {
     key: "agent_storage_gb",
     label: "Agent Data Storage",
-    description: "Monthly GB",
+    description: "Storage",
+    inputUnit: "GB/month",
   },
   {
     key: "agent_bandwidth_gb",
     label: "Agent Bandwidth",
-    description: "Monthly GB",
+    description: "Bandwidth",
+    inputUnit: "GB/month",
   },
 ];
 
@@ -447,11 +456,11 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
     options: [],
   });
   const [selectedOptionId, setSelectedOptionId] = useState<string | null>(null);
-  const [approvalStatus, setApprovalStatus] = useState("draft");
-  const [lineItemSyncStatus, setLineItemSyncStatus] = useState("not_started");
-  const [latestQuoteId, setLatestQuoteId] = useState<string | null>(null);
-  const [latestQuoteUrl, setLatestQuoteUrl] = useState<string | null>(null);
-  const [quoteContent, setQuoteContent] = useState<QuoteContent>({
+  const [_approvalStatus, setApprovalStatus] = useState("draft");
+  const [_lineItemSyncStatus, setLineItemSyncStatus] = useState("not_started");
+  const [_latestQuoteId, setLatestQuoteId] = useState<string | null>(null);
+  const [_latestQuoteUrl, setLatestQuoteUrl] = useState<string | null>(null);
+  const [quoteContent, _setQuoteContent] = useState<QuoteContent>({
     title: "",
     expirationDate: dateAfterDays(30),
     presentation: "itemized_products",
@@ -543,7 +552,7 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
     setView("edit");
   };
 
-  const beginDuplicate = (option: QuoteOption) => {
+  const _beginDuplicate = (option: QuoteOption) => {
     setEditing({
       name: `${option.name} Copy`.slice(0, 80),
       status: "draft",
@@ -600,7 +609,7 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
     return body.previewResult;
   };
 
-  const removeOption = async (option: QuoteOption) => {
+  const _removeOption = async (option: QuoteOption) => {
     if (!option.id) return;
     setSaving(true);
     setError(null);
@@ -653,7 +662,7 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
     }
   };
 
-  const syncLineItems = async () => {
+  const _syncLineItems = async () => {
     setSaving(true);
     setError(null);
     try {
@@ -674,7 +683,7 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
     }
   };
 
-  const generateQuote = async () => {
+  const _generateQuote = async () => {
     setSaving(true);
     setError(null);
     try {
@@ -731,172 +740,58 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
 
   return (
     <Stack distance="sm">
-      <Flex justify="between" align="center" wrap>
-        <Box>
-          <Heading>Nylas Pricing Builder</Heading>
-          <Text variant="microcopy">
-            Calculate and compare options. Only the customer choice updates
-            official Deal reporting.
-          </Text>
-        </Box>
-        <Flex gap="sm" wrap>
-          <Button
-            onClick={beginNew}
-            disabled={optionSet.options.length >= 10 || saving}
-          >
-            New Option
-          </Button>
-          <Button
-            onClick={() => setView("compare")}
-            disabled={
-              optionSet.options.filter(({ result }) => result).length < 2 ||
-              saving
-            }
-          >
-            Compare Options
-          </Button>
-        </Flex>
-      </Flex>
+      <Heading>Nylas Pricing Builder</Heading>
 
       {error && (
-        <Alert title="Pricing action needs attention" variant="error">
+        <Alert title="Couldn’t complete the pricing action" variant="error">
           {error}
         </Alert>
       )}
 
-      {selectedOptionId && (
-        <Alert title="Current customer choice" variant="info">
-          {optionSet.options.find(({ id }) => id === selectedOptionId)?.name ||
-            "Selected option"}{" "}
-          —{" "}
-          {approvalStatus === "draft"
-            ? "Approval not requested"
-            : statusLabel(approvalStatus)}
-        </Alert>
+      {optionSet.options.length > 0 && (
+        <Tabs
+          selected={editing?.id || (editing ? "draft" : "options")}
+          variant="enclosed"
+          fill
+          onSelectedChange={(selected: string) => {
+            if (selected === "add") return beginNew();
+            const option = optionSet.options.find(({ id }) => id === selected);
+            if (option) beginEdit(option);
+          }}
+        >
+          {optionSet.options.map((option, index) => (
+            <Tab
+              key={option.id || option.name}
+              tabId={option.id}
+              title={`${option.id === selectedOptionId ? "✓ " : ""}Option ${index + 1} · ${option.name}`}
+              disabled={saving}
+            />
+          ))}
+          {editing && !editing.id && (
+            <Tab tabId="draft" title="New option" disabled />
+          )}
+          <Tab
+            tabId="add"
+            title="+ Add option"
+            disabled={optionSet.options.length >= 10 || saving}
+          />
+        </Tabs>
       )}
 
-      {selectedOptionId && (
-        <Card>
-          <Stack distance="md">
-            <Heading>Create Customer Quote</Heading>
+      {optionSet.options.length === 0 && !editing && (
+        <Stack distance="md">
+          <Stack distance="xs">
+            <Heading>No pricing options yet</Heading>
             <Text variant="microcopy">
-              All selected charges remain included. Choose how the subscription
-              detail appears, then generate a draft for review.
+              Create an option to build workbook pricing for this deal.
             </Text>
-            <AutoGrid columnWidth={240} flexible gap="md">
-              <Input
-                label="Quote Title"
-                name="quote_title"
-                value={quoteContent.title}
-                placeholder="Nylas Enterprise – Customer Choice"
-                onChange={(title) =>
-                  setQuoteContent({ ...quoteContent, title })
-                }
-              />
-              <DateInput
-                label="Quote Expiration Date"
-                name="quote_expiration_date"
-                value={dateValue(quoteContent.expirationDate) || undefined}
-                format="YYYY-MM-DD"
-                onChange={(value) =>
-                  setQuoteContent({
-                    ...quoteContent,
-                    expirationDate: formatDateInput(value),
-                  })
-                }
-              />
-              <Select
-                label="Subscription Display"
-                name="quote_presentation"
-                value={quoteContent.presentation}
-                options={[
-                  {
-                    value: "itemized_products",
-                    label: "Show Each Committed Product",
-                  },
-                  {
-                    value: "subscription_summary",
-                    label: "Show One Subscription Drawdown",
-                  },
-                ]}
-                onChange={(value) =>
-                  setQuoteContent({
-                    ...quoteContent,
-                    presentation: String(value) as QuoteContent["presentation"],
-                  })
-                }
-              />
-            </AutoGrid>
-            <Flex gap="md" wrap>
-              <Checkbox
-                name="include_rate_schedule"
-                checked={quoteContent.includeUncommittedRateSchedule}
-                onChange={(checked) =>
-                  setQuoteContent({
-                    ...quoteContent,
-                    includeUncommittedRateSchedule: checked,
-                  })
-                }
-              >
-                Include Full Product Rate Schedule
-              </Checkbox>
-              <Checkbox
-                name="include_renewal_terms"
-                checked={quoteContent.includeRenewalTerms}
-                onChange={(checked) =>
-                  setQuoteContent({
-                    ...quoteContent,
-                    includeRenewalTerms: checked,
-                  })
-                }
-              >
-                Include Renewal Terms
-              </Checkbox>
-              <Checkbox
-                name="include_special_terms"
-                checked={quoteContent.includeSpecialTerms}
-                onChange={(checked) =>
-                  setQuoteContent({
-                    ...quoteContent,
-                    includeSpecialTerms: checked,
-                  })
-                }
-              >
-                Include Approved Special Terms
-              </Checkbox>
-            </Flex>
-            <Flex gap="sm" wrap align="center">
-              <LoadingButton loading={saving} onClick={syncLineItems}>
-                {lineItemSyncStatus === "synced"
-                  ? "Refresh Deal Line Items"
-                  : "Add Deal Line Items"}
-              </LoadingButton>
-              <LoadingButton
-                variant="primary"
-                loading={saving}
-                onClick={generateQuote}
-              >
-                Generate Draft Quote
-              </LoadingButton>
-              {latestQuoteId && latestQuoteUrl && (
-                <Link href={latestQuoteUrl}>Open Latest Quote</Link>
-              )}
-            </Flex>
           </Stack>
-        </Card>
-      )}
-
-      {view === "list" && (
-        <OptionList
-          optionSet={optionSet}
-          selectedOptionId={selectedOptionId}
-          saving={saving}
-          onNew={beginNew}
-          onEdit={beginEdit}
-          onDuplicate={beginDuplicate}
-          onDelete={removeOption}
-          onChoose={chooseOption}
-        />
+          <Flex justify="start">
+            <Button variant="primary" onClick={beginNew} disabled={saving}>
+              Create option
+            </Button>
+          </Flex>
+        </Stack>
       )}
 
       {view === "edit" && editing && (
@@ -911,22 +806,11 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
           onChoose={chooseOption}
         />
       )}
-
-      {view === "compare" && (
-        <Comparison
-          options={optionSet.options.filter(({ result }) => result)}
-          selectedOptionId={selectedOptionId}
-          saving={saving}
-          onBack={() => setView("list")}
-          onEdit={beginEdit}
-          onChoose={chooseOption}
-        />
-      )}
     </Stack>
   );
 };
 
-const OptionList = ({
+const _OptionList = ({
   optionSet,
   selectedOptionId,
   saving,
@@ -1193,13 +1077,13 @@ const OptionEditor = ({
   };
 
   const productTable = (tableProducts: typeof products) => (
-    <Table bordered density="condensed" flush>
+    <Table density="compact" flush>
       <TableHead>
         <TableRow>
-          <TableHeader width={340}>Product</TableHeader>
-          <TableHeader width={320}>Monthly commitment</TableHeader>
-          <TableHeader width={280}>Discount</TableHeader>
-          <TableHeader width="max">Live price preview</TableHeader>
+          <TableHeader width={300}>Product</TableHeader>
+          <TableHeader width={300}>Monthly volume</TableHeader>
+          <TableHeader width={160}>Discount</TableHeader>
+          <TableHeader width="max">Price</TableHeader>
         </TableRow>
       </TableHead>
       <TableBody>
@@ -1214,7 +1098,7 @@ const OptionEditor = ({
               </TableCell>
               <TableCell>
                 <NumberInput
-                  label="Monthly commitment"
+                  label={product.inputUnit}
                   name={product.key}
                   value={option.input.volumes[product.key]}
                   min={0}
@@ -1230,7 +1114,7 @@ const OptionEditor = ({
               </TableCell>
               <TableCell>
                 <NumberInput
-                  label="Discount"
+                  label="%"
                   name={`${product.key}_discount`}
                   value={
                     (option.input.productDiscounts?.[product.key] || 0) * 100
@@ -1265,38 +1149,26 @@ const OptionEditor = ({
   );
 
   return (
-    <Stack distance="md">
-      <Flex justify="between" align="center" wrap>
-        <Box>
-          <Flex gap="sm" align="center" wrap>
-            <Heading>{option.id ? option.name : "New Quote Option"}</Heading>
-            <StatusTag variant="info">
-              Step {step + 1} of {editorSteps.length}
-            </StatusTag>
-          </Flex>
-          <Text variant="microcopy">{editorSteps[step]}</Text>
-        </Box>
-        <Button onClick={onBack} disabled={saving}>
-          Save for Later / Exit
-        </Button>
-      </Flex>
+    <Stack distance="sm">
+      <Text format={{ fontWeight: "bold" }}>
+        {option.name.trim() || "New option"} ·{" "}
+        {option.updatedAt ? "Saved" : "Not saved"}
+      </Text>
 
-      <Flex gap="xs" wrap>
+      <Tabs
+        selected={step}
+        fill
+        onSelectedChange={(selected: string | number) =>
+          setStep(Number(selected))
+        }
+      >
         {editorSteps.map((label, index) => (
-          <Button
-            key={label}
-            size="xs"
-            variant={index === step ? "primary" : "secondary"}
-            onClick={() => setStep(index)}
-            disabled={saving}
-          >
-            {index + 1}. {label}
-          </Button>
+          <Tab key={label} tabId={index} title={label} disabled={saving} />
         ))}
-      </Flex>
+      </Tabs>
 
       <Card>
-        <Stack distance="sm">
+        <Stack distance="xs">
           {step === 0 && (
             <>
               <Box>
@@ -1437,89 +1309,96 @@ const OptionEditor = ({
                   )}
                 </Stack>
               </AutoGrid>
-              <Accordion title="Add-ons and professional services (optional)">
-                <AutoGrid columnWidth={190} flexible gap="sm">
-                  <MultiSelect
-                    label="Subscription Add-ons"
-                    name="add_ons"
-                    value={option.input.addOns}
-                    options={addOnOptions}
-                    onChange={(value) =>
-                      onInputChange("addOns", value.map(String))
-                    }
-                  />
-                  {addOnOptions.map(({ value, label }) => (
-                    <Stack key={value} distance="xs">
+              <Card>
+                <Stack distance="xs">
+                  <Heading>Add-ons and professional services</Heading>
+                  <AutoGrid columnWidth={190} flexible gap="sm">
+                    <MultiSelect
+                      label="Subscription Add-ons"
+                      name="add_ons"
+                      value={option.input.addOns}
+                      options={addOnOptions}
+                      onChange={(value) =>
+                        onInputChange("addOns", value.map(String))
+                      }
+                    />
+                    {addOnOptions.map(({ value, label }) => (
+                      <Stack key={value} distance="xs">
+                        <NumberInput
+                          label={`${label} Discount`}
+                          name={`${value}_discount`}
+                          value={
+                            (option.input.addOnDiscounts?.[String(value)] ||
+                              0) * 100
+                          }
+                          min={0}
+                          max={100}
+                          precision={2}
+                          formatStyle="percentage"
+                          readOnly={
+                            !option.input.addOns.includes(String(value))
+                          }
+                          onChange={(discount) =>
+                            onInputChange("addOnDiscounts", {
+                              ...(option.input.addOnDiscounts || {}),
+                              [String(value)]: (discount || 0) / 100,
+                            })
+                          }
+                        />
+                        {option.input.addOns.includes(String(value)) &&
+                          discountPreview(
+                            previewResult?.selectedAddOns.find(
+                              ({ key }) => key === value,
+                            )?.listAnnualAmount,
+                            option.input.addOnDiscounts?.[String(value)] || 0,
+                            previewResult?.selectedAddOns.find(
+                              ({ key }) => key === value,
+                            )?.annualAmount,
+                            "per year",
+                          )}
+                      </Stack>
+                    ))}
+                    <MultiSelect
+                      label="Professional Services"
+                      name="professional_services"
+                      value={option.input.professionalServices}
+                      options={professionalServiceOptions}
+                      onChange={(value) =>
+                        onInputChange("professionalServices", value.map(String))
+                      }
+                    />
+                    <Stack distance="xs">
                       <NumberInput
-                        label={`${label} Discount`}
-                        name={`${value}_discount`}
+                        label="Professional Services Discount"
+                        name="professional_services_discount"
                         value={
-                          (option.input.addOnDiscounts?.[String(value)] || 0) *
-                          100
+                          (option.input.professionalServicesDiscount || 0) * 100
                         }
                         min={0}
                         max={100}
                         precision={2}
                         formatStyle="percentage"
-                        readOnly={!option.input.addOns.includes(String(value))}
-                        onChange={(discount) =>
-                          onInputChange("addOnDiscounts", {
-                            ...(option.input.addOnDiscounts || {}),
-                            [String(value)]: (discount || 0) / 100,
-                          })
+                        readOnly={
+                          option.input.professionalServices.length === 0
+                        }
+                        onChange={(value) =>
+                          onInputChange(
+                            "professionalServicesDiscount",
+                            (value || 0) / 100,
+                          )
                         }
                       />
-                      {option.input.addOns.includes(String(value)) &&
+                      {option.input.professionalServices.length > 0 &&
                         discountPreview(
-                          previewResult?.selectedAddOns.find(
-                            ({ key }) => key === value,
-                          )?.listAnnualAmount,
-                          option.input.addOnDiscounts?.[String(value)] || 0,
-                          previewResult?.selectedAddOns.find(
-                            ({ key }) => key === value,
-                          )?.annualAmount,
-                          "per year",
+                          previewResult?.listProfessionalServicesAmount,
+                          option.input.professionalServicesDiscount,
+                          previewResult?.professionalServicesAmount,
+                          "one-time",
                         )}
                     </Stack>
-                  ))}
-                  <MultiSelect
-                    label="Professional Services"
-                    name="professional_services"
-                    value={option.input.professionalServices}
-                    options={professionalServiceOptions}
-                    onChange={(value) =>
-                      onInputChange("professionalServices", value.map(String))
-                    }
-                  />
-                  <Stack distance="xs">
-                    <NumberInput
-                      label="Professional Services Discount"
-                      name="professional_services_discount"
-                      value={
-                        (option.input.professionalServicesDiscount || 0) * 100
-                      }
-                      min={0}
-                      max={100}
-                      precision={2}
-                      formatStyle="percentage"
-                      readOnly={option.input.professionalServices.length === 0}
-                      onChange={(value) =>
-                        onInputChange(
-                          "professionalServicesDiscount",
-                          (value || 0) / 100,
-                        )
-                      }
-                    />
-                    {option.input.professionalServices.length > 0 &&
-                      discountPreview(
-                        previewResult?.listProfessionalServicesAmount,
-                        option.input.professionalServicesDiscount,
-                        previewResult?.professionalServicesAmount,
-                        "one-time",
-                      )}
-                  </Stack>
-                </AutoGrid>
-              </Accordion>
+                  </AutoGrid>
+                </Stack>
+              </Card>
             </>
           )}
 
@@ -1609,7 +1488,7 @@ const OptionEditor = ({
         </Stack>
       </Card>
 
-      <Flex justify="between" align="center" wrap>
+      <Flex justify="end" align="center" gap="sm" wrap>
         <Button
           onClick={() => (step === 0 ? onBack() : setStep(step - 1))}
           disabled={saving}
@@ -1622,7 +1501,7 @@ const OptionEditor = ({
             onClick={() => setStep(step + 1)}
             disabled={saving || !canContinue || !canReview}
           >
-            Continue
+            Save &amp; continue
           </Button>
         )}
         {step === editorSteps.length - 1 &&
@@ -1901,7 +1780,9 @@ const ResultSummary = ({
   </Stack>
 );
 
-const Comparison = ({
+// Retained only for compatibility with saved comparison data; it is not rendered.
+// eslint-disable-next-line unused-imports/no-unused-vars
+const LegacyComparison = ({
   options,
   selectedOptionId,
   saving,
