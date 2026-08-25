@@ -803,7 +803,7 @@ var require_appSettings = __commonJS({
         pricingRules.products.map(({ key, bands }) => [key, bands.map((band) => band[2])])
       )
     });
-    var defaultSettings = () => ({
+    var defaultSettings2 = () => ({
       schemaVersion: "1.0",
       version: 0,
       allowNewBusiness: true,
@@ -1026,12 +1026,12 @@ var require_appSettings = __commonJS({
         });
       } catch (error) {
         if (error.statusCode === 400 || error.statusCode === 404) {
-          return { recordId: null, settings: defaultSettings(), configured: false };
+          return { recordId: null, settings: defaultSettings2(), configured: false };
         }
         throw error;
       }
       const record = result.results?.[0];
-      if (!record) return { recordId: null, settings: defaultSettings(), configured: true };
+      if (!record) return { recordId: null, settings: defaultSettings2(), configured: true };
       try {
         const parsed = JSON.parse(record.properties?.configuration_json || "{}");
         const version = Number.isInteger(parsed.version) && parsed.version >= 0 ? parsed.version : 0;
@@ -1100,7 +1100,7 @@ var require_appSettings = __commonJS({
     module2.exports = {
       accountIdFromContext: accountIdFromContext2,
       defaultPricingPolicy,
-      defaultSettings,
+      defaultSettings: defaultSettings2,
       isDealAllowed: isDealAllowed2,
       isSettingsAdmin: isSettingsAdmin2,
       normalizeSettings,
@@ -1487,6 +1487,7 @@ var hubspot = require("@hubspot/api-client");
 var { QuoteValidationError, calculateQuote } = require_calculator();
 var {
   accountIdFromContext,
+  defaultSettings,
   isDealAllowed,
   isSettingsAdmin,
   readDealPipelines,
@@ -1567,6 +1568,15 @@ var getAccessToken = () => {
   return accessToken;
 };
 var getClient = () => new hubspot.Client({ accessToken: getAccessToken() });
+var readOperationalSettings = async (accessToken, accountId, reader = readSettings) => {
+  try {
+    const state = await reader(accessToken, accountId);
+    if (state?.configured && state.settings) return state;
+  } catch (error) {
+    console.error(`Nylas pricing settings fallback: ${error?.name || "unknown"}.`);
+  }
+  return { recordId: null, settings: defaultSettings(), configured: true };
+};
 var readDealState = async (client, dealId) => {
   try {
     const deal = await client.crm.deals.basicApi.getById(dealId, [
@@ -2053,10 +2063,9 @@ exports.main = async (context) => {
     const client = getClient();
     const [state, settingsState] = await Promise.all([
       readDealState(client, dealId),
-      readSettings(accessToken, accountId)
+      readOperationalSettings(accessToken, accountId)
     ]);
     console.log("Nylas pricing action: deal state and settings loaded.");
-    if (!settingsState.configured) throw new Error("SETTINGS_CONFIGURATION_REQUIRED");
     const settings = settingsState.settings;
     if (!isDealAllowed(settings, state.dealType, state.pipelineId)) throw new Error("INVALID_DEAL");
     if (action === "list") {
@@ -2148,4 +2157,9 @@ exports.main = async (context) => {
     return safeError("WRITE_FAILED", 500);
   }
 };
-exports._test = Object.freeze({ associatedIds, deleteOption, syncDealLineItems });
+exports._test = Object.freeze({
+  associatedIds,
+  deleteOption,
+  readOperationalSettings,
+  syncDealLineItems
+});

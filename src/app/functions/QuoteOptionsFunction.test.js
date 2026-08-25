@@ -5,6 +5,16 @@ const { calculateQuote } = require('./calculator');
 const { defaultSettings } = require('./appSettings');
 const { _test } = require('./QuoteOptionsFunction');
 
+test('list actions fall back to workbook defaults when optional settings cannot load', async () => {
+  const settingsState = await _test.readOperationalSettings('token', '45023718', async () => {
+    throw new TypeError('runtime request failed');
+  });
+
+  assert.equal(settingsState.configured, true);
+  assert.equal(settingsState.settings.pricingPolicy.calculationMethod, 'excel_compatible');
+  assert.equal(settingsState.settings.pricingPolicy.productBandRates.connect_ca[0], 1.7);
+});
+
 test('deleting the customer-selected option clears its Deal line items and selection', async () => {
   const archived = [];
   const updates = [];
