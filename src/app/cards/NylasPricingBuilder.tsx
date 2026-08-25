@@ -1521,26 +1521,12 @@ const OptionEditor = ({
           )}
       </Flex>
 
-      {previewResult && (
-        <ResultSummary
-          result={previewResult}
-          title="Live Pricing Summary"
-          updating={previewLoading}
-        />
-      )}
+      {previewResult && <ResultSummary result={previewResult} />}
     </Stack>
   );
 };
 
-const ResultSummary = ({
-  result,
-  title = "Quote Summary",
-  updating = false,
-}: {
-  result: QuoteResult;
-  title?: string;
-  updating?: boolean;
-}) => (
+const ResultSummary = ({ result }: { result: QuoteResult }) => (
   <Stack distance="md">
     {result.blockingReasons.length > 0 && (
       <Alert title="This option cannot proceed" variant="error">
@@ -1549,53 +1535,6 @@ const ResultSummary = ({
     )}
     <Card>
       <Stack distance="md">
-        <Flex justify="between" align="center" wrap>
-          <Box>
-            <Heading>{title}</Heading>
-            <Text variant="microcopy">
-              {updating
-                ? "Updating prices…"
-                : "Prices include the current term, payment schedule, and line discounts."}
-            </Text>
-          </Box>
-          <Flex gap="xs" align="center">
-            {updating && <LoadingSpinner label="Updating live prices" />}
-            <StatusTag
-              variant={result.blockingReasons.length ? "danger" : "info"}
-            >
-              {approvalLabel(result.approvalTierRequired)}
-            </StatusTag>
-          </Flex>
-        </Flex>
-        <DescriptionList direction="row">
-          <DescriptionListItem label="Pre-Approved Term Discount">
-            {percent(result.termDiscount)}
-          </DescriptionListItem>
-          <DescriptionListItem label="Payment Frequency Adjustment">
-            {percent(result.paymentPremium)}
-          </DescriptionListItem>
-          <DescriptionListItem label="Annual Subscription Commitment">
-            {currency(result.proposedPlatformArr)}
-          </DescriptionListItem>
-          <DescriptionListItem label="Recurring Amount per Billing Period">
-            {currency(result.recurringPerPeriod)}
-          </DescriptionListItem>
-          <DescriptionListItem label="Annual Recurring Revenue">
-            {currency(result.committedArr)}
-          </DescriptionListItem>
-          <DescriptionListItem label="One-Time Fees">
-            {currency(result.oneTime)}
-          </DescriptionListItem>
-          <DescriptionListItem label="Total Contract Value">
-            {currency(result.tcv)}
-          </DescriptionListItem>
-          <DescriptionListItem label="Highest Line Discount">
-            {percent(result.largestDiscretionaryDiscount)}
-          </DescriptionListItem>
-          <DescriptionListItem label="Approval Required From">
-            {approvalLabel(result.approvalTierRequired)}
-          </DescriptionListItem>
-        </DescriptionList>
         <Accordion title="Product Rate Schedule">
           <Table density="condensed">
             <TableHead>
