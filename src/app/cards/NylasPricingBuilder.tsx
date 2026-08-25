@@ -969,8 +969,6 @@ const OptionEditor = ({
           <TableHeader align="right">List Rate</TableHeader>
           <TableHeader align="right">Discount</TableHeader>
           <TableHeader align="right">Proposed Rate</TableHeader>
-          <TableHeader align="right">Savings / Term</TableHeader>
-          <TableHeader align="right">Fees / Term</TableHeader>
         </TableRow>
       </TableHead>
       <TableBody>
@@ -1047,15 +1045,6 @@ const OptionEditor = ({
                   />
                 </TableCell>
                 <TableCell align="right">{proposedRatePreview(line)}</TableCell>
-                <TableCell align="right">
-                  {currency(
-                    (line?.listTermCommitment || 0) -
-                      (line?.termCommitment || 0),
-                  )}
-                </TableCell>
-                <TableCell align="right">
-                  {currency(line?.termCommitment || 0)}
-                </TableCell>
               </TableRow>
             </Fragment>
           );
@@ -1466,8 +1455,6 @@ const _ResultSummary = ({
             <TableHeader align="right">List Rate</TableHeader>
             <TableHeader align="right">Discount</TableHeader>
             <TableHeader align="right">Proposed Rate</TableHeader>
-            <TableHeader align="right">Savings / Term</TableHeader>
-            <TableHeader align="right">Fees / Term</TableHeader>
           </TableRow>
         </TableHead>
         <TableBody>
@@ -1486,12 +1473,6 @@ const _ResultSummary = ({
               </TableCell>
               <TableCell align="right">
                 {rateCurrency(line.displayProposedUnitRate)}
-              </TableCell>
-              <TableCell align="right">
-                {currency(line.listTermCommitment - line.termCommitment)}
-              </TableCell>
-              <TableCell align="right">
-                {currency(line.termCommitment)}
               </TableCell>
             </TableRow>
           ))}
