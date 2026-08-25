@@ -78,9 +78,10 @@ test('locking an option creates replacements before archiving existing Deal line
         basicApi: {
           archive: async (id) => events.push(`archive:${id}`),
           create: async ({ properties }) => {
-            events.push(`create:${properties.nylas_line_item_key}`);
+            events.push(`create:${properties.name}`);
             return { id: 'new-1' };
           },
+          update: async () => undefined,
         },
       },
       deals: { basicApi: { update: async () => undefined } },
@@ -90,7 +91,7 @@ test('locking an option creates replacements before archiving existing Deal line
   const synced = await _test.syncDealLineItems(client, 'deal-1', state, settings);
   assert.equal(synced.count, 1);
   assert.deepEqual(events, [
-    'create:subscription:nylas_enterprise',
+    'create:Enterprise OneSub',
     'archive:old-unmanaged',
     'archive:old-managed',
   ]);

@@ -1916,6 +1916,52 @@ var lineItemFailureDiagnostic = (error) => {
     propertyNames: [...new Set(propertyNames)].slice(0, 20)
   };
 };
+var CORE_LINE_ITEM_PROPERTIES = /* @__PURE__ */ new Set(["name", "hs_product_id", "quantity", "price"]);
+var COMMERCE_LINE_ITEM_PROPERTIES = /* @__PURE__ */ new Set([
+  "description",
+  "recurringbillingfrequency",
+  "hs_recurring_billing_period",
+  "hs_recurring_billing_number_of_payments",
+  "hs_recurring_billing_start_date"
+]);
+var selectProperties = (properties, predicate) => Object.fromEntries(Object.entries(properties).filter(([name]) => predicate(name)));
+var updateLineItemProperties = async (client, id, properties, stage) => {
+  if (!Object.keys(properties).length) return;
+  try {
+    await client.crm.lineItems.basicApi.update(id, { properties });
+  } catch (error) {
+    console.error(
+      `Nylas pricing line-item ${stage} update failed.`,
+      JSON.stringify(lineItemFailureDiagnostic(error))
+    );
+    for (const [name, value] of Object.entries(properties)) {
+      try {
+        await client.crm.lineItems.basicApi.update(id, { properties: { [name]: value } });
+      } catch (fieldError) {
+        console.error(
+          `Nylas pricing line-item property update skipped: ${name}.`,
+          JSON.stringify(lineItemFailureDiagnostic(fieldError))
+        );
+      }
+    }
+  }
+};
+var createProductLineItem = async (client, properties, association) => {
+  const core = selectProperties(properties, (name) => CORE_LINE_ITEM_PROPERTIES.has(name));
+  const created = await client.crm.lineItems.basicApi.create({
+    properties: core,
+    associations: [association]
+  });
+  const id = String(created.id);
+  const commerce = selectProperties(properties, (name) => COMMERCE_LINE_ITEM_PROPERTIES.has(name));
+  const reporting = selectProperties(
+    properties,
+    (name) => !CORE_LINE_ITEM_PROPERTIES.has(name) && !COMMERCE_LINE_ITEM_PROPERTIES.has(name)
+  );
+  await updateLineItemProperties(client, id, commerce, "commerce");
+  await updateLineItemProperties(client, id, reporting, "reporting");
+  return created;
+};
 var syncDealLineItems = async (client, dealId, state, settings) => {
   const option = selectedOptionForDraft(state);
   assertCurrentSettings(option, settings);
@@ -1924,10 +1970,11 @@ var syncDealLineItems = async (client, dealId, state, settings) => {
   try {
     const existingIds = await associatedIds(client, "deals", dealId, "line_items", 1e3);
     await inBatches(desired, async (item) => {
-      const created = await client.crm.lineItems.basicApi.create({
-        properties: item.properties,
-        associations: [createAssociation(dealId, 20)]
-      });
+      const created = await createProductLineItem(
+        client,
+        item.properties,
+        createAssociation(dealId, 20)
+      );
       createdIds.push(String(created.id));
     });
     await inBatches(existingIds, (id) => client.crm.lineItems.basicApi.archive(id));
@@ -2000,10 +2047,11 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
       templateId
     );
     const createdLineItems = await Promise.all(lineItems.map(async (item) => {
-      const created = await client.crm.lineItems.basicApi.create({
-        properties: item.properties,
-        associations: [createAssociation(quote.id, 68)]
-      });
+      const created = await createProductLineItem(
+        client,
+        item.properties,
+        createAssociation(quote.id, 68)
+      );
       return String(created.id);
     }));
     createdLineItemIds.push(...createdLineItems);
