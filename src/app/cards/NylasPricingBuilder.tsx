@@ -27,8 +27,6 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-  Tab,
-  Tabs,
   Text,
   TextArea,
   hubspot,
@@ -473,7 +471,7 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
   });
   const [_view, setView] = useState<"list" | "edit" | "compare">("list");
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
+  const [_saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [unsupportedDeal, setUnsupportedDeal] = useState(false);
 
@@ -725,7 +723,6 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
 
       <OptionEditor
         option={editing}
-        saving={saving}
         onInputChange={updateInput}
         onPreview={previewQuote}
       />
@@ -841,23 +838,18 @@ const _OptionList = ({
   );
 };
 
-const editorSteps = ["Contract", "Products", "Services", "Terms"];
-
 const OptionEditor = ({
   option,
-  saving,
   onInputChange,
   onPreview,
 }: {
   option: QuoteOption;
-  saving: boolean;
   onInputChange: <K extends keyof QuoteInput>(
     field: K,
     value: QuoteInput[K],
   ) => void;
   onPreview: (input: QuoteInput) => Promise<QuoteResult>;
 }) => {
-  const [step, setStep] = useState(0);
   const [previewResult, setPreviewResult] = useState<QuoteResult | undefined>(
     option.result,
   );
@@ -878,8 +870,6 @@ const OptionEditor = ({
   const committedProductCount = products.filter(
     ({ key }) => option.input.volumes[key] > 0,
   ).length;
-  const canContinue = step !== 0 || Boolean(option.input.startDate);
-  const canReview = step !== 1 || committedProductCount > 0;
   const discountPreview = (
     listAmount: number | undefined,
     discount: number,
@@ -1020,49 +1010,44 @@ const OptionEditor = ({
 
   return (
     <Stack distance="sm">
-      <Tabs
-        selected={step}
-        fill
-        onSelectedChange={(selected: string | number) =>
-          setStep(Number(selected))
-        }
-      >
-        {editorSteps.map((label, index) => (
-          <Tab key={label} tabId={index} title={label} disabled={saving} />
-        ))}
-      </Tabs>
-
       {previewResult && (
-        <Stack distance="flush">
-          <Flex gap="xs" align="center" wrap>
-            <Text format={{ fontWeight: "bold" }}>Approval</Text>
-            <StatusTag
-              variant={
-                previewResult.blockingReasons.length > 0
-                  ? "danger"
-                  : previewResult.approvalTierRequired === "none"
-                    ? "success"
-                    : "warning"
-              }
-            >
-              {previewResult.blockingReasons.length > 0
-                ? "Blocked"
-                : previewResult.approvalTierRequired === "none"
-                  ? "No approval required"
-                  : `${approvalLabel(previewResult.approvalTierRequired)} approval required`}
-            </StatusTag>
-          </Flex>
-          {previewResult.approvalReasons.length > 0 && (
-            <Text variant="microcopy">
-              {previewResult.approvalReasons.join(" ")}
-            </Text>
-          )}
-        </Stack>
+        <Card>
+          <Stack distance="flush">
+            <AutoGrid columnWidth={145} flexible gap="sm">
+              <Text>ARR: {currency(previewResult.committedArr)}</Text>
+              <Text>One-time: {currency(previewResult.oneTime)}</Text>
+              <Text>TCV: {currency(previewResult.tcv)}</Text>
+              <Flex gap="xs" align="center" wrap>
+                <Text format={{ fontWeight: "bold" }}>Approval</Text>
+                <StatusTag
+                  variant={
+                    previewResult.blockingReasons.length > 0
+                      ? "danger"
+                      : previewResult.approvalTierRequired === "none"
+                        ? "success"
+                        : "warning"
+                  }
+                >
+                  {previewResult.blockingReasons.length > 0
+                    ? "Blocked"
+                    : previewResult.approvalTierRequired === "none"
+                      ? "Not required"
+                      : approvalLabel(previewResult.approvalTierRequired)}
+                </StatusTag>
+              </Flex>
+            </AutoGrid>
+            {previewResult.approvalReasons.length > 0 && (
+              <Text variant="microcopy">
+                {previewResult.approvalReasons.join(" ")}
+              </Text>
+            )}
+          </Stack>
+        </Card>
       )}
 
       <Card>
         <Stack distance="xs">
-          {step === 0 && (
+          {
             <>
               <Box>
                 <Heading>Contract Basics</Heading>
@@ -1100,15 +1085,15 @@ const OptionEditor = ({
                   }
                 />
               </AutoGrid>
-              {!canContinue && (
+              {!option.input.startDate && (
                 <Alert title="Complete the required fields" variant="warning">
                   Add a subscription start date to continue.
                 </Alert>
               )}
             </>
-          )}
+          }
 
-          {step === 1 && (
+          {
             <>
               <Box>
                 <Heading>Monthly Product Commitments</Heading>
@@ -1120,13 +1105,13 @@ const OptionEditor = ({
               {productTable(products)}
               {committedProductCount === 0 && (
                 <Alert title="Add at least one commitment" variant="warning">
-                  A quote option needs committed usage for at least one product.
+                  Add committed usage for at least one product.
                 </Alert>
               )}
             </>
-          )}
+          }
 
-          {step === 2 && (
+          {
             <>
               <Box>
                 <Heading>Services and Pricing</Heading>
@@ -1286,9 +1271,9 @@ const OptionEditor = ({
                 </Stack>
               </Card>
             </>
-          )}
+          }
 
-          {step === 3 && (
+          {
             <>
               <Box>
                 <Heading>Renewal and Contract Terms</Heading>
@@ -1326,26 +1311,9 @@ const OptionEditor = ({
                 />
               )}
             </>
-          )}
+          }
         </Stack>
       </Card>
-
-      <Flex justify="end" align="center" gap="sm" wrap>
-        {step > 0 && (
-          <Button onClick={() => setStep(step - 1)} disabled={saving}>
-            Back
-          </Button>
-        )}
-        {step < editorSteps.length - 1 && (
-          <Button
-            variant="primary"
-            onClick={() => setStep(step + 1)}
-            disabled={saving || !canContinue || !canReview}
-          >
-            Next
-          </Button>
-        )}
-      </Flex>
     </Stack>
   );
 };
