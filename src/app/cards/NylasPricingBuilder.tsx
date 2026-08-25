@@ -15,6 +15,7 @@ import {
   ExtensionPointApiActions,
   Flex,
   Heading,
+  LoadingButton,
   LoadingSpinner,
   MultiSelect,
   NumberInput,
@@ -471,7 +472,7 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
   });
   const [_view, setView] = useState<"list" | "edit" | "compare">("list");
   const [loading, setLoading] = useState(true);
-  const [_saving, setSaving] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [unsupportedDeal, setUnsupportedDeal] = useState(false);
 
@@ -580,6 +581,31 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
       throw new PricingActionError("Unable to preview this pricing option.");
     }
     return body.previewResult;
+  };
+
+  const lockLiveCalculation = async () => {
+    setSaving(true);
+    setError(null);
+    try {
+      const body = await runAction({
+        action: "lock_live",
+        input: editing.input,
+        quoteContent: {},
+      });
+      actions.addAlert({
+        title: "Pricing locked in",
+        message: `${body.lineItemCount || 0} Deal line items were added and a draft quote was created.`,
+        type: "success",
+      });
+    } catch (lockError) {
+      setError(
+        lockError instanceof Error
+          ? lockError.message
+          : "Unable to add line items and create the quote.",
+      );
+    } finally {
+      setSaving(false);
+    }
   };
 
   const _removeOption = async (option: QuoteOption) => {
@@ -723,8 +749,10 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
 
       <OptionEditor
         option={editing}
+        saving={saving}
         onInputChange={updateInput}
         onPreview={previewQuote}
+        onLock={lockLiveCalculation}
       />
     </Stack>
   );
@@ -840,15 +868,19 @@ const _OptionList = ({
 
 const OptionEditor = ({
   option,
+  saving,
   onInputChange,
   onPreview,
+  onLock,
 }: {
   option: QuoteOption;
+  saving: boolean;
   onInputChange: <K extends keyof QuoteInput>(
     field: K,
     value: QuoteInput[K],
   ) => void;
   onPreview: (input: QuoteInput) => Promise<QuoteResult>;
+  onLock: () => void;
 }) => {
   const [previewResult, setPreviewResult] = useState<QuoteResult | undefined>(
     option.result,
@@ -1314,6 +1346,21 @@ const OptionEditor = ({
           }
         </Stack>
       </Card>
+      <Flex justify="end">
+        <LoadingButton
+          variant="primary"
+          loading={saving}
+          onClick={onLock}
+          disabled={
+            !option.input.startDate ||
+            committedProductCount === 0 ||
+            !previewResult ||
+            previewResult.blockingReasons.length > 0
+          }
+        >
+          Lock it in
+        </LoadingButton>
+      </Flex>
     </Stack>
   );
 };
