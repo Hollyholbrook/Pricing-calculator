@@ -719,15 +719,19 @@ const OptionEditor = ({
     return <Text>{rateCurrency(blended)}</Text>;
   };
 
-  // The full graduated schedule lives in the Product cell, the one column with room for it.
+  // The graduated schedule is four values wide and belongs to exactly one product, so it does not
+  // go in the table at all. In the Product cell it stretched that column until every numeric
+  // column collapsed and the volume and discount inputs truncated mid-value; in a rate cell it
+  // either wrapped or made the row four times taller than the others. It sits under the table
+  // instead, on the full width of the card, where it costs one line and distorts nothing.
   const tierSchedule = (line: QuoteLine | undefined) => {
     if (!line?.proposedBandRates.length) return "";
-    return ` · Tiers ${line.proposedBandRates
+    return line.proposedBandRates
       .map(
         (band) =>
           `${bandRange(band.lower, band.upper)} ${rateCurrency(band.rate)}`,
       )
-      .join(" · ")}`;
+      .join(" · ");
   };
 
   // Read the adjusted list band rates the calculator published. Recomputing them here as
@@ -776,9 +780,6 @@ const OptionEditor = ({
                     <Text>{product.label}</Text>
                     <Text variant="microcopy">
                       {product.description} · {product.inputUnit}
-                      {product.key === "agent_email_thousands"
-                        ? tierSchedule(line)
-                        : ""}
                     </Text>
                   </Stack>
                 </TableCell>
@@ -836,6 +837,10 @@ const OptionEditor = ({
         })}
       </TableBody>
     </Table>
+  );
+
+  const emailLine = previewResult?.lines.find(
+    ({ productKey }) => productKey === "agent_email_thousands",
   );
 
   const approvalBlocked = (previewResult?.blockingReasons.length || 0) > 0;
@@ -944,6 +949,13 @@ const OptionEditor = ({
               manually, and determine the required approval level.
             </Text>
             {productTable(products)}
+            {emailLine && tierSchedule(emailLine) && (
+              <Text variant="microcopy">
+                Agent Email is priced in graduated tiers:{" "}
+                {tierSchedule(emailLine)}. The rate shown in the table is the
+                blended rate at the entered volume.
+              </Text>
+            )}
             {committedProductCount === 0 && (
               <Alert title="Add at least one commitment" variant="warning">
                 Add committed usage for at least one product.

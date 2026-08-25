@@ -571,6 +571,40 @@ const hubSpotLineItemProperties = (properties) =>
     ),
   );
 
+// HubSpot refuses to hydrate a line item from a product that is a BUNDLE:
+//   "This API does not support creating line items from product bundles."
+// The platform subscription maps to exactly such a product, so every create failed and the whole
+// sync collapsed. A line item does not actually need a product: with hs_product_id dropped it
+// still carries its name, price, quantity, description and billing terms, and shows correctly on
+// the Deal and the Quote. It just is not linked back to the product record.
+//
+// The link is worth keeping wherever HubSpot allows it, so this only drops hs_product_id after
+// HubSpot has specifically rejected the product, rather than guessing up front which products
+// are bundles.
+const isProductBundleRejection = (error) => {
+  const message = String(
+    error?.body?.message || error?.response?.body?.message || error?.message || '',
+  );
+  return /product bundle/i.test(message) || /could not hydrate/i.test(message);
+};
+
+const createLineItem = async (client, properties, associations) => {
+  try {
+    return await client.crm.lineItems.basicApi.create({ properties, associations });
+  } catch (error) {
+    if (!properties.hs_product_id || !isProductBundleRejection(error)) throw error;
+    const { hs_product_id: bundledProductId, ...withoutProduct } = properties;
+    console.warn(
+      `Nylas pricing: product ${bundledProductId} cannot back a line item (bundle). ` +
+        'Creating the line item without a product link.',
+    );
+    return client.crm.lineItems.basicApi.create({
+      properties: withoutProduct,
+      associations,
+    });
+  }
+};
+
 const syncDealLineItems = async (client, dealId, state, settings) => {
   const option = selectedOptionForDraft(state);
   assertCurrentSettings(option, settings);
@@ -580,10 +614,11 @@ const syncDealLineItems = async (client, dealId, state, settings) => {
     const existingIds = await associatedIds(client, 'deals', dealId, 'line_items', 1_000);
     await inBatches(existingIds, (id) => client.crm.lineItems.basicApi.archive(id));
     await inBatches(desired, async (item) => {
-        const created = await client.crm.lineItems.basicApi.create({
-          properties: hubSpotLineItemProperties(item.properties),
-          associations: [createAssociation(dealId, 20)],
-        });
+        const created = await createLineItem(
+          client,
+          hubSpotLineItemProperties(item.properties),
+          [createAssociation(dealId, 20)],
+        );
         createdIds.push(String(created.id));
     });
 
@@ -670,10 +705,11 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
     // when every create succeeds, so the rollback below archived nothing in exactly the case it
     // was written for and leaked orphaned quote line items on every failed attempt.
     await Promise.all(lineItems.map(async (item) => {
-      const created = await client.crm.lineItems.basicApi.create({
-        properties: hubSpotLineItemProperties(item.properties),
-        associations: [createAssociation(quote.id, 68)],
-      });
+      const created = await createLineItem(
+        client,
+        hubSpotLineItemProperties(item.properties),
+        [createAssociation(quote.id, 68)],
+      );
       createdLineItemIds.push(String(created.id));
     }));
 

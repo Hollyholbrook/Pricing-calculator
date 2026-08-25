@@ -2000,6 +2000,27 @@ var hubSpotLineItemProperties = (properties) => Object.fromEntries(
     ([key, value]) => HUBSPOT_LINE_ITEM_PROPERTIES.has(key) && value != null
   )
 );
+var isProductBundleRejection = (error) => {
+  const message = String(
+    error?.body?.message || error?.response?.body?.message || error?.message || ""
+  );
+  return /product bundle/i.test(message) || /could not hydrate/i.test(message);
+};
+var createLineItem = async (client, properties, associations) => {
+  try {
+    return await client.crm.lineItems.basicApi.create({ properties, associations });
+  } catch (error) {
+    if (!properties.hs_product_id || !isProductBundleRejection(error)) throw error;
+    const { hs_product_id: bundledProductId, ...withoutProduct } = properties;
+    console.warn(
+      `Nylas pricing: product ${bundledProductId} cannot back a line item (bundle). Creating the line item without a product link.`
+    );
+    return client.crm.lineItems.basicApi.create({
+      properties: withoutProduct,
+      associations
+    });
+  }
+};
 var syncDealLineItems = async (client, dealId, state, settings) => {
   const option = selectedOptionForDraft(state);
   assertCurrentSettings(option, settings);
@@ -2009,10 +2030,11 @@ var syncDealLineItems = async (client, dealId, state, settings) => {
     const existingIds = await associatedIds(client, "deals", dealId, "line_items", 1e3);
     await inBatches(existingIds, (id) => client.crm.lineItems.basicApi.archive(id));
     await inBatches(desired, async (item) => {
-      const created = await client.crm.lineItems.basicApi.create({
-        properties: hubSpotLineItemProperties(item.properties),
-        associations: [createAssociation(dealId, 20)]
-      });
+      const created = await createLineItem(
+        client,
+        hubSpotLineItemProperties(item.properties),
+        [createAssociation(dealId, 20)]
+      );
       createdIds.push(String(created.id));
     });
     const syncedAt = (/* @__PURE__ */ new Date()).toISOString();
@@ -2083,10 +2105,11 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
       templateId
     );
     await Promise.all(lineItems.map(async (item) => {
-      const created = await client.crm.lineItems.basicApi.create({
-        properties: hubSpotLineItemProperties(item.properties),
-        associations: [createAssociation(quote.id, 68)]
-      });
+      const created = await createLineItem(
+        client,
+        hubSpotLineItemProperties(item.properties),
+        [createAssociation(quote.id, 68)]
+      );
       createdLineItemIds.push(String(created.id));
     }));
     const [contactIds, companyIds] = await Promise.all([
