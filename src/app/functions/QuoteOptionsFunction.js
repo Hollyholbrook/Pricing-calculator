@@ -103,10 +103,17 @@ const getAccessToken = () => {
   return accessToken;
 };
 
-const getClient = () => new hubspot.Client({ accessToken: getAccessToken() });
+const getClient = () => {
+  // If @hubspot/api-client did not resolve at runtime (it is marked external in the esbuild
+  // bundle, so the deployed function depends on it being installed), every call below fails with
+  // a bare TypeError that the generic catch reports as "could not save the quote option".
+  if (!hubspot?.Client) throw new Error('CONFIGURATION_REQUIRED');
+  return new hubspot.Client({ accessToken: getAccessToken() });
+};
 
 const readDealState = async (client, dealId) => {
   try {
+    if (!client?.crm?.deals?.basicApi) throw new Error('CONFIGURATION_REQUIRED');
     const deal = await client.crm.deals.basicApi.getById(dealId, [
       'dealtype',
       'pipeline',
@@ -121,6 +128,9 @@ const readDealState = async (client, dealId) => {
       'pricing_line_item_sync_status',
       'dealname',
     ]);
+    // A Deal response with no properties bag turned every downstream read into a TypeError that
+    // escaped as a generic 500 naming no cause. Fail with something identifiable instead.
+    if (!deal?.properties) throw new Error('CONFIGURATION_REQUIRED');
     return {
       dealType: deal.properties.dealtype || '',
       pipelineId: deal.properties.pipeline || '',
@@ -810,7 +820,12 @@ exports.main = async (context) => {
     // Unrecognized errors still reach the user as a generic message, but they must leave a trace.
     // Logging the bare string left genuine bugs (e.g. a TypeError on a malformed payload)
     // completely invisible in the function logs.
-    console.error('Nylas pricing action failed.', error?.stack || error?.message || error);
+    console.error(
+      `Nylas pricing action failed: ${String(context?.parameters?.action || 'missing')} · ${
+        error?.name || 'Error'
+      }`,
+      error?.stack || error?.message || error,
+    );
     return safeError('WRITE_FAILED', 500);
   }
 };

@@ -1613,9 +1613,13 @@ var getAccessToken = () => {
   if (!accessToken) throw new Error("CONFIGURATION_REQUIRED");
   return accessToken;
 };
-var getClient = () => new hubspot.Client({ accessToken: getAccessToken() });
+var getClient = () => {
+  if (!hubspot?.Client) throw new Error("CONFIGURATION_REQUIRED");
+  return new hubspot.Client({ accessToken: getAccessToken() });
+};
 var readDealState = async (client, dealId) => {
   try {
+    if (!client?.crm?.deals?.basicApi) throw new Error("CONFIGURATION_REQUIRED");
     const deal = await client.crm.deals.basicApi.getById(dealId, [
       "dealtype",
       "pipeline",
@@ -1630,6 +1634,7 @@ var readDealState = async (client, dealId) => {
       "pricing_line_item_sync_status",
       "dealname"
     ]);
+    if (!deal?.properties) throw new Error("CONFIGURATION_REQUIRED");
     return {
       dealType: deal.properties.dealtype || "",
       pipelineId: deal.properties.pipeline || "",
@@ -2232,7 +2237,10 @@ exports.main = async (context) => {
       });
     }
     if (SAFE_ERRORS[error?.message]) return safeError(error.message);
-    console.error("Nylas pricing action failed.", error?.stack || error?.message || error);
+    console.error(
+      `Nylas pricing action failed: ${String(context?.parameters?.action || "missing")} \xB7 ${error?.name || "Error"}`,
+      error?.stack || error?.message || error
+    );
     return safeError("WRITE_FAILED", 500);
   }
 };
