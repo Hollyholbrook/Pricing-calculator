@@ -505,7 +505,15 @@ const lineItemFailureDiagnostic = (error) => {
   };
 };
 
-const CORE_LINE_ITEM_PROPERTIES = new Set(['name', 'hs_product_id', 'quantity', 'price']);
+const CORE_LINE_ITEM_PROPERTIES = new Set([
+  'name',
+  'hs_product_id',
+  'quantity',
+  'price',
+  'hs_pricing_model',
+  'hs_tier_ranges',
+  'hs_tier_prices',
+]);
 const COMMERCE_LINE_ITEM_PROPERTIES = new Set([
   'description',
   'recurringbillingfrequency',

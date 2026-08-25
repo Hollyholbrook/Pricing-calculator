@@ -1292,6 +1292,28 @@ var require_lineItemModel = __commonJS({
       const bandDetail = line.proposedBandRates?.length ? ` Graduated monthly rates: ${line.proposedBandRates.map(formatBand).join("; ")}.` : "";
       return `${line.volume.toLocaleString("en-US")} ${line.unitOfMeasure} committed average per month at $${line.proposedUnitRate.toFixed(2)} blended per ${line.unitOfMeasure} per month.` + bandDetail + " Usage draws down from the shared prepaid subscription pool at these rates.";
     };
+    var hubSpotGraduatedEmailPricing = (line) => {
+      const bands = line.proposedBandRates?.length ? line.proposedBandRates : line.baseBandRates;
+      if (!Array.isArray(bands) || bands.length === 0) {
+        throw new Error("PRODUCT_RATE_CONFIGURATION_REQUIRED");
+      }
+      const ranges = bands.map(({ lower, upper }) => ({
+        start: Math.round(Number(lower) * 1e3),
+        ...upper == null ? {} : { end: Math.round(Number(upper) * 1e3) - 1 }
+      }));
+      const prices = bands.map(({ rate }, index) => ({
+        index,
+        price: round(Number(rate), 9)
+      }));
+      if (ranges.some(({ start, end }) => !Number.isSafeInteger(start) || end != null && !Number.isSafeInteger(end)) || prices.some(({ price }) => !Number.isFinite(price) || price < 0)) {
+        throw new Error("PRODUCT_RATE_CONFIGURATION_REQUIRED");
+      }
+      return {
+        hs_pricing_model: "graduated",
+        hs_tier_ranges: JSON.stringify(ranges),
+        hs_tier_prices: JSON.stringify(prices)
+      };
+    };
     var rateScheduleText = (option, includeUncommitted) => option.result.lines.filter((line) => line.committed || includeUncommitted).map(
       (line) => `${line.productName}: $${line.availableUnitRate.toFixed(2)} per ${line.unitOfMeasure}/month` + (line.committed ? ` (${line.volume.toLocaleString("en-US")} committed/month)` : " (uncommitted)")
     ).join("\n");
@@ -1365,6 +1387,7 @@ ${rateScheduleText(option, true)}`,
     var buildDealUsageRateLines = (option) => option.result.lines.map((line) => {
       const product = CATALOG[line.productKey];
       if (!product) throw new Error("PRODUCT_MAPPING_REQUIRED");
+      const isGraduatedEmail = line.productKey === "agent_email_thousands";
       return {
         key: `rate_schedule:${line.productKey}`,
         properties: {
@@ -1376,7 +1399,7 @@ ${rateScheduleText(option, true)}`,
             source: "deal"
           }),
           quantity: "0",
-          price: String(round(line.availableUnitRate, 9)),
+          ...isGraduatedEmail ? hubSpotGraduatedEmailPricing(line) : { price: String(round(line.availableUnitRate, 9)) },
           monthly_unit_price: String(round(line.availableUnitRate, 9)),
           description: productDescription({
             ...line,
@@ -1962,7 +1985,15 @@ var lineItemFailureDiagnostic = (error) => {
     propertyNames: [...new Set(propertyNames)].slice(0, 20)
   };
 };
-var CORE_LINE_ITEM_PROPERTIES = /* @__PURE__ */ new Set(["name", "hs_product_id", "quantity", "price"]);
+var CORE_LINE_ITEM_PROPERTIES = /* @__PURE__ */ new Set([
+  "name",
+  "hs_product_id",
+  "quantity",
+  "price",
+  "hs_pricing_model",
+  "hs_tier_ranges",
+  "hs_tier_prices"
+]);
 var COMMERCE_LINE_ITEM_PROPERTIES = /* @__PURE__ */ new Set([
   "description",
   "recurringbillingfrequency",

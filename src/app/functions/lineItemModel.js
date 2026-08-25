@@ -179,6 +179,34 @@ const productDescription = (line) => {
   );
 };
 
+const hubSpotGraduatedEmailPricing = (line) => {
+  const bands = line.proposedBandRates?.length
+    ? line.proposedBandRates
+    : line.baseBandRates;
+  if (!Array.isArray(bands) || bands.length === 0) {
+    throw new Error('PRODUCT_RATE_CONFIGURATION_REQUIRED');
+  }
+  const ranges = bands.map(({ lower, upper }) => ({
+    start: Math.round(Number(lower) * 1_000),
+    ...(upper == null ? {} : { end: Math.round(Number(upper) * 1_000) - 1 }),
+  }));
+  const prices = bands.map(({ rate }, index) => ({
+    index,
+    price: round(Number(rate), 9),
+  }));
+  if (
+    ranges.some(({ start, end }) => !Number.isSafeInteger(start) || (end != null && !Number.isSafeInteger(end))) ||
+    prices.some(({ price }) => !Number.isFinite(price) || price < 0)
+  ) {
+    throw new Error('PRODUCT_RATE_CONFIGURATION_REQUIRED');
+  }
+  return {
+    hs_pricing_model: 'graduated',
+    hs_tier_ranges: JSON.stringify(ranges),
+    hs_tier_prices: JSON.stringify(prices),
+  };
+};
+
 const rateScheduleText = (option, includeUncommitted) =>
   option.result.lines
     .filter((line) => line.committed || includeUncommitted)
@@ -270,6 +298,7 @@ const buildDealUsageRateLines = (option) =>
   option.result.lines.map((line) => {
     const product = CATALOG[line.productKey];
     if (!product) throw new Error('PRODUCT_MAPPING_REQUIRED');
+    const isGraduatedEmail = line.productKey === 'agent_email_thousands';
     return {
       key: `rate_schedule:${line.productKey}`,
       properties: {
@@ -281,7 +310,9 @@ const buildDealUsageRateLines = (option) =>
           source: 'deal',
         }),
         quantity: '0',
-        price: String(round(line.availableUnitRate, 9)),
+        ...(isGraduatedEmail
+          ? hubSpotGraduatedEmailPricing(line)
+          : { price: String(round(line.availableUnitRate, 9)) }),
         monthly_unit_price: String(round(line.availableUnitRate, 9)),
         description: productDescription({
           ...line,

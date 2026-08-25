@@ -50,7 +50,8 @@ test('Deal line items reconcile to the approved calculation', () => {
   const recurring = items
     .filter(({ properties }) => properties.recurringbillingfrequency)
     .reduce(
-      (sum, { properties }) => sum + Number(properties.price) * Number(properties.quantity),
+      (sum, { properties }) =>
+        sum + Number(properties.price || 0) * Number(properties.quantity),
       0,
     );
   const oneTime = items
@@ -78,7 +79,32 @@ test('Deal line items reconcile to the approved calculation', () => {
   const usageRates = recurringItems.slice(1);
   assert.equal(usageRates.length, 7);
   assert.ok(usageRates.every(({ properties }) => properties.quantity === '0'));
-  assert.ok(usageRates.every(({ properties }) => Number(properties.price) >= 0));
+  assert.ok(
+    usageRates.every(
+      ({ properties }) => properties.price == null || Number(properties.price) >= 0,
+    ),
+  );
+  const email = usageRates.find(({ key }) => key === 'rate_schedule:agent_email_thousands');
+  assert.equal(email.properties.hs_product_id, '45867076721');
+  assert.equal(email.properties.price, undefined);
+  assert.equal(email.properties.hs_pricing_model, 'graduated');
+  assert.deepEqual(JSON.parse(email.properties.hs_tier_ranges), [
+    { start: 0, end: 49_999 },
+    { start: 50_000, end: 99_999 },
+    { start: 100_000, end: 499_999 },
+    { start: 500_000 },
+  ]);
+  const calculatedEmail = selected.result.lines.find(
+    ({ productKey }) => productKey === 'agent_email_thousands',
+  );
+  assert.deepEqual(
+    JSON.parse(email.properties.hs_tier_prices),
+    calculatedEmail.proposedBandRates.map(({ rate }, index) => ({ index, price: rate })),
+  );
+  assert.equal(email.properties.recurringbillingfrequency, 'monthly');
+  assert.equal(email.properties.hs_recurring_billing_period, 'P24M');
+  assert.equal(email.properties.hs_recurring_billing_number_of_payments, '24');
+  assert.equal(email.properties.hs_recurring_billing_start_date, '2026-09-01');
 });
 
 test('Quote can collapse only the subscription products, not other charges', () => {
