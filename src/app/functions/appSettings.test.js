@@ -23,15 +23,15 @@ test('invalid calculation methods fail closed', () => {
 test('Deal bundle product mapping is editable and validated', () => {
   const settings = defaultSettings();
   settings.dealBundleProduct = {
-    id: '123456789',
+    bundleId: '67653718',
     name: 'Configured Enterprise Package',
     category: 'Platform',
   };
   assert.deepEqual(normalizeSettings(settings).dealBundleProduct, settings.dealBundleProduct);
-  settings.dealBundleProduct.id = 'not-a-product-id';
+  settings.dealBundleProduct.bundleId = 'not-a-bundle-id';
   assert.throws(
     () => normalizeSettings(settings),
-    /INVALID_SETTINGS:dealBundleProduct.id/,
+    /INVALID_SETTINGS:dealBundleProduct.bundleId/,
   );
 });
 

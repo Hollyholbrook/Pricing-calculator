@@ -51,7 +51,7 @@ const defaultSettings = () => ({
   newBusinessPipelineIds: [],
   renewalPipelineIds: [],
   dealBundleProduct: {
-    id: '47269087321',
+    bundleId: '67653718',
     name: 'Enterprise OneSub',
     category: 'Platform',
   },
@@ -63,15 +63,17 @@ const normalizeBundleProduct = (incoming) => {
   const value = incoming && typeof incoming === 'object' && !Array.isArray(incoming)
     ? incoming
     : defaults;
-  const id = String(value.id || '').trim();
+  const bundleId = String(value.bundleId || defaults.bundleId).trim();
   const name = String(value.name || '').trim();
   const category = String(value.category || '').trim();
-  if (!/^\d{1,20}$/.test(id)) throw new Error('INVALID_SETTINGS:dealBundleProduct.id');
+  if (!/^\d{1,20}$/.test(bundleId)) {
+    throw new Error('INVALID_SETTINGS:dealBundleProduct.bundleId');
+  }
   if (!name || name.length > 120) throw new Error('INVALID_SETTINGS:dealBundleProduct.name');
   if (!category || category.length > 120) {
     throw new Error('INVALID_SETTINGS:dealBundleProduct.category');
   }
-  return { id, name, category };
+  return { bundleId, name, category };
 };
 
 const requireNumber = (value, min, max, field) => {

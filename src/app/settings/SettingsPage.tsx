@@ -43,7 +43,7 @@ interface AppSettings {
   allowRenewals: boolean;
   newBusinessPipelineIds: string[];
   renewalPipelineIds: string[];
-  dealBundleProduct: { id: string; name: string; category: string };
+  dealBundleProduct: { bundleId: string; name: string; category: string };
   pricingPolicy: PricingPolicy;
 }
 
@@ -351,19 +351,22 @@ const SettingsPage = () => {
       <Accordion title="Deal Line Item Package" defaultOpen>
         <Stack distance="sm">
           <Text variant="microcopy">
-            Choose the HubSpot product used for the bundled Deal line item.
-            Copy the numeric product record ID from the HubSpot product URL.
+            Configure the HubSpot product bundle represented by the calculated
+            standalone Deal line item.
           </Text>
           <AutoGrid columnWidth={220} flexible gap="sm">
             <Input
-              label="HubSpot Product ID"
-              name="deal_bundle_product_id"
-              value={settings.dealBundleProduct.id}
+              label="HubSpot Bundle ID"
+              name="deal_bundle_id"
+              value={settings.dealBundleProduct.bundleId}
               readOnly={!canEdit}
-              onChange={(id) =>
+              onChange={(bundleId) =>
                 setSettings({
                   ...settings,
-                  dealBundleProduct: { ...settings.dealBundleProduct, id },
+                  dealBundleProduct: {
+                    ...settings.dealBundleProduct,
+                    bundleId,
+                  },
                 })
               }
             />

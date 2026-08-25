@@ -811,7 +811,7 @@ var require_appSettings = __commonJS({
       newBusinessPipelineIds: [],
       renewalPipelineIds: [],
       dealBundleProduct: {
-        id: "47269087321",
+        bundleId: "67653718",
         name: "Enterprise OneSub",
         category: "Platform"
       },
@@ -820,15 +820,17 @@ var require_appSettings = __commonJS({
     var normalizeBundleProduct = (incoming) => {
       const defaults = defaultSettings().dealBundleProduct;
       const value = incoming && typeof incoming === "object" && !Array.isArray(incoming) ? incoming : defaults;
-      const id = String(value.id || "").trim();
+      const bundleId = String(value.bundleId || defaults.bundleId).trim();
       const name = String(value.name || "").trim();
       const category = String(value.category || "").trim();
-      if (!/^\d{1,20}$/.test(id)) throw new Error("INVALID_SETTINGS:dealBundleProduct.id");
+      if (!/^\d{1,20}$/.test(bundleId)) {
+        throw new Error("INVALID_SETTINGS:dealBundleProduct.bundleId");
+      }
       if (!name || name.length > 120) throw new Error("INVALID_SETTINGS:dealBundleProduct.name");
       if (!category || category.length > 120) {
         throw new Error("INVALID_SETTINGS:dealBundleProduct.category");
       }
-      return { id, name, category };
+      return { bundleId, name, category };
     };
     var requireNumber = (value, min, max, field) => {
       if (typeof value !== "number" || !Number.isFinite(value) || value < min || value > max) {
@@ -1255,7 +1257,7 @@ var require_lineItemModel = __commonJS({
     };
     var baseManagedProperties = ({ option, key, component, product, source }) => ({
       name: product.name,
-      hs_product_id: product.id,
+      ...product.id ? { hs_product_id: product.id } : {},
       product_category: product.category,
       nylas_pricing_managed: "true",
       nylas_line_item_key: key,
@@ -1354,7 +1356,7 @@ var require_lineItemModel = __commonJS({
         product: dealBundleProduct,
         quantity: 1,
         price: option.result.recurringPerPeriod,
-        description: `Bundled Nylas Enterprise subscription, including committed products, support, and recurring add-ons.
+        description: `Bundled Nylas Enterprise subscription (bundle ${dealBundleProduct.bundleId || "configured"}), including committed products, support, and recurring add-ons.
 Product rate schedule:
 ${rateScheduleText(option, true)}`,
         source: "deal"

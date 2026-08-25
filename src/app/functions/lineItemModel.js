@@ -128,7 +128,7 @@ const normalizeQuoteContent = (raw = {}, fallbackTitle = 'Nylas Enterprise Quote
 
 const baseManagedProperties = ({ option, key, component, product, source }) => ({
   name: product.name,
-  hs_product_id: product.id,
+  ...(product.id ? { hs_product_id: product.id } : {}),
   product_category: product.category,
   nylas_pricing_managed: 'true',
   nylas_line_item_key: key,
@@ -260,7 +260,7 @@ const buildDealBundleLine = (option, dealBundleProduct = CATALOG.enterprise) => 
     quantity: 1,
     price: option.result.recurringPerPeriod,
     description:
-      'Bundled Nylas Enterprise subscription, including committed products, support, and recurring add-ons.\n' +
+      `Bundled Nylas Enterprise subscription (bundle ${dealBundleProduct.bundleId || 'configured'}), including committed products, support, and recurring add-ons.\n` +
       `Product rate schedule:\n${rateScheduleText(option, true)}`,
     source: 'deal',
   }),
