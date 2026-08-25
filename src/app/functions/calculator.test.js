@@ -78,6 +78,23 @@ test('routes New Business discount approval tiers', () => {
   );
 });
 
+test('allows onboarding to be omitted', () => {
+  const result = calculateQuote({
+    startDate: '2026-09-01',
+    termMonths: 12,
+    paymentFrequency: 'annual_in_advance',
+    volumes: { connect_ca: 2_000 },
+    supportLevel: 'basic',
+    onboardingPackage: 'none',
+    professionalServices: [],
+    addOns: [],
+  });
+
+  assert.equal(result.listOnboardingAmount, 0);
+  assert.equal(result.onboardingAmount, 0);
+  assert.equal(result.oneTime, 0);
+});
+
 test('derives contract and renewal dates', () => {
   const result = calculateQuote({
     startDate: '2026-08-15',

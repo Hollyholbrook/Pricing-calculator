@@ -121,12 +121,15 @@ const normalizeInput = (input, activeRules = rules) => {
     ['key', 'level'],
     'supportLevel',
   );
-  const onboarding = findRule(
-    activeRules.onboardingRules,
-    input.onboardingPackage,
-    ['key', 'package'],
-    'onboardingPackage',
-  );
+  const onboarding =
+    input.onboardingPackage === 'none'
+      ? { key: 'none', package: 'No onboarding', oneTimeAmount: 0 }
+      : findRule(
+          activeRules.onboardingRules,
+          input.onboardingPackage,
+          ['key', 'package'],
+          'onboardingPackage',
+        );
 
   const discretionaryDiscount = requirePercent(
     input.discretionaryDiscount ?? 0,

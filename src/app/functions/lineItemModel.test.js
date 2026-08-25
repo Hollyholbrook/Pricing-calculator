@@ -121,6 +121,20 @@ test('Deal line items reconcile to the approved calculation', () => {
   assert.equal(addOn.properties.hs_recurring_billing_period, 'P24M');
 });
 
+test('does not create an onboarding line when onboarding is not selected', () => {
+  const selected = option();
+  selected.input.onboardingPackage = 'none';
+  selected.result = calculateQuote(selected.input);
+
+  const items = buildDealLineItems(selected, {
+    bundleId: '67653718',
+    name: 'Enterprise OneSub',
+    category: 'Platform',
+  });
+
+  assert.equal(items.some(({ key }) => key.startsWith('onboarding:')), false);
+});
+
 test('Quote can collapse only the subscription products, not other charges', () => {
   const selected = option();
   const content = normalizeQuoteContent({

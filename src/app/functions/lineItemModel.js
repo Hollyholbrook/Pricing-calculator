@@ -373,7 +373,7 @@ const buildAddOnLines = (option, source) =>
   });
 
 const buildOnboardingLines = (option, source) => {
-  if (option.result.onboardingAmount <= 0) return [];
+  if (option.input.onboardingPackage === 'none' || option.result.onboardingAmount <= 0) return [];
   const product = CATALOG[option.input.onboardingPackage];
   if (!product) throw new Error('PRODUCT_MAPPING_REQUIRED');
   return [

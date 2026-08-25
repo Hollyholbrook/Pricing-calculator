@@ -273,6 +273,7 @@ const supportOptions = [
 ];
 
 const onboardingOptions = [
+  { value: "none", label: "No onboarding" },
   { value: "quick_launch", label: "Quick Launch" },
   { value: "quick_launch_plus", label: "Quick Launch Plus" },
   { value: "strategic", label: "Strategic Onboarding" },
@@ -338,7 +339,7 @@ const emptyInput = (): QuoteInput => ({
   paymentFrequency: "annual_in_advance",
   volumes: emptyVolumes(),
   supportLevel: "basic",
-  onboardingPackage: "quick_launch",
+  onboardingPackage: "none",
   addOns: [],
   professionalServices: [],
   discretionaryDiscount: 0,

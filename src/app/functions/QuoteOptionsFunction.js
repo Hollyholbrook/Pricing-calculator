@@ -263,6 +263,7 @@ const deleteOption = async (client, dealId, state, parameters) => {
 const toHubSpotDate = (date) => (date ? String(Date.parse(`${date}T00:00:00.000Z`)) : '');
 
 const onboardingHubSpotValue = Object.freeze({
+  none: '',
   quick_launch: 'quicklaunch',
   quick_launch_plus: 'quicklaunch_plus',
   strategic: 'strategic',
@@ -302,7 +303,8 @@ const buildSelectedProperties = (option, approvalStatus) => {
     pricing_term_months: String(input.termMonths),
     pricing_payment_frequency: result.paymentFrequencyHubSpotValue || '',
     pricing_support_tier: input.supportLevel,
-    pricing_onboarding_tier: onboardingHubSpotValue[input.onboardingPackage] || input.onboardingPackage,
+    pricing_onboarding_tier:
+      onboardingHubSpotValue[input.onboardingPackage] ?? input.onboardingPackage,
     pricing_arr: String(result.committedArr),
     pricing_tcv: String(result.tcv),
     pricing_list_price_tcv: String(result.listTcv),

@@ -313,7 +313,7 @@ var require_calculator = __commonJS({
         ["key", "level"],
         "supportLevel"
       );
-      const onboarding = findRule(
+      const onboarding = input.onboardingPackage === "none" ? { key: "none", package: "No onboarding", oneTimeAmount: 0 } : findRule(
         activeRules.onboardingRules,
         input.onboardingPackage,
         ["key", "package"],
@@ -1451,7 +1451,7 @@ ${rateScheduleText(option, true)}`,
       };
     });
     var buildOnboardingLines = (option, source) => {
-      if (option.result.onboardingAmount <= 0) return [];
+      if (option.input.onboardingPackage === "none" || option.result.onboardingAmount <= 0) return [];
       const product = CATALOG[option.input.onboardingPackage];
       if (!product) throw new Error("PRODUCT_MAPPING_REQUIRED");
       return [
@@ -1789,6 +1789,7 @@ var deleteOption = async (client, dealId, state, parameters) => {
 };
 var toHubSpotDate = (date) => date ? String(Date.parse(`${date}T00:00:00.000Z`)) : "";
 var onboardingHubSpotValue = Object.freeze({
+  none: "",
   quick_launch: "quicklaunch",
   quick_launch_plus: "quicklaunch_plus",
   strategic: "strategic"
@@ -1826,7 +1827,7 @@ var buildSelectedProperties = (option, approvalStatus) => {
     pricing_term_months: String(input.termMonths),
     pricing_payment_frequency: result.paymentFrequencyHubSpotValue || "",
     pricing_support_tier: input.supportLevel,
-    pricing_onboarding_tier: onboardingHubSpotValue[input.onboardingPackage] || input.onboardingPackage,
+    pricing_onboarding_tier: onboardingHubSpotValue[input.onboardingPackage] ?? input.onboardingPackage,
     pricing_arr: String(result.committedArr),
     pricing_tcv: String(result.tcv),
     pricing_list_price_tcv: String(result.listTcv),
