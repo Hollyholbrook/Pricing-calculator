@@ -165,7 +165,15 @@ interface ServerlessBody {
   success: boolean;
   error?: string;
   errorCode?: string;
-  details?: { field?: string; validationCode?: string };
+  details?: {
+    field?: string;
+    validationCode?: string;
+    operation?: string;
+    providerStatus?: string;
+    providerCategory?: string;
+    errorType?: string;
+    providerMessage?: string;
+  };
   optionSet?: OptionDocument;
   option?: QuoteOption;
   selectedOptionId?: string | null;
@@ -452,9 +460,19 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
       },
     );
     if (!result.body.success) {
-      const detail = result.body.details?.field
-        ? ` (${result.body.details.field})`
-        : "";
+      // Show what HubSpot actually said. Without this the same generic sentence covers every
+      // cause, and diagnosing a failure means going to the function logs.
+      const d = result.body.details;
+      const diagnostic = [
+        d?.field,
+        d?.validationCode,
+        d?.providerStatus && d.providerStatus !== "unknown"
+          ? `HTTP ${d.providerStatus}`
+          : undefined,
+        d?.providerCategory !== "unknown" ? d?.providerCategory : undefined,
+        d?.providerMessage,
+      ].filter(Boolean);
+      const detail = diagnostic.length ? ` (${diagnostic.join(" · ")})` : "";
       throw new PricingActionError(
         `${result.body.error || "The pricing action failed."}${detail}`,
         result.body.errorCode,

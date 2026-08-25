@@ -85,6 +85,31 @@ const normalizeOptionName = (value, fallback) => {
   return trimmed.slice(0, 80);
 };
 
+// A failed HubSpot call is the only thing that knows why a sync failed, and SAFE_ERRORS
+// deliberately hides raw provider text from users. This keeps the shape of the failure -- HTTP
+// status, HubSpot's error category, the error type, and a truncated, control-character-stripped
+// message -- which is enough to name a bad property or a rejected value without exposing
+// anything about the customer.
+const safeProviderDiagnostics = (error, operation) => {
+  const rawStatus =
+    error?.statusCode || error?.status || error?.code || error?.response?.statusCode;
+  const rawCategory = error?.body?.category || error?.response?.body?.category;
+  const rawMessage = error?.body?.message || error?.response?.body?.message || error?.message;
+  const errorType = String(error?.name || 'Error');
+  return {
+    operation: String(operation || 'unknown').slice(0, 60),
+    providerStatus: /^\d{3}$/.test(String(rawStatus || '')) ? String(rawStatus) : 'unknown',
+    providerCategory: /^[A-Z0-9_]{1,80}$/.test(String(rawCategory || ''))
+      ? String(rawCategory)
+      : 'unknown',
+    errorType: /^[A-Za-z][A-Za-z0-9]{0,79}$/.test(errorType) ? errorType : 'Error',
+    providerMessage: String(rawMessage || '')
+      .replace(/[\u0000-\u001f\u007f]+/g, ' ')
+      .trim()
+      .slice(0, 160),
+  };
+};
+
 const assertDealAccess = (context, requestedDealId) => {
   const contextDealId = context?.crm?.objectId == null ? null : String(context.crm.objectId);
   const dealId = requestedDealId == null ? contextDealId : String(requestedDealId);
@@ -528,7 +553,8 @@ const HUBSPOT_LINE_ITEM_PROPERTIES = new Set([
   'monthly_unit_price',
   'discount',
   'description',
-  'product_category',
+  // 'product_category' deliberately omitted: it is not a HubSpot-defined Line Item property, so
+  // in a portal that never had it created every create fails with a 400 and the sync collapses.
   'units',
   'recurringbillingfrequency',
   'hs_recurring_billing_period',
@@ -580,10 +606,12 @@ const syncDealLineItems = async (client, dealId, state, settings) => {
     // buildDealLineItems runs before the try, so PRODUCT_MAPPING_REQUIRED can never arrive here.
     // Log what HubSpot actually said before flattening it — otherwise every sync failure is
     // indistinguishable and undiagnosable.
-    console.error('Nylas pricing line item sync failed.', error?.message || error);
-    throw new Error(
-      error?.message === 'TOO_MANY_LINE_ITEMS' ? 'TOO_MANY_LINE_ITEMS' : 'LINE_ITEM_SYNC_FAILED',
-    );
+    const diagnostics = safeProviderDiagnostics(error, 'sync_line_items');
+    console.error('Nylas pricing line item sync failed.', diagnostics, error?.stack || error);
+    if (error?.message === 'TOO_MANY_LINE_ITEMS') throw new Error('TOO_MANY_LINE_ITEMS');
+    const failure = new Error('LINE_ITEM_SYNC_FAILED');
+    failure.diagnostics = diagnostics;
+    throw failure;
   }
 };
 
@@ -699,10 +727,12 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
     // normalizeQuoteContent and buildQuoteLineItems both run before the try, so
     // INVALID_QUOTE_CONTENT and PRODUCT_MAPPING_REQUIRED cannot reach this catch. Everything that
     // does reach it is a HubSpot failure, and its detail is the only diagnostic that exists.
-    console.error('Nylas pricing quote creation failed.', error?.message || error);
-    throw new Error(
-      error?.message === 'TOO_MANY_LINE_ITEMS' ? 'TOO_MANY_LINE_ITEMS' : 'QUOTE_CREATE_FAILED',
-    );
+    const diagnostics = safeProviderDiagnostics(error, 'generate_quote');
+    console.error('Nylas pricing quote creation failed.', diagnostics, error?.stack || error);
+    if (error?.message === 'TOO_MANY_LINE_ITEMS') throw new Error('TOO_MANY_LINE_ITEMS');
+    const failure = new Error('QUOTE_CREATE_FAILED');
+    failure.diagnostics = diagnostics;
+    throw failure;
   }
 };
 
@@ -856,7 +886,7 @@ exports.main = async (context) => {
         field: String(error.message).slice('INVALID_SETTINGS:'.length),
       });
     }
-    if (SAFE_ERRORS[error?.message]) return safeError(error.message);
+    if (SAFE_ERRORS[error?.message]) return safeError(error.message, 400, error.diagnostics);
     // Unrecognized errors still reach the user as a generic message, but they must leave a trace.
     // Logging the bare string left genuine bugs (e.g. a TypeError on a malformed payload)
     // completely invisible in the function logs.

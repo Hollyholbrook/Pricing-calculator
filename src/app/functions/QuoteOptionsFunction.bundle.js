@@ -1611,6 +1611,19 @@ var normalizeOptionName = (value, fallback) => {
   if (!trimmed) return fallback;
   return trimmed.slice(0, 80);
 };
+var safeProviderDiagnostics = (error, operation) => {
+  const rawStatus = error?.statusCode || error?.status || error?.code || error?.response?.statusCode;
+  const rawCategory = error?.body?.category || error?.response?.body?.category;
+  const rawMessage = error?.body?.message || error?.response?.body?.message || error?.message;
+  const errorType = String(error?.name || "Error");
+  return {
+    operation: String(operation || "unknown").slice(0, 60),
+    providerStatus: /^\d{3}$/.test(String(rawStatus || "")) ? String(rawStatus) : "unknown",
+    providerCategory: /^[A-Z0-9_]{1,80}$/.test(String(rawCategory || "")) ? String(rawCategory) : "unknown",
+    errorType: /^[A-Za-z][A-Za-z0-9]{0,79}$/.test(errorType) ? errorType : "Error",
+    providerMessage: String(rawMessage || "").replace(/[\u0000-\u001f\u007f]+/g, " ").trim().slice(0, 160)
+  };
+};
 var assertDealAccess = (context, requestedDealId) => {
   const contextDealId = context?.crm?.objectId == null ? null : String(context.crm.objectId);
   const dealId = requestedDealId == null ? contextDealId : String(requestedDealId);
@@ -1972,7 +1985,8 @@ var HUBSPOT_LINE_ITEM_PROPERTIES = /* @__PURE__ */ new Set([
   "monthly_unit_price",
   "discount",
   "description",
-  "product_category",
+  // 'product_category' deliberately omitted: it is not a HubSpot-defined Line Item property, so
+  // in a portal that never had it created every create fails with a 400 and the sync collapses.
   "units",
   "recurringbillingfrequency",
   "hs_recurring_billing_period",
@@ -2015,10 +2029,12 @@ var syncDealLineItems = async (client, dealId, state, settings) => {
       (id) => client.crm.lineItems.basicApi.archive(id).catch(() => void 0)
     );
     await client.crm.deals.basicApi.update(dealId, { properties: { pricing_line_item_sync_status: "failed" } }).catch(() => void 0);
-    console.error("Nylas pricing line item sync failed.", error?.message || error);
-    throw new Error(
-      error?.message === "TOO_MANY_LINE_ITEMS" ? "TOO_MANY_LINE_ITEMS" : "LINE_ITEM_SYNC_FAILED"
-    );
+    const diagnostics = safeProviderDiagnostics(error, "sync_line_items");
+    console.error("Nylas pricing line item sync failed.", diagnostics, error?.stack || error);
+    if (error?.message === "TOO_MANY_LINE_ITEMS") throw new Error("TOO_MANY_LINE_ITEMS");
+    const failure = new Error("LINE_ITEM_SYNC_FAILED");
+    failure.diagnostics = diagnostics;
+    throw failure;
   }
 };
 var quoteRecordUrl = (portalId, quoteId) => portalId ? `https://app.hubspot.com/contacts/${portalId}/record/0-14/${quoteId}` : "";
@@ -2116,10 +2132,12 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
     }
     if (quote?.id) await client.crm.quotes.basicApi.archive(quote.id).catch(() => void 0);
     await client.crm.deals.basicApi.update(dealId, { properties: { pricing_quote_generation_status: "failed" } }).catch(() => void 0);
-    console.error("Nylas pricing quote creation failed.", error?.message || error);
-    throw new Error(
-      error?.message === "TOO_MANY_LINE_ITEMS" ? "TOO_MANY_LINE_ITEMS" : "QUOTE_CREATE_FAILED"
-    );
+    const diagnostics = safeProviderDiagnostics(error, "generate_quote");
+    console.error("Nylas pricing quote creation failed.", diagnostics, error?.stack || error);
+    if (error?.message === "TOO_MANY_LINE_ITEMS") throw new Error("TOO_MANY_LINE_ITEMS");
+    const failure = new Error("QUOTE_CREATE_FAILED");
+    failure.diagnostics = diagnostics;
+    throw failure;
   }
 };
 var stateResponse = (state) => ({
@@ -2268,7 +2286,7 @@ exports.main = async (context) => {
         field: String(error.message).slice("INVALID_SETTINGS:".length)
       });
     }
-    if (SAFE_ERRORS[error?.message]) return safeError(error.message);
+    if (SAFE_ERRORS[error?.message]) return safeError(error.message, 400, error.diagnostics);
     console.error(
       `Nylas pricing action failed: ${String(context?.parameters?.action || "missing")} \xB7 ${error?.name || "Error"}`,
       error?.stack || error?.message || error
