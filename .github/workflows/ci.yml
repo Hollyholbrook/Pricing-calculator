@@ -1,0 +1,28 @@
+name: Pricing integrity
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - recovery/core-pricing
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: |
+            src/app/functions/package-lock.json
+            src/app/cards/package-lock.json
+            src/app/settings/package-lock.json
+      - name: Run pricing integrity checks
+        run: ./scripts/check.sh

@@ -6,8 +6,6 @@
     "description": "Create, calculate, compare, and select Nylas New Business quote options.",
     "location": "crm.record.tab",
     "entrypoint": "/app/cards/NylasPricingBuilder.tsx",
-    "objectTypes": [
-      "deals"
-    ]
+    "objectTypes": ["deals"]
   }
 }

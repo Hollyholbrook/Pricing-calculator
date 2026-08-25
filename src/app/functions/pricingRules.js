@@ -71,10 +71,10 @@ module.exports = Object.freeze({
       unitOfMeasure: '1,000 emails',
       pricingModel: 'graduated_adjusted_bands',
       bands: [
-        [0, 50_000, 1],
-        [50_000, 100_000, 0.75],
-        [100_000, 500_000, 0.35],
-        [500_000, null, 0.25],
+        [0, 50, 1],
+        [50, 100, 0.75],
+        [100, 500, 0.35],
+        [500, null, 0.25],
       ],
     },
     {

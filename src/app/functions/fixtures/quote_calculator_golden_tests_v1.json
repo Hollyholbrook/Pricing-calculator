@@ -10,7 +10,7 @@
         "calendar_ca": 2800,
         "notetaker_bot_hours": 150,
         "agent_accounts": 0,
-        "agent_email_thousands": 120000,
+        "agent_email_thousands": 120,
         "agent_storage_gb": 0,
         "agent_bandwidth_gb": 0
       },
@@ -37,20 +37,20 @@
     "expected": {
       "termDiscount": 0.025,
       "paymentPremium": 0.06,
-      "listPlatformArr": 1267548,
-      "proposedPlatformArr": 1193904,
-      "supportAnnual": 10000,
+      "listPlatformArr": 90326.4,
+      "proposedPlatformArr": 81417.6,
+      "supportAnnual": 8141.76,
       "annualAddOns": 2480.4,
-      "committedArr": 1206384.4,
+      "committedArr": 92039.76,
       "oneTime": 8800,
-      "tcv": 2421568.8,
+      "tcv": 192879.52,
       "approvalStatus": "WITHIN_GUARDRAILS",
       "lines": [
         { "productKey": "connect_ca", "volume": 2800, "baseBlendedRate": 1.496, "listUnitRate": 1.55, "proposedUnitRate": 1.4, "listMrr": 4340, "proposedMrr": 3920 },
         { "productKey": "calendar_ca", "volume": 2800, "baseBlendedRate": 1.032, "listUnitRate": 1.07, "proposedUnitRate": 0.96, "listMrr": 2996, "proposedMrr": 2688 },
         { "productKey": "notetaker_bot_hours", "volume": 150, "baseBlendedRate": 0.6, "listUnitRate": 0.62, "proposedUnitRate": 0.56, "listMrr": 93, "proposedMrr": 84 },
         { "productKey": "agent_accounts", "volume": 0, "baseBlendedRate": 0, "listUnitRate": 0, "proposedUnitRate": 0, "listMrr": 0, "proposedMrr": 0 },
-        { "productKey": "agent_email_thousands", "volume": 120000, "baseBlendedRate": 0.788, "listUnitRate": 0.82, "proposedUnitRate": 0.77, "listMrr": 98200, "proposedMrr": 92800 },
+        { "productKey": "agent_email_thousands", "volume": 120, "baseBlendedRate": 0.788, "listUnitRate": 0.82, "proposedUnitRate": 0.77, "listMrr": 98.2, "proposedMrr": 92.8 },
         { "productKey": "agent_storage_gb", "volume": 0, "baseBlendedRate": 0, "listUnitRate": 0, "proposedUnitRate": 0, "listMrr": 0, "proposedMrr": 0 },
         { "productKey": "agent_bandwidth_gb", "volume": 0, "baseBlendedRate": 0, "listUnitRate": 0, "proposedUnitRate": 0, "listMrr": 0, "proposedMrr": 0 }
       ]
