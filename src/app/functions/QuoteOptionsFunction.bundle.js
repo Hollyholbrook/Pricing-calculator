@@ -1965,10 +1965,28 @@ var updateLineItemProperties = async (client, id, properties, stage) => {
 };
 var createProductLineItem = async (client, properties, parentType, parentId) => {
   const core = selectProperties(properties, (name) => CORE_LINE_ITEM_PROPERTIES.has(name));
-  const created = await client.crm.lineItems.basicApi.create({
-    properties: core,
-    associations: []
-  });
+  let created;
+  if (typeof client.apiRequest === "function") {
+    const apiResponse = await client.apiRequest({
+      method: "POST",
+      path: "/crm/v3/objects/line_items",
+      body: { properties: core }
+    });
+    const responseBody = await apiResponse.json().catch(() => ({}));
+    if (!apiResponse.ok) {
+      const error = new Error("LINE_ITEM_CREATE_REJECTED");
+      error.statusCode = apiResponse.status;
+      error.body = responseBody;
+      throw error;
+    }
+    created = responseBody;
+  } else {
+    created = await client.crm.lineItems.basicApi.create({
+      properties: core,
+      associations: []
+    });
+  }
+  if (!created?.id) throw new Error("LINE_ITEM_CREATE_REJECTED");
   const id = String(created.id);
   try {
     await client.crm.associations.v4.basicApi.createDefault(
