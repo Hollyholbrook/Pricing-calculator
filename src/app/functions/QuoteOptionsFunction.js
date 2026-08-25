@@ -103,10 +103,13 @@ const safeProviderDiagnostics = (error, operation) => {
       ? String(rawCategory)
       : 'unknown',
     errorType: /^[A-Za-z][A-Za-z0-9]{0,79}$/.test(errorType) ? errorType : 'Error',
+    // HubSpot's validation messages lead with portal and object ids and only name the actual
+    // problem at the very end, so a short cap truncates away the only useful part. 160 characters
+    // cut "... : Quote Template should ha" mid-sentence.
     providerMessage: String(rawMessage || '')
       .replace(/[\u0000-\u001f\u007f]+/g, ' ')
       .trim()
-      .slice(0, 160),
+      .slice(0, 400),
   };
 };
 

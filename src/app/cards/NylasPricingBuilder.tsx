@@ -314,7 +314,7 @@ const professionalServiceOptions = [
 // One width for all four numeric columns keeps them equal; Product uses width="max" to take
 // everything left over. Wide enough for a four-decimal rate ("$1.0260") beside the widest header
 // ("Proposed Rate") without wrapping, which is what made the rate columns look cut off.
-const NUMERIC_COLUMN_WIDTH = 140;
+const NUMERIC_COLUMN_WIDTH = 155;
 
 const termOptions = [12, 24, 36].map((months) => ({
   value: months,
@@ -711,27 +711,31 @@ const OptionEditor = ({
   // row. The blended rate is what the quote is actually built from, so it leads; the band rates
   // follow as compact microcopy, and their ranges are named once in the Product cell rather than
   // repeated in both rate columns.
+  // Graduated products show every band, not just the blended rate. Four tiers genuinely need four
+  // lines, so the Agent Email row is taller than the rest — that is inherent to the pricing, not
+  // waste. The ranges are printed once, beside the list rates, and the proposed column lines up
+  // band for band.
   const ratePreview = (
     line: QuoteLine | undefined,
     blended: number | undefined,
+    bands: QuoteLine["listBandRates"] | undefined,
+    withRanges: boolean,
   ) => {
     if (!line) return <Text variant="microcopy">—</Text>;
+    if (line.productKey === "agent_email_thousands" && bands?.length) {
+      return (
+        <Stack distance="flush">
+          <Text>{rateCurrency(blended)}</Text>
+          {bands.map((band) => (
+            <Text key={bandRange(band.lower, band.upper)} variant="microcopy">
+              {withRanges ? `${bandRange(band.lower, band.upper)} ` : ""}
+              {rateCurrency(band.rate)}
+            </Text>
+          ))}
+        </Stack>
+      );
+    }
     return <Text>{rateCurrency(blended)}</Text>;
-  };
-
-  // The graduated schedule is four values wide and belongs to exactly one product, so it does not
-  // go in the table at all. In the Product cell it stretched that column until every numeric
-  // column collapsed and the volume and discount inputs truncated mid-value; in a rate cell it
-  // either wrapped or made the row four times taller than the others. It sits under the table
-  // instead, on the full width of the card, where it costs one line and distorts nothing.
-  const tierSchedule = (line: QuoteLine | undefined) => {
-    if (!line?.proposedBandRates.length) return "";
-    return line.proposedBandRates
-      .map(
-        (band) =>
-          `${bandRange(band.lower, band.upper)} ${rateCurrency(band.rate)}`,
-      )
-      .join(" · ");
   };
 
   // Read the adjusted list band rates the calculator published. Recomputing them here as
@@ -739,10 +743,15 @@ const OptionEditor = ({
   // applies the adjustment additively and rounds to cents, so a UI-side reimplementation drifts
   // from the rates the quote is built from.
   const listRatePreview = (line: QuoteLine | undefined) =>
-    ratePreview(line, line?.displayListUnitRate);
+    ratePreview(line, line?.displayListUnitRate, line?.listBandRates, true);
 
   const proposedRatePreview = (line: QuoteLine | undefined) =>
-    ratePreview(line, line?.displayProposedUnitRate);
+    ratePreview(
+      line,
+      line?.displayProposedUnitRate,
+      line?.proposedBandRates,
+      false,
+    );
 
   const productTable = (tableProducts: typeof products) => (
     <Table density="compact" flush>
@@ -949,11 +958,10 @@ const OptionEditor = ({
               manually, and determine the required approval level.
             </Text>
             {productTable(products)}
-            {emailLine && tierSchedule(emailLine) && (
+            {emailLine && (
               <Text variant="microcopy">
-                Agent Email is priced in graduated tiers:{" "}
-                {tierSchedule(emailLine)}. The rate shown in the table is the
-                blended rate at the entered volume.
+                Agent Email is priced in graduated tiers. The figure above each
+                band is the blended rate at the entered volume.
               </Text>
             )}
             {committedProductCount === 0 && (
