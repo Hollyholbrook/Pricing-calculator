@@ -1005,6 +1005,18 @@ const OptionEditor = ({
                   onInputChange("paymentFrequency", String(value))
                 }
               />
+              {quoteTemplates.length > 0 && (
+                <Select
+                  label="Quote Template"
+                  name="quote_template"
+                  value={templateId}
+                  options={quoteTemplates.map(({ id, name }) => ({
+                    value: id,
+                    label: name,
+                  }))}
+                  onChange={(value) => onTemplateChange(String(value))}
+                />
+              )}
             </AutoGrid>
           </>
         }
@@ -1039,19 +1051,6 @@ const OptionEditor = ({
               discount.
             </Text>
             <AutoGrid columnWidth={165} flexible gap="sm">
-              {quoteTemplates.length > 0 && (
-                <Select
-                  label="Quote Template"
-                  name="quote_template"
-                  value={templateId}
-                  options={quoteTemplates.map(({ id, name }) => ({
-                    value: id,
-                    label: name,
-                  }))}
-                  tooltip="Only customizable quote templates are listed. HubSpot rejects CPQ templates when the Quote is finalized."
-                  onChange={(value) => onTemplateChange(String(value))}
-                />
-              )}
               <Select
                 label="Support"
                 name="support_level"

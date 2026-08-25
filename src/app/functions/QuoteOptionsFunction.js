@@ -706,16 +706,15 @@ const usableQuoteTemplates = async (client) => {
     do {
       const page = await readQuoteTemplatePage(client, after);
       for (const template of page?.results || []) {
-        const type = template?.properties?.hs_type;
-        const name = String(
-          template?.properties?.hs_name || `Quote template ${template?.id}`,
-        ).slice(0, 140);
+        // No "(not supported)" suffix. That label came from the same wrong inference as the
+        // filter before it: a cpq_template is not unsupported, it is the current model, and the
+        // quote just had to declare hs_template_type CPQ_QUOTE to match it. Marking every real
+        // template in the portal as unsupported was misinformation in the UI.
         templates.push({
           id: String(template.id),
-          name:
-            type && type !== REQUIRED_QUOTE_TEMPLATE_TYPE
-              ? `${name} (not supported)`
-              : name,
+          name: String(
+            template?.properties?.hs_name || `Quote template ${template?.id}`,
+          ).slice(0, 140),
         });
       }
       after = page?.paging?.next?.after;
@@ -799,9 +798,11 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
       associations: [],
     });
 
-    // Documented quote association type ids: deal 64, line item 67, contact 69, company 71,
-    // quote template 286. createDefault picks the portal's DEFAULT association type, which is
-    // not necessarily the one the CPQ quote model expects, so each is now stated explicitly.
+    // Association type ids stated explicitly rather than relying on createDefault, which picks
+    // the portal's DEFAULT type and not necessarily the one the CPQ quote model expects. These
+    // are all created FROM the quote (0-14): deal 64, contact 69, company 71, quote template
+    // 286. The line item association is declared on the line item itself, so it uses the
+    // opposite direction (68) rather than the quote-side 67.
     await client.crm.associations.v4.basicApi.create('quotes', String(quote.id), 'deals', dealId, [
       { associationCategory: 'HUBSPOT_DEFINED', associationTypeId: 64 },
     ]);
@@ -820,7 +821,13 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
       const created = await createLineItem(
         client,
         hubSpotLineItemProperties(item.properties),
-        [createAssociation(quote.id, 67)],
+        // 68, not 67. Association type ids are directional: 67 is defined FROM the quote
+        // (0-14) TO the line item, but this association is declared on the line item's own
+        // create call, so the "from" side is the line item (0-8). HubSpot rejected it with
+        // "invalid from object type 0-8 ... expected: 0-14. For definition 0-67". 68 is the
+        // line-item-to-quote direction, which is why it was here originally -- the same reason
+        // the Deal sync uses 20 on its line-item creates.
+        [createAssociation(quote.id, 68)],
       );
       createdLineItemIds.push(String(created.id));
     }));

@@ -2133,13 +2133,11 @@ var usableQuoteTemplates = async (client) => {
     do {
       const page = await readQuoteTemplatePage(client, after);
       for (const template of page?.results || []) {
-        const type = template?.properties?.hs_type;
-        const name = String(
-          template?.properties?.hs_name || `Quote template ${template?.id}`
-        ).slice(0, 140);
         templates.push({
           id: String(template.id),
-          name: type && type !== REQUIRED_QUOTE_TEMPLATE_TYPE ? `${name} (not supported)` : name
+          name: String(
+            template?.properties?.hs_name || `Quote template ${template?.id}`
+          ).slice(0, 140)
         });
       }
       after = page?.paging?.next?.after;
@@ -2224,7 +2222,13 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
       const created = await createLineItem(
         client,
         hubSpotLineItemProperties(item.properties),
-        [createAssociation(quote.id, 67)]
+        // 68, not 67. Association type ids are directional: 67 is defined FROM the quote
+        // (0-14) TO the line item, but this association is declared on the line item's own
+        // create call, so the "from" side is the line item (0-8). HubSpot rejected it with
+        // "invalid from object type 0-8 ... expected: 0-14. For definition 0-67". 68 is the
+        // line-item-to-quote direction, which is why it was here originally -- the same reason
+        // the Deal sync uses 20 on its line-item creates.
+        [createAssociation(quote.id, 68)]
       );
       createdLineItemIds.push(String(created.id));
     }));
