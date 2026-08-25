@@ -15,6 +15,7 @@ import {
   ExtensionPointApiActions,
   Flex,
   Heading,
+  Input,
   LoadingButton,
   LoadingSpinner,
   MultiSelect,
@@ -28,6 +29,8 @@ import {
   TableHead,
   TableHeader,
   TableRow,
+  Tab,
+  Tabs,
   Text,
   TextArea,
   hubspot,
@@ -465,12 +468,8 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
     includeRenewalTerms: true,
     includeSpecialTerms: true,
   });
-  const [editing, setEditing] = useState<QuoteOption>({
-    name: "Live calculator",
-    status: "draft",
-    input: emptyInput(),
-  });
-  const [_view, setView] = useState<"list" | "edit" | "compare">("list");
+  const [editing, setEditing] = useState<QuoteOption | null>(null);
+  const [view, setView] = useState<"list" | "edit" | "compare">("list");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -539,7 +538,7 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dealId]);
 
-  const _beginNew = () => {
+  const beginNew = () => {
     setEditing({
       name: `Option ${optionSet.options.length + 1}`,
       status: "draft",
@@ -548,7 +547,7 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
     setView("edit");
   };
 
-  const _beginEdit = (option: QuoteOption) => {
+  const beginEdit = (option: QuoteOption) => {
     setEditing({ ...option, input: cloneInput(option.input) });
     setView("edit");
   };
@@ -575,37 +574,39 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
     });
   };
 
+  const calculateAndSave = async () => {
+    if (!editing) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const body = await runAction({
+        action: "calculate_and_save",
+        expectedRevision: optionSet.revision,
+        option: editing,
+      });
+      if (body.option) setEditing(body.option);
+      actions.addAlert({
+        title: "Option calculated",
+        message: `${body.option?.name || editing.name} was saved without changing the official Deal totals.`,
+        type: "success",
+      });
+    } catch (saveError) {
+      setError(
+        saveError instanceof Error
+          ? saveError.message
+          : "Unable to calculate this option.",
+      );
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const previewQuote = async (input: QuoteInput) => {
     const body = await runAction({ action: "preview", input });
     if (!body.previewResult) {
       throw new PricingActionError("Unable to preview this pricing option.");
     }
     return body.previewResult;
-  };
-
-  const lockLiveCalculation = async () => {
-    setSaving(true);
-    setError(null);
-    try {
-      const body = await runAction({
-        action: "lock_live",
-        input: editing.input,
-        quoteContent: {},
-      });
-      actions.addAlert({
-        title: "Pricing locked in",
-        message: `${body.lineItemCount || 0} Deal line items were added and a draft quote was created.`,
-        type: "success",
-      });
-    } catch (lockError) {
-      setError(
-        lockError instanceof Error
-          ? lockError.message
-          : "Unable to add line items and create the quote.",
-      );
-    } finally {
-      setSaving(false);
-    }
   };
 
   const _removeOption = async (option: QuoteOption) => {
@@ -634,7 +635,7 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
     }
   };
 
-  const _chooseOption = async (option: QuoteOption) => {
+  const chooseOption = async (option: QuoteOption) => {
     if (!option.id) return;
     setSaving(true);
     setError(null);
@@ -721,25 +722,25 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
   if (loading) {
     return (
       <Flex justify="center" align="center">
-        <LoadingSpinner label="Loading pricing calculator" />
+        <LoadingSpinner label="Loading Nylas quote options" />
       </Flex>
     );
   }
 
   if (unsupportedDeal) {
     return (
-      <EmptyState
-        title="Pricing is not available for this deal"
-        layout="vertical"
-      >
-        <Text>Open an eligible deal to use the live pricing calculator.</Text>
+      <EmptyState title="New Business quotes only" layout="vertical">
+        <Text>
+          This calculator is intentionally unavailable on Renewal and other Deal
+          types. Open a New Business Deal to build pricing options.
+        </Text>
       </EmptyState>
     );
   }
 
   return (
     <Stack distance="sm">
-      <Heading>Nylas Pricing Calculator</Heading>
+      <Heading>Nylas Pricing Builder</Heading>
 
       {error && (
         <Alert title="Couldn’t complete the pricing action" variant="error">
@@ -747,13 +748,64 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
         </Alert>
       )}
 
-      <OptionEditor
-        option={editing}
-        saving={saving}
-        onInputChange={updateInput}
-        onPreview={previewQuote}
-        onLock={lockLiveCalculation}
-      />
+      {optionSet.options.length > 0 && (
+        <Tabs
+          selected={editing?.id || (editing ? "draft" : "options")}
+          variant="enclosed"
+          fill
+          onSelectedChange={(selected: string) => {
+            if (selected === "add") return beginNew();
+            const option = optionSet.options.find(({ id }) => id === selected);
+            if (option) beginEdit(option);
+          }}
+        >
+          {optionSet.options.map((option, index) => (
+            <Tab
+              key={option.id || option.name}
+              tabId={option.id}
+              title={`${option.id === selectedOptionId ? "✓ " : ""}Option ${index + 1} · ${option.name}`}
+              disabled={saving}
+            />
+          ))}
+          {editing && !editing.id && (
+            <Tab tabId="draft" title="New option" disabled />
+          )}
+          <Tab
+            tabId="add"
+            title="+ Add option"
+            disabled={optionSet.options.length >= 10 || saving}
+          />
+        </Tabs>
+      )}
+
+      {optionSet.options.length === 0 && !editing && (
+        <Stack distance="md">
+          <Stack distance="xs">
+            <Heading>No pricing options yet</Heading>
+            <Text variant="microcopy">
+              Create an option to build workbook pricing for this deal.
+            </Text>
+          </Stack>
+          <Flex justify="start">
+            <Button variant="primary" onClick={beginNew} disabled={saving}>
+              Create option
+            </Button>
+          </Flex>
+        </Stack>
+      )}
+
+      {view === "edit" && editing && (
+        <OptionEditor
+          option={editing}
+          saving={saving}
+          onOptionChange={setEditing}
+          onInputChange={updateInput}
+          onCalculate={calculateAndSave}
+          onPreview={previewQuote}
+          onBack={() => setView("list")}
+          onChoose={chooseOption}
+        />
+      )}
     </Stack>
   );
 };
@@ -766,7 +818,7 @@ const _OptionList = ({
   onEdit,
   onDuplicate,
   onDelete,
-  onChoose: _onChoose,
+  onChoose,
 }: {
   optionSet: OptionDocument;
   selectedOptionId: string | null;
@@ -808,6 +860,7 @@ const _OptionList = ({
       <TableBody>
         {optionSet.options.map((option) => {
           const isSelected = option.id === selectedOptionId;
+          const isBlocked = (option.result?.blockingReasons.length || 0) > 0;
           return (
             <TableRow key={option.id || option.name}>
               <TableCell>
@@ -846,6 +899,16 @@ const _OptionList = ({
                   >
                     Duplicate
                   </Button>
+                  <Button
+                    size="xs"
+                    variant={isSelected ? "secondary" : "primary"}
+                    onClick={() => onChoose(option)}
+                    disabled={!option.result || isBlocked || saving}
+                  >
+                    {isSelected
+                      ? "Customer Choice"
+                      : "Select as Customer Choice"}
+                  </Button>
                   {!isSelected && (
                     <Button
                       size="xs"
@@ -866,48 +929,90 @@ const _OptionList = ({
   );
 };
 
+const editorSteps = [
+  "Contract",
+  "Products",
+  "Services",
+  "Renewal & Terms",
+  "Review",
+];
+
 const OptionEditor = ({
   option,
   saving,
+  onOptionChange,
   onInputChange,
+  onCalculate,
   onPreview,
-  onLock,
+  onBack,
+  onChoose,
 }: {
   option: QuoteOption;
   saving: boolean;
+  onOptionChange: (option: QuoteOption) => void;
   onInputChange: <K extends keyof QuoteInput>(
     field: K,
     value: QuoteInput[K],
   ) => void;
+  onCalculate: () => void;
   onPreview: (input: QuoteInput) => Promise<QuoteResult>;
-  onLock: () => void;
+  onBack: () => void;
+  onChoose: (option: QuoteOption) => void;
 }) => {
+  const [step, setStep] = useState(0);
   const [previewResult, setPreviewResult] = useState<QuoteResult | undefined>(
     option.result,
   );
+  const [previewLoading, setPreviewLoading] = useState(false);
   useEffect(() => {
     let cancelled = false;
+    const loadingTimeout = setTimeout(() => {
+      if (!cancelled) setPreviewLoading(true);
+    }, 0);
     const timeout = setTimeout(() => {
       void onPreview(option.input)
         .then((result) => {
           if (!cancelled) setPreviewResult(result);
         })
-        .catch(() => undefined);
+        .catch(() => {
+          if (!cancelled) setPreviewResult(undefined);
+        })
+        .finally(() => {
+          if (!cancelled) setPreviewLoading(false);
+        });
     }, 350);
     return () => {
       cancelled = true;
+      clearTimeout(loadingTimeout);
       clearTimeout(timeout);
     };
   }, [onPreview, option.input]);
   const committedProductCount = products.filter(
     ({ key }) => option.input.volumes[key] > 0,
   ).length;
+  const canContinue =
+    step !== 0 || Boolean(option.name.trim() && option.input.startDate);
+  const canReview = step !== 1 || committedProductCount > 0;
+  const paymentLabel =
+    paymentOptions.find(({ value }) => value === option.input.paymentFrequency)
+      ?.label || "";
+  const supportLabel =
+    supportOptions.find(({ value }) => value === option.input.supportLevel)
+      ?.label || "";
+  const onboardingLabel =
+    onboardingOptions.find(
+      ({ value }) => value === option.input.onboardingPackage,
+    )?.label || "";
+
   const discountPreview = (
     listAmount: number | undefined,
     discount: number,
     proposedAmount: number | undefined,
     unit: string,
   ) => {
+    if (previewLoading) {
+      return <Text variant="microcopy">Updating price…</Text>;
+    }
     if (listAmount == null || proposedAmount == null) {
       return (
         <Text variant="microcopy">
@@ -928,6 +1033,9 @@ const OptionEditor = ({
     line: QuoteLine | undefined,
     discount: number,
   ) => {
+    if (previewLoading) {
+      return <Text variant="microcopy">Updating price…</Text>;
+    }
     if (!line) {
       return <Text variant="microcopy">Loading workbook base rate…</Text>;
     }
@@ -1042,44 +1150,26 @@ const OptionEditor = ({
 
   return (
     <Stack distance="sm">
-      {previewResult && (
-        <Card>
-          <Stack distance="flush">
-            <AutoGrid columnWidth={145} flexible gap="sm">
-              <Text>ARR: {currency(previewResult.committedArr)}</Text>
-              <Text>One-time: {currency(previewResult.oneTime)}</Text>
-              <Text>TCV: {currency(previewResult.tcv)}</Text>
-              <Flex gap="xs" align="center" wrap>
-                <Text format={{ fontWeight: "bold" }}>Approval</Text>
-                <StatusTag
-                  variant={
-                    previewResult.blockingReasons.length > 0
-                      ? "danger"
-                      : previewResult.approvalTierRequired === "none"
-                        ? "success"
-                        : "warning"
-                  }
-                >
-                  {previewResult.blockingReasons.length > 0
-                    ? "Blocked"
-                    : previewResult.approvalTierRequired === "none"
-                      ? "Not required"
-                      : approvalLabel(previewResult.approvalTierRequired)}
-                </StatusTag>
-              </Flex>
-            </AutoGrid>
-            {previewResult.approvalReasons.length > 0 && (
-              <Text variant="microcopy">
-                {previewResult.approvalReasons.join(" ")}
-              </Text>
-            )}
-          </Stack>
-        </Card>
-      )}
+      <Text format={{ fontWeight: "bold" }}>
+        {option.name.trim() || "New option"} ·{" "}
+        {option.updatedAt ? "Saved" : "Not saved"}
+      </Text>
+
+      <Tabs
+        selected={step}
+        fill
+        onSelectedChange={(selected: string | number) =>
+          setStep(Number(selected))
+        }
+      >
+        {editorSteps.map((label, index) => (
+          <Tab key={label} tabId={index} title={label} disabled={saving} />
+        ))}
+      </Tabs>
 
       <Card>
         <Stack distance="xs">
-          {
+          {step === 0 && (
             <>
               <Box>
                 <Heading>Contract Basics</Heading>
@@ -1089,6 +1179,13 @@ const OptionEditor = ({
                 </Text>
               </Box>
               <AutoGrid columnWidth={155} flexible gap="sm">
+                <Input
+                  label="Option Name"
+                  name="option_name"
+                  value={option.name}
+                  required
+                  onChange={(name) => onOptionChange({ ...option, name })}
+                />
                 <DateInput
                   label="Start Date"
                   name="start_date"
@@ -1117,15 +1214,15 @@ const OptionEditor = ({
                   }
                 />
               </AutoGrid>
-              {!option.input.startDate && (
+              {!canContinue && (
                 <Alert title="Complete the required fields" variant="warning">
-                  Add a subscription start date to continue.
+                  Add an option name and subscription start date to continue.
                 </Alert>
               )}
             </>
-          }
+          )}
 
-          {
+          {step === 1 && (
             <>
               <Box>
                 <Heading>Monthly Product Commitments</Heading>
@@ -1137,13 +1234,13 @@ const OptionEditor = ({
               {productTable(products)}
               {committedProductCount === 0 && (
                 <Alert title="Add at least one commitment" variant="warning">
-                  Add committed usage for at least one product.
+                  A quote option needs committed usage for at least one product.
                 </Alert>
               )}
             </>
-          }
+          )}
 
-          {
+          {step === 2 && (
             <>
               <Box>
                 <Heading>Services and Pricing</Heading>
@@ -1303,9 +1400,9 @@ const OptionEditor = ({
                 </Stack>
               </Card>
             </>
-          }
+          )}
 
-          {
+          {step === 3 && (
             <>
               <Box>
                 <Heading>Renewal and Contract Terms</Heading>
@@ -1343,29 +1440,92 @@ const OptionEditor = ({
                 />
               )}
             </>
-          }
+          )}
+
+          {step === 4 && (
+            <>
+              <Box>
+                <Heading>Review and Calculate</Heading>
+                <Text variant="microcopy">
+                  Confirm the scenario below. Calculation applies the approved
+                  rate card and approval rules.
+                </Text>
+              </Box>
+              {option.result && (
+                <Alert title="Pricing calculated" variant="success">
+                  ARR {currency(option.result.committedArr)} · TCV{" "}
+                  {currency(option.result.tcv)} · Approval{" "}
+                  {approvalLabel(option.result.approvalTierRequired)}
+                </Alert>
+              )}
+              <AutoGrid columnWidth={185} flexible gap="sm">
+                <Text>Option: {option.name}</Text>
+                <Text>Start Date: {option.input.startDate || "Missing"}</Text>
+                <Text>Initial Term: {option.input.termMonths} months</Text>
+                <Text>Payment: {paymentLabel}</Text>
+                <Text>Support: {supportLabel}</Text>
+                <Text>Onboarding: {onboardingLabel}</Text>
+                <Text>Committed Products: {committedProductCount}</Text>
+                <Text>
+                  Renewal:{" "}
+                  {option.input.autoRenewal
+                    ? "12-month automatic renewal · 60-day notice"
+                    : "Non-renewal · 60-day notice"}
+                </Text>
+              </AutoGrid>
+              <LoadingButton
+                variant="primary"
+                loading={saving}
+                onClick={onCalculate}
+                disabled={!canContinue || committedProductCount === 0}
+              >
+                {option.id
+                  ? "Recalculate and Save"
+                  : "Calculate and Save Option"}
+              </LoadingButton>
+            </>
+          )}
         </Stack>
       </Card>
-      <Flex justify="end">
-        <LoadingButton
-          variant="primary"
-          loading={saving}
-          onClick={onLock}
-          disabled={
-            !option.input.startDate ||
-            committedProductCount === 0 ||
-            !previewResult ||
-            previewResult.blockingReasons.length > 0
-          }
+
+      <Flex justify="end" align="center" gap="sm" wrap>
+        <Button
+          onClick={() => (step === 0 ? onBack() : setStep(step - 1))}
+          disabled={saving}
         >
-          Lock it in
-        </LoadingButton>
+          {step === 0 ? "Cancel" : "Back"}
+        </Button>
+        {step < editorSteps.length - 1 && (
+          <Button
+            variant="primary"
+            onClick={() => setStep(step + 1)}
+            disabled={saving || !canContinue || !canReview}
+          >
+            Save &amp; continue
+          </Button>
+        )}
+        {step === editorSteps.length - 1 &&
+          option.id &&
+          option.result &&
+          option.result.blockingReasons.length === 0 && (
+            <Button onClick={() => onChoose(option)} disabled={saving}>
+              Select as Customer Choice
+            </Button>
+          )}
       </Flex>
+
+      {previewResult && (
+        <ResultSummary
+          result={previewResult}
+          title="Live Pricing Summary"
+          updating={previewLoading}
+        />
+      )}
     </Stack>
   );
 };
 
-const _ResultSummary = ({
+const ResultSummary = ({
   result,
   title = "Quote Summary",
   updating = false,
@@ -1376,7 +1536,7 @@ const _ResultSummary = ({
 }) => (
   <Stack distance="md">
     {result.blockingReasons.length > 0 && (
-      <Alert title="This calculation cannot proceed" variant="error">
+      <Alert title="This option cannot proceed" variant="error">
         {result.approvalReasons.join(" ")}
       </Alert>
     )}
@@ -1624,11 +1784,11 @@ const _ResultSummary = ({
 // eslint-disable-next-line unused-imports/no-unused-vars
 const LegacyComparison = ({
   options,
-  selectedOptionId: _selectedOptionId,
+  selectedOptionId,
   saving,
   onBack,
   onEdit,
-  onChoose: _onChoose,
+  onChoose,
 }: {
   options: QuoteOption[];
   selectedOptionId: string | null;
@@ -1732,6 +1892,20 @@ const LegacyComparison = ({
                     disabled={saving}
                   >
                     Edit
+                  </Button>
+                  <Button
+                    size="xs"
+                    variant={
+                      option.id === selectedOptionId ? "secondary" : "primary"
+                    }
+                    onClick={() => onChoose(option)}
+                    disabled={
+                      saving || (option.result?.blockingReasons.length || 0) > 0
+                    }
+                  >
+                    {option.id === selectedOptionId
+                      ? "Customer Choice"
+                      : "Select This Option"}
                   </Button>
                 </Stack>
               </TableCell>
