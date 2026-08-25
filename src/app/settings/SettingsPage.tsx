@@ -9,6 +9,7 @@ import {
   Checkbox,
   Flex,
   Heading,
+  Input,
   LoadingButton,
   LoadingSpinner,
   MultiSelect,
@@ -17,7 +18,6 @@ import {
   Stack,
   StatusTag,
   Text,
-  TextInput,
   hubspot,
 } from "@hubspot/ui-extensions";
 
@@ -355,7 +355,7 @@ const SettingsPage = () => {
             Copy the numeric product record ID from the HubSpot product URL.
           </Text>
           <AutoGrid columnWidth={220} flexible gap="sm">
-            <TextInput
+            <Input
               label="HubSpot Product ID"
               name="deal_bundle_product_id"
               value={settings.dealBundleProduct.id}
@@ -367,7 +367,7 @@ const SettingsPage = () => {
                 })
               }
             />
-            <TextInput
+            <Input
               label="Line Item Name"
               name="deal_bundle_product_name"
               value={settings.dealBundleProduct.name}
@@ -379,7 +379,7 @@ const SettingsPage = () => {
                 })
               }
             />
-            <TextInput
+            <Input
               label="Product Category"
               name="deal_bundle_product_category"
               value={settings.dealBundleProduct.category}
