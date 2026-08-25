@@ -17,6 +17,7 @@ import {
   Stack,
   StatusTag,
   Text,
+  TextInput,
   hubspot,
 } from "@hubspot/ui-extensions";
 
@@ -42,6 +43,7 @@ interface AppSettings {
   allowRenewals: boolean;
   newBusinessPipelineIds: string[];
   renewalPipelineIds: string[];
+  dealBundleProduct: { id: string; name: string; category: string };
   pricingPolicy: PricingPolicy;
 }
 
@@ -345,6 +347,53 @@ const SettingsPage = () => {
             )}
         </Stack>
       </Card>
+
+      <Accordion title="Deal Line Item Package" defaultOpen>
+        <Stack distance="sm">
+          <Text variant="microcopy">
+            Choose the HubSpot product used for the bundled Deal line item.
+            Copy the numeric product record ID from the HubSpot product URL.
+          </Text>
+          <AutoGrid columnWidth={220} flexible gap="sm">
+            <TextInput
+              label="HubSpot Product ID"
+              name="deal_bundle_product_id"
+              value={settings.dealBundleProduct.id}
+              readOnly={!canEdit}
+              onChange={(id) =>
+                setSettings({
+                  ...settings,
+                  dealBundleProduct: { ...settings.dealBundleProduct, id },
+                })
+              }
+            />
+            <TextInput
+              label="Line Item Name"
+              name="deal_bundle_product_name"
+              value={settings.dealBundleProduct.name}
+              readOnly={!canEdit}
+              onChange={(name) =>
+                setSettings({
+                  ...settings,
+                  dealBundleProduct: { ...settings.dealBundleProduct, name },
+                })
+              }
+            />
+            <TextInput
+              label="Product Category"
+              name="deal_bundle_product_category"
+              value={settings.dealBundleProduct.category}
+              readOnly={!canEdit}
+              onChange={(category) =>
+                setSettings({
+                  ...settings,
+                  dealBundleProduct: { ...settings.dealBundleProduct, category },
+                })
+              }
+            />
+          </AutoGrid>
+        </Stack>
+      </Accordion>
 
       <Accordion title="Approval and Contract Guardrails" defaultOpen>
         <AutoGrid columnWidth={175} flexible gap="sm">

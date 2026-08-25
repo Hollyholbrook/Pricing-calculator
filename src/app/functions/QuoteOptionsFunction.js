@@ -575,7 +575,7 @@ const createProductLineItem = async (client, properties, parentType, parentId) =
 const syncDealLineItems = async (client, dealId, state, settings) => {
   const option = selectedOptionForDraft(state);
   assertCurrentSettings(option, settings);
-  const desired = buildDealLineItems(option);
+  const desired = buildDealLineItems(option, settings.dealBundleProduct);
   const createdIds = [];
   try {
     const existingIds = await associatedIds(client, 'deals', dealId, 'line_items', 1_000);

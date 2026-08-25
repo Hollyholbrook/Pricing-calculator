@@ -250,13 +250,13 @@ const buildSubscriptionSummaryLine = (option, source, includeUncommitted) => ({
   }),
 });
 
-const buildDealBundleLine = (option) => ({
+const buildDealBundleLine = (option, dealBundleProduct = CATALOG.enterprise) => ({
   key: 'subscription:nylas_enterprise',
   properties: recurringProperties({
     option,
     key: 'subscription:nylas_enterprise',
     component: 'subscription_drawdown',
-    product: CATALOG.enterprise,
+    product: dealBundleProduct,
     quantity: 1,
     price: option.result.recurringPerPeriod,
     description:
@@ -372,8 +372,8 @@ const buildLineItems = (option, { source, presentation = 'itemized_products', in
   ];
 };
 
-const buildDealLineItems = (option) => [
-  buildDealBundleLine(option),
+const buildDealLineItems = (option, dealBundleProduct) => [
+  buildDealBundleLine(option, dealBundleProduct),
   ...buildOnboardingLines(option, 'deal'),
   ...buildProfessionalServiceLines(option, 'deal'),
 ];

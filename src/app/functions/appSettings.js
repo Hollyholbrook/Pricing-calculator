@@ -50,8 +50,29 @@ const defaultSettings = () => ({
   allowRenewals: false,
   newBusinessPipelineIds: [],
   renewalPipelineIds: [],
+  dealBundleProduct: {
+    id: '47269087321',
+    name: 'Enterprise OneSub',
+    category: 'Platform',
+  },
   pricingPolicy: defaultPricingPolicy(),
 });
+
+const normalizeBundleProduct = (incoming) => {
+  const defaults = defaultSettings().dealBundleProduct;
+  const value = incoming && typeof incoming === 'object' && !Array.isArray(incoming)
+    ? incoming
+    : defaults;
+  const id = String(value.id || '').trim();
+  const name = String(value.name || '').trim();
+  const category = String(value.category || '').trim();
+  if (!/^\d{1,20}$/.test(id)) throw new Error('INVALID_SETTINGS:dealBundleProduct.id');
+  if (!name || name.length > 120) throw new Error('INVALID_SETTINGS:dealBundleProduct.name');
+  if (!category || category.length > 120) {
+    throw new Error('INVALID_SETTINGS:dealBundleProduct.category');
+  }
+  return { id, name, category };
+};
 
 const requireNumber = (value, min, max, field) => {
   if (typeof value !== 'number' || !Number.isFinite(value) || value < min || value > max) {
@@ -250,6 +271,7 @@ const normalizeSettings = (value, currentVersion = 0) => {
       value.renewalPipelineIds || [],
       'renewalPipelineIds',
     ),
+    dealBundleProduct: normalizeBundleProduct(value.dealBundleProduct),
     pricingPolicy: normalizePricingPolicy(value.pricingPolicy),
   };
 };

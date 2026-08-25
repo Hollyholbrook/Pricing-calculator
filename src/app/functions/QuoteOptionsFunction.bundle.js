@@ -810,8 +810,26 @@ var require_appSettings = __commonJS({
       allowRenewals: false,
       newBusinessPipelineIds: [],
       renewalPipelineIds: [],
+      dealBundleProduct: {
+        id: "47269087321",
+        name: "Enterprise OneSub",
+        category: "Platform"
+      },
       pricingPolicy: defaultPricingPolicy()
     });
+    var normalizeBundleProduct = (incoming) => {
+      const defaults = defaultSettings().dealBundleProduct;
+      const value = incoming && typeof incoming === "object" && !Array.isArray(incoming) ? incoming : defaults;
+      const id = String(value.id || "").trim();
+      const name = String(value.name || "").trim();
+      const category = String(value.category || "").trim();
+      if (!/^\d{1,20}$/.test(id)) throw new Error("INVALID_SETTINGS:dealBundleProduct.id");
+      if (!name || name.length > 120) throw new Error("INVALID_SETTINGS:dealBundleProduct.name");
+      if (!category || category.length > 120) {
+        throw new Error("INVALID_SETTINGS:dealBundleProduct.category");
+      }
+      return { id, name, category };
+    };
     var requireNumber = (value, min, max, field) => {
       if (typeof value !== "number" || !Number.isFinite(value) || value < min || value > max) {
         throw new Error(`INVALID_SETTINGS:${field}`);
@@ -979,6 +997,7 @@ var require_appSettings = __commonJS({
           value.renewalPipelineIds || [],
           "renewalPipelineIds"
         ),
+        dealBundleProduct: normalizeBundleProduct(value.dealBundleProduct),
         pricingPolicy: normalizePricingPolicy(value.pricingPolicy)
       };
     };
@@ -1326,13 +1345,13 @@ var require_lineItemModel = __commonJS({
         source
       })
     });
-    var buildDealBundleLine = (option) => ({
+    var buildDealBundleLine = (option, dealBundleProduct = CATALOG.enterprise) => ({
       key: "subscription:nylas_enterprise",
       properties: recurringProperties({
         option,
         key: "subscription:nylas_enterprise",
         component: "subscription_drawdown",
-        product: CATALOG.enterprise,
+        product: dealBundleProduct,
         quantity: 1,
         price: option.result.recurringPerPeriod,
         description: `Bundled Nylas Enterprise subscription, including committed products, support, and recurring add-ons.
@@ -1437,8 +1456,8 @@ ${rateScheduleText(option, true)}`,
         ...buildProfessionalServiceLines(option, source)
       ];
     };
-    var buildDealLineItems2 = (option) => [
-      buildDealBundleLine(option),
+    var buildDealLineItems2 = (option, dealBundleProduct) => [
+      buildDealBundleLine(option, dealBundleProduct),
       ...buildOnboardingLines(option, "deal"),
       ...buildProfessionalServiceLines(option, "deal")
     ];
@@ -1976,7 +1995,7 @@ var createProductLineItem = async (client, properties, parentType, parentId) => 
 var syncDealLineItems = async (client, dealId, state, settings) => {
   const option = selectedOptionForDraft(state);
   assertCurrentSettings(option, settings);
-  const desired = buildDealLineItems(option);
+  const desired = buildDealLineItems(option, settings.dealBundleProduct);
   const createdIds = [];
   try {
     const existingIds = await associatedIds(client, "deals", dealId, "line_items", 1e3);

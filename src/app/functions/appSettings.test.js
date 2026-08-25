@@ -20,6 +20,21 @@ test('invalid calculation methods fail closed', () => {
   );
 });
 
+test('Deal bundle product mapping is editable and validated', () => {
+  const settings = defaultSettings();
+  settings.dealBundleProduct = {
+    id: '123456789',
+    name: 'Configured Enterprise Package',
+    category: 'Platform',
+  };
+  assert.deepEqual(normalizeSettings(settings).dealBundleProduct, settings.dealBundleProduct);
+  settings.dealBundleProduct.id = 'not-a-product-id';
+  assert.throws(
+    () => normalizeSettings(settings),
+    /INVALID_SETTINGS:dealBundleProduct.id/,
+  );
+});
+
 test('configured renewal pipeline enables Renewal deals', () => {
   const settings = {
     ...defaultSettings(),
