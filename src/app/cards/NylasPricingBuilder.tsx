@@ -1046,19 +1046,46 @@ const OptionEditor = ({
     if (!line) {
       return <Text variant="microcopy">Loading workbook base rate…</Text>;
     }
+    if (line.productKey === "agent_email_thousands") {
+      return (
+        <Stack distance="flush">
+          <Text format={{ fontWeight: "bold" }}>Email rate tiers</Text>
+          {line.baseBandRates.map((band, index) => {
+            const range =
+              band.upper == null
+                ? `${band.lower.toLocaleString()}K+`
+                : `${band.lower === 0 ? "1" : band.lower.toLocaleString()}K–${band.upper.toLocaleString()}K`;
+            const listRate =
+              band.rate *
+              (1 - (previewResult?.termDiscount || 0)) *
+              (1 + (previewResult?.paymentPremium || 0));
+            const proposedRate =
+              line.proposedBandRates[index]?.rate ?? listRate * (1 - discount);
+            return (
+              <Text key={range} variant="microcopy">
+                {range}: List {rateCurrency(listRate)} per 1,000 emails/month •{" "}
+                {percent(discount)} discount • Proposed{" "}
+                {rateCurrency(proposedRate)} per 1,000 emails/month
+              </Text>
+            );
+          })}
+          {line.volume > 0 && (
+            <Text variant="microcopy">
+              List {currency(line.listTermCommitment)} Total Contract Value •{" "}
+              {percent(discount)} discount saves{" "}
+              {currency(line.listTermCommitment - line.termCommitment)} •{" "}
+              Proposed {currency(line.termCommitment)} Total Contract Value
+            </Text>
+          )}
+        </Stack>
+      );
+    }
     if (line.volume === 0) {
       return (
         <Stack distance="flush">
           <Text>
             Base rate {rateCurrency(line.baseUnitRate)} / unit / month
           </Text>
-          {line.productKey === "agent_email_thousands" && (
-            <Text variant="microcopy">
-              Email volume is entered in thousands. Tier rates adjust
-              automatically as volume, term, payment schedule, or discount
-              changes.
-            </Text>
-          )}
         </Stack>
       );
     }
