@@ -790,21 +790,27 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
         hs_contract_effective_start_date: option.input.startDate || '',
         hs_comments: quoteText.comments,
         hs_terms: quoteText.terms,
+        // Required, and previously not sent at all. Every quote template in the portal is a
+        // cpq_template, and a quote must declare CPQ_QUOTE to be compatible with them. Without
+        // it the quote defaults to the legacy model and HubSpot rejects the CPQ template it is
+        // associated with.
+        hs_template_type: 'CPQ_QUOTE',
       },
       associations: [],
     });
 
-    await client.crm.associations.v4.basicApi.createDefault(
-      'quotes',
-      String(quote.id),
-      'deals',
-      dealId,
-    );
-    await client.crm.associations.v4.basicApi.createDefault(
+    // Documented quote association type ids: deal 64, line item 67, contact 69, company 71,
+    // quote template 286. createDefault picks the portal's DEFAULT association type, which is
+    // not necessarily the one the CPQ quote model expects, so each is now stated explicitly.
+    await client.crm.associations.v4.basicApi.create('quotes', String(quote.id), 'deals', dealId, [
+      { associationCategory: 'HUBSPOT_DEFINED', associationTypeId: 64 },
+    ]);
+    await client.crm.associations.v4.basicApi.create(
       'quotes',
       String(quote.id),
       'quote_template',
       templateId,
+      [{ associationCategory: 'HUBSPOT_DEFINED', associationTypeId: 286 }],
     );
 
     // Record each id as soon as it exists. Collecting them from Promise.all only records them
@@ -814,7 +820,7 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
       const created = await createLineItem(
         client,
         hubSpotLineItemProperties(item.properties),
-        [createAssociation(quote.id, 68)],
+        [createAssociation(quote.id, 67)],
       );
       createdLineItemIds.push(String(created.id));
     }));
@@ -825,28 +831,34 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
     ]);
     await Promise.all(
       contactIds.map((contactId) =>
-        client.crm.associations.v4.basicApi.createDefault(
+        client.crm.associations.v4.basicApi.create(
           'quotes',
           String(quote.id),
           'contacts',
           contactId,
+          [{ associationCategory: 'HUBSPOT_DEFINED', associationTypeId: 69 }],
         ),
       ),
     );
     if (companyIds[0]) {
-      await client.crm.associations.v4.basicApi.createDefault(
+      await client.crm.associations.v4.basicApi.create(
         'quotes',
         String(quote.id),
         'companies',
         companyIds[0],
+        [{ associationCategory: 'HUBSPOT_DEFINED', associationTypeId: 71 }],
       );
     }
 
-    const finalized = await client.crm.quotes.basicApi.update(quote.id, {
-      properties: { hs_status: 'DRAFT' },
-    });
+    // A quote created through the API is already DRAFT, so the update that set it was redundant
+    // -- and it was the call that failed: it revalidates the whole quote, which is where the
+    // template-type complaint came from. Read the quote instead of writing to it.
+    const finalized = await client.crm.quotes.basicApi.getById(String(quote.id), [
+      'hs_quote_link',
+      'hs_status',
+    ]);
     const quoteUrl =
-      finalized.properties?.hs_quote_link || quoteRecordUrl(portalId, String(quote.id));
+      finalized?.properties?.hs_quote_link || quoteRecordUrl(portalId, String(quote.id));
     const generatedAt = new Date().toISOString();
     await client.crm.deals.basicApi.update(dealId, {
       properties: {

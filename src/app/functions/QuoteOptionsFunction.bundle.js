@@ -2201,27 +2201,30 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
         hs_expiration_date: content.expirationDate,
         hs_contract_effective_start_date: option.input.startDate || "",
         hs_comments: quoteText.comments,
-        hs_terms: quoteText.terms
+        hs_terms: quoteText.terms,
+        // Required, and previously not sent at all. Every quote template in the portal is a
+        // cpq_template, and a quote must declare CPQ_QUOTE to be compatible with them. Without
+        // it the quote defaults to the legacy model and HubSpot rejects the CPQ template it is
+        // associated with.
+        hs_template_type: "CPQ_QUOTE"
       },
       associations: []
     });
-    await client.crm.associations.v4.basicApi.createDefault(
-      "quotes",
-      String(quote.id),
-      "deals",
-      dealId
-    );
-    await client.crm.associations.v4.basicApi.createDefault(
+    await client.crm.associations.v4.basicApi.create("quotes", String(quote.id), "deals", dealId, [
+      { associationCategory: "HUBSPOT_DEFINED", associationTypeId: 64 }
+    ]);
+    await client.crm.associations.v4.basicApi.create(
       "quotes",
       String(quote.id),
       "quote_template",
-      templateId
+      templateId,
+      [{ associationCategory: "HUBSPOT_DEFINED", associationTypeId: 286 }]
     );
     await Promise.all(lineItems.map(async (item) => {
       const created = await createLineItem(
         client,
         hubSpotLineItemProperties(item.properties),
-        [createAssociation(quote.id, 68)]
+        [createAssociation(quote.id, 67)]
       );
       createdLineItemIds.push(String(created.id));
     }));
@@ -2231,26 +2234,29 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
     ]);
     await Promise.all(
       contactIds.map(
-        (contactId) => client.crm.associations.v4.basicApi.createDefault(
+        (contactId) => client.crm.associations.v4.basicApi.create(
           "quotes",
           String(quote.id),
           "contacts",
-          contactId
+          contactId,
+          [{ associationCategory: "HUBSPOT_DEFINED", associationTypeId: 69 }]
         )
       )
     );
     if (companyIds[0]) {
-      await client.crm.associations.v4.basicApi.createDefault(
+      await client.crm.associations.v4.basicApi.create(
         "quotes",
         String(quote.id),
         "companies",
-        companyIds[0]
+        companyIds[0],
+        [{ associationCategory: "HUBSPOT_DEFINED", associationTypeId: 71 }]
       );
     }
-    const finalized = await client.crm.quotes.basicApi.update(quote.id, {
-      properties: { hs_status: "DRAFT" }
-    });
-    const quoteUrl = finalized.properties?.hs_quote_link || quoteRecordUrl(portalId, String(quote.id));
+    const finalized = await client.crm.quotes.basicApi.getById(String(quote.id), [
+      "hs_quote_link",
+      "hs_status"
+    ]);
+    const quoteUrl = finalized?.properties?.hs_quote_link || quoteRecordUrl(portalId, String(quote.id));
     const generatedAt = (/* @__PURE__ */ new Date()).toISOString();
     await client.crm.deals.basicApi.update(dealId, {
       properties: {
