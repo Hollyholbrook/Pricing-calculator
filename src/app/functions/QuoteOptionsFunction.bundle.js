@@ -1877,10 +1877,6 @@ var selectedOptionForDraft = (state) => {
   }
   return option;
 };
-var createAssociation = (toId, associationTypeId) => ({
-  to: { id: String(toId) },
-  types: [{ associationCategory: "HUBSPOT_DEFINED", associationTypeId }]
-});
 var associatedIds = async (client, fromType, fromId, toType, limit = 100) => {
   const ids = [];
   let after;
@@ -1946,13 +1942,28 @@ var updateLineItemProperties = async (client, id, properties, stage) => {
     }
   }
 };
-var createProductLineItem = async (client, properties, association) => {
+var createProductLineItem = async (client, properties, parentType, parentId) => {
   const core = selectProperties(properties, (name) => CORE_LINE_ITEM_PROPERTIES.has(name));
   const created = await client.crm.lineItems.basicApi.create({
     properties: core,
-    associations: [association]
+    associations: []
   });
   const id = String(created.id);
+  try {
+    await client.crm.associations.v4.basicApi.createDefault(
+      "line_items",
+      id,
+      parentType,
+      String(parentId)
+    );
+  } catch (error) {
+    await client.crm.lineItems.basicApi.archive(id).catch(() => void 0);
+    console.error(
+      "Nylas pricing line-item association failed.",
+      JSON.stringify(lineItemFailureDiagnostic(error))
+    );
+    throw error;
+  }
   const commerce = selectProperties(properties, (name) => COMMERCE_LINE_ITEM_PROPERTIES.has(name));
   const reporting = selectProperties(
     properties,
@@ -1973,7 +1984,8 @@ var syncDealLineItems = async (client, dealId, state, settings) => {
       const created = await createProductLineItem(
         client,
         item.properties,
-        createAssociation(dealId, 20)
+        "deals",
+        dealId
       );
       createdIds.push(String(created.id));
     });
@@ -2050,7 +2062,8 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
       const created = await createProductLineItem(
         client,
         item.properties,
-        createAssociation(quote.id, 68)
+        "quotes",
+        quote.id
       );
       return String(created.id);
     }));

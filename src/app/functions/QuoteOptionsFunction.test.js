@@ -71,6 +71,7 @@ test('locking an option creates replacements before archiving existing Deal line
             getPage: async () => ({
               results: [{ toObjectId: 'old-unmanaged' }, { toObjectId: 'old-managed' }],
             }),
+            createDefault: async () => undefined,
           },
         },
       },
@@ -117,7 +118,14 @@ test('a rejected replacement leaves existing Deal line items intact', async () =
   const archived = [];
   const client = {
     crm: {
-      associations: { v4: { basicApi: { getPage: async () => ({ results: [{ toObjectId: 'old-1' }] }) } } },
+      associations: {
+        v4: {
+          basicApi: {
+            getPage: async () => ({ results: [{ toObjectId: 'old-1' }] }),
+            createDefault: async () => undefined,
+          },
+        },
+      },
       lineItems: {
         basicApi: {
           archive: async (id) => archived.push(id),
