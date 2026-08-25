@@ -1,14 +1,47 @@
 const crypto = require('node:crypto');
 
 const CATALOG = Object.freeze({
-  enterprise: { id: '47269087321', name: 'Platform Subscription - Enterprise', category: 'Platform' },
-  connect_ca: { id: '45820463620', name: 'Connect', category: 'Platform' },
-  calendar_ca: { id: '45887560099', name: 'Calendar Only - CAs', category: 'Calendar' },
-  notetaker_bot_hours: { id: '45816248707', name: 'Notetaker', category: 'Notetaker' },
-  agent_accounts: { id: '45816248710', name: 'Agent Accounts', category: 'Platform' },
-  agent_email_thousands: { id: '45867076721', name: 'Email Send', category: 'Platform' },
-  agent_storage_gb: { id: '45820463625', name: 'Storage', category: 'Platform' },
-  agent_bandwidth_gb: { id: '45820401689', name: 'Bandwidth', category: 'Platform' },
+  // 'Platform Subscription - Enterprise' (45820463617) is classified as a Bundle in the product
+  // library, and HubSpot will not hydrate a line item from a bundle. 46037350773 'Enterprise' is
+  // the standalone Platform product inside that bundle (SKU ENT-FY26), so it is what the
+  // subscription line is built from. The previous id, 47269087321, is not in the library export
+  // at all and HubSpot rejected it as a bundle.
+  enterprise: { id: '46037350773', name: 'Enterprise', category: 'Platform' },
+  connect_ca: {
+    id: '45820463620',
+    name: 'Connect - Email + Calendar Connected Accounts (CA)',
+    category: 'Platform',
+  },
+  calendar_ca: {
+    id: '45887560099',
+    name: 'Connect - Calendar-Only Connected Accounts (CA)',
+    category: 'Calendar',
+  },
+  notetaker_bot_hours: {
+    id: '45816248707',
+    name: 'Notetaker - Bot Hours',
+    category: 'Notetaker',
+  },
+  agent_accounts: {
+    id: '45816248710',
+    name: 'Agent Accounts - # of Agents',
+    category: 'Platform',
+  },
+  agent_email_thousands: {
+    id: '45867076721',
+    name: 'Agent Accounts - Per 1,000 Emails Sent',
+    category: 'Platform',
+  },
+  agent_storage_gb: {
+    id: '45820463625',
+    name: 'Agent Accounts - GB / Storage',
+    category: 'Platform',
+  },
+  agent_bandwidth_gb: {
+    id: '45820401689',
+    name: 'Agent Accounts - GB / Bandwidth',
+    category: 'Platform',
+  },
   enterprise_accelerator: {
     id: '46102266003',
     name: 'Accelerator Package',
@@ -64,6 +97,10 @@ const CATALOG = Object.freeze({
     category: 'Professional Services',
   },
   notification_webhook_best_practices: {
+    // UNVERIFIED: this id does not appear in the 2026-08-25 product library export, while every
+    // other id here does. It is also 42870410889 + 1 (Go-To-Market Review), which is what a
+    // guessed id looks like. Selecting this service will fail against a product that does not
+    // exist. Confirm it in HubSpot before relying on it.
     id: '42870410890',
     name: 'Notification & Webhook Best Practices',
     category: 'Professional Services',

@@ -93,11 +93,15 @@ test('locking an option archives every existing Deal line item before creating r
   };
 
   const synced = await _test.syncDealLineItems(client, 'deal-1', state, settings);
-  assert.equal(synced.count, 1);
+  // Three lines: the product-commitment subscription, the support tier (always present, at least
+  // Basic), and $0 Quick Launch onboarding, which now maps to a real product.
+  assert.equal(synced.count, 3);
   assert.deepEqual(events, [
     'archive:old-unmanaged',
     'archive:old-managed',
-    'create:Enterprise OneSub',
+    'create:Enterprise',
+    'create:Support Services: Basic',
+    'create:QuickLaunch Onboarding',
   ]);
   // No nylas_* bookkeeping may reach HubSpot: a portal without those custom properties rejects
   // the whole create, which surfaced as "HubSpot could not replace the Deal line items."
