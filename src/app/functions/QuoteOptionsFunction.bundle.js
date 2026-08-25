@@ -1613,6 +1613,7 @@ var SAFE_ERRORS = Object.freeze({
   PAYLOAD_TOO_LARGE: "The saved quote options exceed the allowed storage size.",
   PRODUCT_MAPPING_REQUIRED: "A selected item is not mapped to the HubSpot product library.",
   QUOTE_CONFIGURATION_REQUIRED: "The New Customer quote template has not been configured for the app.",
+  QUOTE_TEMPLATE_TYPE_INVALID: "The configured quote template is a CPQ template. HubSpot requires a customizable quote template. Update the QUOTE_TEMPLATE_ID secret to a customizable template.",
   QUOTE_CREATE_FAILED: "HubSpot could not create the Quote. No partial Quote was retained.",
   SETTINGS_CONFIGURATION_REQUIRED: "Pricing settings have not been initialized yet.",
   SETTINGS_CONFLICT: "Another administrator changed the pricing settings. Reload and try again.",
@@ -2098,11 +2099,35 @@ var syncDealLineItems = async (client, dealId, state, settings) => {
   }
 };
 var quoteRecordUrl = (portalId, quoteId) => portalId ? `https://app.hubspot.com/contacts/${portalId}/record/0-14/${quoteId}` : "";
+var REQUIRED_QUOTE_TEMPLATE_TYPE = "customizable_quote_template";
+var assertUsableQuoteTemplate = async (client, templateId) => {
+  let template;
+  try {
+    template = await client.crm.objects.basicApi.getById("quote_template", templateId, [
+      "hs_name",
+      "hs_type"
+    ]);
+  } catch (error) {
+    console.warn(
+      "Nylas pricing: could not read the quote template to verify its type.",
+      safeProviderDiagnostics(error, "read_quote_template")
+    );
+    return;
+  }
+  const type = template?.properties?.hs_type;
+  if (type && type !== REQUIRED_QUOTE_TEMPLATE_TYPE) {
+    console.error(
+      `Nylas pricing: quote template ${templateId} ("${template?.properties?.hs_name || ""}") has hs_type "${type}"; HubSpot requires "${REQUIRED_QUOTE_TEMPLATE_TYPE}".`
+    );
+    throw new Error("QUOTE_TEMPLATE_TYPE_INVALID");
+  }
+};
 var generateQuote = async (client, dealId, state, parameters, portalId, settings) => {
   const option = selectedOptionForDraft(state);
   assertCurrentSettings(option, settings);
   const templateId = String(process.env.QUOTE_TEMPLATE_ID || "");
   if (!/^\d+$/.test(templateId)) throw new Error("QUOTE_CONFIGURATION_REQUIRED");
+  await assertUsableQuoteTemplate(client, templateId);
   const content = normalizeQuoteContent(
     parameters.quoteContent,
     `${state.dealName} \u2013 ${option.name}`

@@ -3,6 +3,7 @@ import {
   Alert,
   AutoGrid,
   Box,
+  Button,
   Card,
   Checkbox,
   DateInput,
@@ -13,6 +14,8 @@ import {
   Link,
   LoadingButton,
   LoadingSpinner,
+  Modal,
+  ModalBody,
   MultiSelect,
   NumberInput,
   Select,
@@ -314,7 +317,13 @@ const professionalServiceOptions = [
 // One width for all four numeric columns keeps them equal; Product uses width="max" to take
 // everything left over. Wide enough for a four-decimal rate ("$1.0260") beside the widest header
 // ("Proposed Rate") without wrapping, which is what made the rate columns look cut off.
-const NUMERIC_COLUMN_WIDTH = 155;
+// width takes 'min' | 'max' | 'auto' | pixels — percentages are not expressible, so the requested
+// 66 / 8 / 10 / 8 / 8 split is applied as a proportional pixel budget. Product uses "max" and
+// absorbs whatever is left, which is the 66% share at a normal card width.
+const VOLUME_COLUMN_WIDTH = 96;
+const LIST_RATE_COLUMN_WIDTH = 120;
+const DISCOUNT_COLUMN_WIDTH = 96;
+const PROPOSED_RATE_COLUMN_WIDTH = 96;
 
 const termOptions = [12, 24, 36].map((months) => ({
   value: months,
@@ -706,52 +715,75 @@ const OptionEditor = ({
     return upper == null ? `${from}+` : `${from}–${upper.toLocaleString()}K`;
   };
 
-  // Graduated rates on one line instead of one row per band. Four stacked band lines in both the
-  // List Rate and Proposed Rate cells made the Agent Email row four times taller than every other
-  // row. The blended rate is what the quote is actually built from, so it leads; the band rates
-  // follow as compact microcopy, and their ranges are named once in the Product cell rather than
-  // repeated in both rate columns.
-  // Graduated products show every band, not just the blended rate. Four tiers genuinely need four
-  // lines, so the Agent Email row is taller than the rest — that is inherent to the pricing, not
-  // waste. The ranges are printed once, beside the list rates, and the proposed column lines up
-  // band for band.
-  const ratePreview = (
-    line: QuoteLine | undefined,
-    blended: number | undefined,
-    bands: QuoteLine["listBandRates"] | undefined,
-    withRanges: boolean,
-  ) => {
-    if (!line) return <Text variant="microcopy">—</Text>;
-    if (line.productKey === "agent_email_thousands" && bands?.length) {
-      return (
-        <Stack distance="flush">
-          <Text>{rateCurrency(blended)}</Text>
-          {bands.map((band) => (
-            <Text key={bandRange(band.lower, band.upper)} variant="microcopy">
-              {withRanges ? `${bandRange(band.lower, band.upper)} ` : ""}
-              {rateCurrency(band.rate)}
-            </Text>
-          ))}
+  // The graduated schedule is available on demand rather than inline. Rendering four bands in the
+  // cell made the Agent Email row several times taller than every other row; a Link with an
+  // overlay keeps the row standard and puts the full schedule one click away.
+  const tiersOverlay = (line: QuoteLine) => (
+    <Modal
+      id="agent-email-tiers"
+      title="Agent Email graduated rates"
+      width="sm"
+    >
+      <ModalBody>
+        <Stack distance="sm">
+          <Text variant="microcopy">
+            Agent Email is priced in graduated tiers. Each band is charged at
+            its own rate, and the rate shown in the table is the blended rate
+            across all bands at the entered volume.
+          </Text>
+          <Table density="compact" flush>
+            <TableHead>
+              <TableRow>
+                <TableHeader>Emails per month</TableHeader>
+                <TableHeader align="right">List</TableHeader>
+                <TableHeader align="right">Proposed</TableHeader>
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {line.listBandRates.map((band, index) => (
+                <TableRow key={bandRange(band.lower, band.upper)}>
+                  <TableCell>{bandRange(band.lower, band.upper)}</TableCell>
+                  <TableCell align="right">{rateCurrency(band.rate)}</TableCell>
+                  <TableCell align="right">
+                    {rateCurrency(line.proposedBandRates[index]?.rate)}
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
         </Stack>
-      );
-    }
-    return <Text>{rateCurrency(blended)}</Text>;
-  };
+      </ModalBody>
+    </Modal>
+  );
 
   // Read the adjusted list band rates the calculator published. Recomputing them here as
   // rate * (1 - termDiscount) * (1 + paymentPremium) used the multiplicative form, but the server
   // applies the adjustment additively and rounds to cents, so a UI-side reimplementation drifts
   // from the rates the quote is built from.
-  const listRatePreview = (line: QuoteLine | undefined) =>
-    ratePreview(line, line?.displayListUnitRate, line?.listBandRates, true);
+  const listRatePreview = (line: QuoteLine | undefined) => {
+    if (!line) return <Text variant="microcopy">—</Text>;
+    if (
+      line.productKey === "agent_email_thousands" &&
+      line.listBandRates.length
+    ) {
+      return (
+        <Stack distance="flush">
+          <Text>{rateCurrency(line.displayListUnitRate)}</Text>
+          {/* Link requires an href, so the overlay trigger is a transparent Button — it
+              renders as a link but needs no destination. */}
+          <Button variant="transparent" size="xs" overlay={tiersOverlay(line)}>
+            View tiers
+          </Button>
+        </Stack>
+      );
+    }
+    return <Text>{rateCurrency(line.displayListUnitRate)}</Text>;
+  };
 
-  const proposedRatePreview = (line: QuoteLine | undefined) =>
-    ratePreview(
-      line,
-      line?.displayProposedUnitRate,
-      line?.proposedBandRates,
-      false,
-    );
+  const proposedRatePreview = (line: QuoteLine | undefined) => {
+    if (!line) return <Text variant="microcopy">—</Text>;
+    return <Text>{rateCurrency(line.displayProposedUnitRate)}</Text>;
+  };
 
   const productTable = (tableProducts: typeof products) => (
     <Table density="compact" flush>
@@ -761,16 +793,16 @@ const OptionEditor = ({
               expressible. Product takes max so it absorbs all remaining width, and the four
               numeric columns share one equal fixed width, right-aligned in both header and body. */}
           <TableHeader width="max">Product</TableHeader>
-          <TableHeader width={NUMERIC_COLUMN_WIDTH} align="right">
+          <TableHeader width={VOLUME_COLUMN_WIDTH} align="center">
             Volume / mo.
           </TableHeader>
-          <TableHeader width={NUMERIC_COLUMN_WIDTH} align="right">
+          <TableHeader width={LIST_RATE_COLUMN_WIDTH} align="right">
             List Rate
           </TableHeader>
-          <TableHeader width={NUMERIC_COLUMN_WIDTH} align="right">
+          <TableHeader width={DISCOUNT_COLUMN_WIDTH} align="center">
             Discount
           </TableHeader>
-          <TableHeader width={NUMERIC_COLUMN_WIDTH} align="right">
+          <TableHeader width={PROPOSED_RATE_COLUMN_WIDTH} align="right">
             Proposed Rate
           </TableHeader>
         </TableRow>
@@ -792,7 +824,7 @@ const OptionEditor = ({
                     </Text>
                   </Stack>
                 </TableCell>
-                <TableCell align="right">
+                <TableCell align="center">
                   <NumberInput
                     // No visible label or tooltip in the cell. HubSpot renders the label in bold
                     // above the field and puts the tooltip's info icon beside it, and inside a
@@ -805,7 +837,6 @@ const OptionEditor = ({
                     min={0}
                     max={1_000_000_000}
                     precision={0}
-                    textAlign="right"
                     onChange={(value) =>
                       onInputChange("volumes", {
                         ...option.input.volumes,
@@ -815,7 +846,7 @@ const OptionEditor = ({
                   />
                 </TableCell>
                 <TableCell align="right">{listRatePreview(line)}</TableCell>
-                <TableCell align="right">
+                <TableCell align="center">
                   <NumberInput
                     label=""
                     name={`${product.key}_discount`}
@@ -826,7 +857,6 @@ const OptionEditor = ({
                     max={100}
                     precision={0}
                     formatStyle="percentage"
-                    textAlign="right"
                     // A discount on a product with no committed volume changes no total, so it
                     // is disabled rather than silently accepted.
                     readOnly={!quoted}
@@ -846,10 +876,6 @@ const OptionEditor = ({
         })}
       </TableBody>
     </Table>
-  );
-
-  const emailLine = previewResult?.lines.find(
-    ({ productKey }) => productKey === "agent_email_thousands",
   );
 
   const approvalBlocked = (previewResult?.blockingReasons.length || 0) > 0;
@@ -958,12 +984,6 @@ const OptionEditor = ({
               manually, and determine the required approval level.
             </Text>
             {productTable(products)}
-            {emailLine && (
-              <Text variant="microcopy">
-                Agent Email is priced in graduated tiers. The figure above each
-                band is the blended rate at the entered volume.
-              </Text>
-            )}
             {committedProductCount === 0 && (
               <Alert title="Add at least one commitment" variant="warning">
                 Add committed usage for at least one product.
