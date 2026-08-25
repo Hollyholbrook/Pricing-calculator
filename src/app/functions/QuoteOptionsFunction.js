@@ -4,6 +4,7 @@ const hubspot = require('@hubspot/api-client');
 const { QuoteValidationError, calculateQuote } = require('./calculator');
 const {
   accountIdFromContext,
+  defaultSettings,
   isDealAllowed,
   isSettingsAdmin,
   readDealPipelines,
@@ -99,6 +100,16 @@ const getAccessToken = () => {
 };
 
 const getClient = () => new hubspot.Client({ accessToken: getAccessToken() });
+
+const readOperationalSettings = async (accessToken, accountId, reader = readSettings) => {
+  try {
+    const state = await reader(accessToken, accountId);
+    if (state?.configured && state.settings) return state;
+  } catch (error) {
+    console.error(`Nylas pricing settings fallback: ${error?.name || 'unknown'}.`);
+  }
+  return { recordId: null, settings: defaultSettings(), configured: true };
+};
 
 const readDealState = async (client, dealId) => {
   try {
@@ -653,10 +664,9 @@ exports.main = async (context) => {
     const client = getClient();
     const [state, settingsState] = await Promise.all([
       readDealState(client, dealId),
-      readSettings(accessToken, accountId),
+      readOperationalSettings(accessToken, accountId),
     ]);
     console.log('Nylas pricing action: deal state and settings loaded.');
-    if (!settingsState.configured) throw new Error('SETTINGS_CONFIGURATION_REQUIRED');
     const settings = settingsState.settings;
     if (!isDealAllowed(settings, state.dealType, state.pipelineId)) throw new Error('INVALID_DEAL');
 
@@ -750,4 +760,9 @@ exports.main = async (context) => {
   }
 };
 
-exports._test = Object.freeze({ associatedIds, deleteOption, syncDealLineItems });
+exports._test = Object.freeze({
+  associatedIds,
+  deleteOption,
+  readOperationalSettings,
+  syncDealLineItems,
+});
