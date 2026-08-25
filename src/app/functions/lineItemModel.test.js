@@ -67,7 +67,7 @@ test('Deal line items reconcile to the approved calculation', () => {
   const recurringItems = items.filter(
     ({ properties }) => properties.recurringbillingfrequency,
   );
-  assert.equal(recurringItems.length, 8);
+  assert.equal(recurringItems.length, 10);
   assert.equal(recurringItems[0].key, 'subscription:nylas_enterprise');
   assert.equal(recurringItems[0].properties.hs_product_id, undefined);
   assert.equal(recurringItems[0].properties.name, 'Enterprise OneSub');
@@ -76,7 +76,7 @@ test('Deal line items reconcile to the approved calculation', () => {
     recurringItems[0].properties.nylas_pricing_component,
     'subscription_drawdown',
   );
-  const usageRates = recurringItems.slice(1);
+  const usageRates = recurringItems.filter(({ key }) => key.startsWith('rate_schedule:'));
   assert.equal(usageRates.length, 7);
   assert.ok(usageRates.every(({ properties }) => properties.quantity === '0'));
   assert.ok(
@@ -105,6 +105,20 @@ test('Deal line items reconcile to the approved calculation', () => {
   assert.equal(email.properties.hs_recurring_billing_period, 'P24M');
   assert.equal(email.properties.hs_recurring_billing_number_of_payments, '24');
   assert.equal(email.properties.hs_recurring_billing_start_date, '2026-09-01');
+  const support = recurringItems.find(({ key }) => key === 'support:full');
+  assert.equal(support.properties.hs_product_id, '41648477792');
+  assert.equal(Number(support.properties.price), selected.result.supportAnnual / 4);
+  assert.equal(support.properties.recurringbillingfrequency, 'quarterly');
+  assert.equal(support.properties.hs_recurring_billing_start_date, '2026-09-01');
+  const addOn = recurringItems.find(({ key }) => key === 'addon:enterprise_accelerator');
+  assert.equal(addOn.properties.hs_product_id, '46102266003');
+  assert.equal(
+    Number(addOn.properties.price),
+    selected.result.selectedAddOns.find(({ key }) => key === 'enterprise_accelerator')
+      .annualAmount / 4,
+  );
+  assert.equal(addOn.properties.recurringbillingfrequency, 'quarterly');
+  assert.equal(addOn.properties.hs_recurring_billing_period, 'P24M');
 });
 
 test('Quote can collapse only the subscription products, not other charges', () => {

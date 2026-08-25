@@ -286,9 +286,12 @@ const buildDealBundleLine = (option, dealBundleProduct = CATALOG.enterprise) => 
     component: 'subscription_drawdown',
     product: dealBundleProduct,
     quantity: 1,
-    price: option.result.recurringPerPeriod,
+    price:
+      option.result.recurringPerPeriod -
+      option.result.supportAnnual / option.result.paymentsPerYear -
+      option.result.annualAddOns / option.result.paymentsPerYear,
     description:
-      `Bundled Nylas Enterprise subscription (bundle ${dealBundleProduct.bundleId || 'configured'}), including committed products, support, and recurring add-ons.\n` +
+      `Bundled Nylas Enterprise subscription (bundle ${dealBundleProduct.bundleId || 'configured'}), including committed usage products. Support and recurring add-ons are itemized separately.\n` +
       `Product rate schedule:\n${rateScheduleText(option, true)}`,
     source: 'deal',
   }),
@@ -438,6 +441,8 @@ const buildLineItems = (option, { source, presentation = 'itemized_products', in
 const buildDealLineItems = (option, dealBundleProduct) => [
   buildDealBundleLine(option, dealBundleProduct),
   ...buildDealUsageRateLines(option),
+  ...buildSupportLine(option, 'deal'),
+  ...buildAddOnLines(option, 'deal'),
   ...buildOnboardingLines(option, 'deal'),
   ...buildProfessionalServiceLines(option, 'deal'),
 ];
