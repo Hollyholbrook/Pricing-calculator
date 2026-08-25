@@ -311,6 +311,11 @@ const professionalServiceOptions = [
   },
 ];
 
+// One width for all four numeric columns keeps them equal; Product uses width="max" to take
+// everything left over. Wide enough for a four-decimal rate ("$1.0260") beside the widest header
+// ("Proposed Rate") without wrapping, which is what made the rate columns look cut off.
+const NUMERIC_COLUMN_WIDTH = 140;
+
 const termOptions = [12, 24, 36].map((months) => ({
   value: months,
   label: `${months} months`,
@@ -701,62 +706,58 @@ const OptionEditor = ({
     return upper == null ? `${from}+` : `${from}–${upper.toLocaleString()}K`;
   };
 
-  const proposedRatePreview = (line: QuoteLine | undefined) => {
+  // Graduated rates on one line instead of one row per band. Four stacked band lines in both the
+  // List Rate and Proposed Rate cells made the Agent Email row four times taller than every other
+  // row. The blended rate is what the quote is actually built from, so it leads; the band rates
+  // follow as compact microcopy, and their ranges are named once in the Product cell rather than
+  // repeated in both rate columns.
+  const ratePreview = (
+    line: QuoteLine | undefined,
+    blended: number | undefined,
+  ) => {
     if (!line) return <Text variant="microcopy">—</Text>;
-    if (line.productKey === "agent_email_thousands") {
-      return (
-        <Stack distance="flush">
-          {line.baseBandRates.map((band, index) => (
-            <Text key={bandRange(band.lower, band.upper)} variant="microcopy">
-              {bandRange(band.lower, band.upper)}:{" "}
-              {rateCurrency(line.proposedBandRates[index]?.rate)}
-            </Text>
-          ))}
-        </Stack>
-      );
-    }
-    return <Text>{rateCurrency(line.displayProposedUnitRate)}</Text>;
+    return <Text>{rateCurrency(blended)}</Text>;
   };
 
-  const listRatePreview = (line: QuoteLine | undefined) => {
-    if (!line) return <Text variant="microcopy">—</Text>;
-    if (line.productKey === "agent_email_thousands") {
-      return (
-        <Stack distance="flush">
-          {/* Read the adjusted list rates the calculator published. Recomputing them here as
-              rate * (1 - termDiscount) * (1 + paymentPremium) used the multiplicative form, but
-              the server applies the adjustment additively and rounds to cents — so the displayed
-              list rates could not reproduce the Savings and Fees columns beside them, and always
-              understated the discount the rep was giving. */}
-          {line.listBandRates.map((band) => (
-            <Text key={bandRange(band.lower, band.upper)} variant="microcopy">
-              {rateCurrency(band.rate)}
-            </Text>
-          ))}
-        </Stack>
-      );
-    }
-    return <Text>{rateCurrency(line.displayListUnitRate)}</Text>;
+  // The full graduated schedule lives in the Product cell, the one column with room for it.
+  const tierSchedule = (line: QuoteLine | undefined) => {
+    if (!line?.proposedBandRates.length) return "";
+    return ` · Tiers ${line.proposedBandRates
+      .map(
+        (band) =>
+          `${bandRange(band.lower, band.upper)} ${rateCurrency(band.rate)}`,
+      )
+      .join(" · ")}`;
   };
+
+  // Read the adjusted list band rates the calculator published. Recomputing them here as
+  // rate * (1 - termDiscount) * (1 + paymentPremium) used the multiplicative form, but the server
+  // applies the adjustment additively and rounds to cents, so a UI-side reimplementation drifts
+  // from the rates the quote is built from.
+  const listRatePreview = (line: QuoteLine | undefined) =>
+    ratePreview(line, line?.displayListUnitRate);
+
+  const proposedRatePreview = (line: QuoteLine | undefined) =>
+    ratePreview(line, line?.displayProposedUnitRate);
 
   const productTable = (tableProducts: typeof products) => (
     <Table density="compact" flush>
       <TableHead>
         <TableRow>
-          {/* The unit moved into the Product cell. As its own column it forced Product narrow
-              enough that "Agent Data Storage" wrapped onto three lines, and width="max" on the
-              last column pushed Proposed Rate far from the values it belongs beside. */}
+          {/* width accepts 'min' | 'max' | 'auto' | number (pixels) — percentages are not
+              expressible. Product takes max so it absorbs all remaining width, and the four
+              numeric columns share one equal fixed width, right-aligned in both header and body. */}
           <TableHeader width="max">Product</TableHeader>
-          <TableHeader width={110} align="right">
+          <TableHeader width={NUMERIC_COLUMN_WIDTH} align="right">
             Volume / mo.
           </TableHeader>
-          <TableHeader width={110} align="right">
+          <TableHeader width={NUMERIC_COLUMN_WIDTH} align="right">
             List Rate
           </TableHeader>
-          <TableHeader width={100} align="right">
+          <TableHeader width={NUMERIC_COLUMN_WIDTH} align="right">
             Discount
           </TableHeader>
-          <TableHeader width={130} align="right">
+          <TableHeader width={NUMERIC_COLUMN_WIDTH} align="right">
             Proposed Rate
           </TableHeader>
         </TableRow>
@@ -775,6 +776,9 @@ const OptionEditor = ({
                     <Text>{product.label}</Text>
                     <Text variant="microcopy">
                       {product.description} · {product.inputUnit}
+                      {product.key === "agent_email_thousands"
+                        ? tierSchedule(line)
+                        : ""}
                     </Text>
                   </Stack>
                 </TableCell>
