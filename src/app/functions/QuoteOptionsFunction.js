@@ -680,7 +680,6 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
         properties: {
           hs_title: content.title,
           hs_expiration_date: content.expirationDate,
-          hs_status: 'DRAFT',
         },
       },
     });
@@ -753,6 +752,11 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
         JSON.stringify(lineItemFailureDiagnostic(error)),
       );
     });
+    // HubSpot calculates the editable Quote state from its completed associations.
+    // Set DRAFT only after the Deal, template, and dedicated Quote line items exist.
+    await client.crm.quotes.basicApi.update(quote.id, {
+      properties: { hs_status: 'DRAFT' },
+    });
     const quoteUrl =
       quote.properties?.hs_quote_link || quoteRecordUrl(portalId, String(quote.id));
     const generatedAt = new Date().toISOString();
@@ -767,6 +771,13 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
     });
     return { quoteId: String(quote.id), quoteUrl, generatedAt, reused: false };
   } catch (error) {
+    console.error(
+      'Nylas pricing Quote creation failed.',
+      JSON.stringify({
+        stage: quote?.id ? 'configure' : 'create',
+        ...lineItemFailureDiagnostic(error),
+      }),
+    );
     for (const id of createdLineItemIds) {
       await client.crm.lineItems.basicApi.archive(id).catch(() => undefined);
     }

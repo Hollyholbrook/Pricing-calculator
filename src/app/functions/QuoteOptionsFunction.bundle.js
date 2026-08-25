@@ -2141,8 +2141,7 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
       body: {
         properties: {
           hs_title: content.title,
-          hs_expiration_date: content.expirationDate,
-          hs_status: "DRAFT"
+          hs_expiration_date: content.expirationDate
         }
       }
     });
@@ -2210,6 +2209,9 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
         JSON.stringify(lineItemFailureDiagnostic(error))
       );
     });
+    await client.crm.quotes.basicApi.update(quote.id, {
+      properties: { hs_status: "DRAFT" }
+    });
     const quoteUrl = quote.properties?.hs_quote_link || quoteRecordUrl(portalId, String(quote.id));
     const generatedAt = (/* @__PURE__ */ new Date()).toISOString();
     await client.crm.deals.basicApi.update(dealId, {
@@ -2223,6 +2225,13 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
     });
     return { quoteId: String(quote.id), quoteUrl, generatedAt, reused: false };
   } catch (error) {
+    console.error(
+      "Nylas pricing Quote creation failed.",
+      JSON.stringify({
+        stage: quote?.id ? "configure" : "create",
+        ...lineItemFailureDiagnostic(error)
+      })
+    );
     for (const id of createdLineItemIds) {
       await client.crm.lineItems.basicApi.archive(id).catch(() => void 0);
     }
