@@ -108,6 +108,27 @@ test('every product uses workbook quantity times monthly rate times 12', () => {
   assert.equal(result.proposedPlatformArr, 36_600);
 });
 
+test('every product exposes its workbook base price before quantities are entered', () => {
+  const result = calculateQuote(baseInput);
+  const expectedBaseRates = {
+    connect_ca: 1.7,
+    calendar_ca: 1.3,
+    notetaker_bot_hours: 0.6,
+    agent_accounts: 0.2,
+    agent_email_thousands: 1,
+    agent_storage_gb: 0.2,
+    agent_bandwidth_gb: 0.5,
+  };
+
+  for (const line of result.lines) {
+    assert.equal(line.baseUnitRate, expectedBaseRates[line.productKey], line.productKey);
+    assert.equal(line.baseBlendedRate, 0, line.productKey);
+    assert.equal(line.displayListUnitRate, expectedBaseRates[line.productKey], line.productKey);
+    assert.equal(line.annualCommitment, 0, line.productKey);
+    assert.ok(line.baseBandRates.length > 0, line.productKey);
+  }
+});
+
 test('support, recurring add-ons, onboarding, professional services, ARR, and TCV roll up once', () => {
   const result = calculateQuote({
     ...baseInput,
