@@ -315,15 +315,19 @@ const professionalServiceOptions = [
   },
 ];
 
-// List Rate is the column that absorbs the slack, not Product.
+// Every column has an explicit pixel width and none of them is "max".
 //
-// width takes 'min' | 'max' | 'auto' | pixels; percentages are not expressible. With Product on
-// "max" it took every spare pixel and the fixed widths here behaved as a ceiling rather than a
-// floor: List Rate collapsed to its minimum and the graduated tier text wrapped a few characters
-// at a time, turning the Agent Email row into a tall column of fragments. Product is fixed now
-// and List Rate is "max", so the tiers get the wide middle of the table to lay out across.
-const PRODUCT_COLUMN_WIDTH = 300;
-const VOLUME_COLUMN_WIDTH = 110;
+// "max" takes ALL the slack, so whichever column carries it becomes enormous and every other
+// column collapses to its minimum content width. On Product that squeezed List Rate until the
+// tier text wrapped character by character; moved to List Rate it starved Product until
+// "Connected accounts" hyphenated across three lines. There is no column that should soak up the
+// remainder -- the widths are simply stated, so the layout is the same whatever the card width.
+//
+// List Rate is the widest because it holds the graduated tier line, roughly 58 characters of
+// microcopy.
+const PRODUCT_COLUMN_WIDTH = 320;
+const VOLUME_COLUMN_WIDTH = 120;
+const LIST_RATE_COLUMN_WIDTH = 420;
 const DISCOUNT_COLUMN_WIDTH = 110;
 const PROPOSED_RATE_COLUMN_WIDTH = 130;
 
@@ -741,8 +745,11 @@ const OptionEditor = ({
     ) {
       // All four bands on one line. Stacked one per row they made this row four times taller than
       // the others; List Rate is the widest column in the table now, so they fit across it.
+      // Flex column rather than Stack: a Stack renders block children that ignore the cell's
+      // right alignment, so the blended rate and the tier line sat left while every other row's
+      // rate sat right.
       return (
-        <Stack distance="flush">
+        <Flex direction="column" align="end" gap="flush">
           <Text>{rateCurrency(line.displayListUnitRate)}</Text>
           <Text variant="microcopy">
             {line.listBandRates
@@ -752,7 +759,7 @@ const OptionEditor = ({
               )
               .join(" · ")}
           </Text>
-        </Stack>
+        </Flex>
       );
     }
     return <Text>{rateCurrency(line.displayListUnitRate)}</Text>;
@@ -774,7 +781,7 @@ const OptionEditor = ({
           <TableHeader width={VOLUME_COLUMN_WIDTH} align="center">
             Volume / mo.
           </TableHeader>
-          <TableHeader width="max" align="right">
+          <TableHeader width={LIST_RATE_COLUMN_WIDTH} align="right">
             List Rate
           </TableHeader>
           <TableHeader width={DISCOUNT_COLUMN_WIDTH} align="center">
