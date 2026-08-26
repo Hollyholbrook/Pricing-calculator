@@ -43,18 +43,16 @@ const option = () => {
 test('Deal line items reconcile to the approved calculation', () => {
   const selected = option();
   const items = buildDealLineItems(selected);
+  // An absent price means "use the product default" and always sits on a quantity-0 rate
+  // schedule line, so it contributes nothing either way.
+  const lineAmount = ({ price, quantity }) =>
+    price == null ? 0 : Number(price) * Number(quantity);
   const recurring = items
     .filter(({ properties }) => properties.recurringbillingfrequency)
-    .reduce(
-      (sum, { properties }) => sum + Number(properties.price) * Number(properties.quantity),
-      0,
-    );
+    .reduce((sum, { properties }) => sum + lineAmount(properties), 0);
   const oneTime = items
     .filter(({ properties }) => !properties.recurringbillingfrequency)
-    .reduce(
-      (sum, { properties }) => sum + Number(properties.price) * Number(properties.quantity),
-      0,
-    );
+    .reduce((sum, { properties }) => sum + lineAmount(properties), 0);
 
   assert.equal(Math.round(recurring * 100) / 100, selected.result.recurringPerPeriod);
   assert.equal(Math.round(oneTime * 100) / 100, selected.result.oneTime);
@@ -93,12 +91,20 @@ test('Deal line items reconcile to the approved calculation', () => {
     items.map((_item, index) => String(index)),
   );
 
-  // Bundle members carry a real unit price -- the rate the customer draws down at if they use
-  // the product -- but quantity 0, so they show the price without adding to the total. The
-  // drawdown fee holds the money.
+  // Bundle members carry quantity 0 so they add nothing to the total. Price is left to HubSpot
+  // unless the rep discounted the product, in which case the agreed monthly rate is sent.
   for (const item of items.filter(({ key }) => key.startsWith('metered:'))) {
-    assert.ok(Number(item.properties.price) > 0, `${item.key} shows a unit price`);
     assert.equal(Number(item.properties.quantity), 0, `${item.key} quantity`);
+    assert.notEqual(item.properties.price, 'NaN', `${item.key} price is never the string NaN`);
+  }
+  // This fixture carries a 10% discretionary discount, which normalizeInput spreads to every
+  // product, so every rate schedule line here sends its agreed rate. The
+  // no-discount-means-no-price case is covered by the all-products test below.
+  for (const item of items.filter(({ key }) => key.startsWith('metered:'))) {
+    assert.ok(
+      Number(item.properties.price) > 0,
+      `${item.key} sends the agreed rate when discounted`,
+    );
   }
 
   // Everything outside the bundle keeps a real quantity: drawdown, support, add-ons, one-times.
@@ -155,7 +161,11 @@ test('every bundle product appears even with no commitment or discount', () => {
   // An uncommitted product still states the rate it would draw down at.
   const uncommitted = metered.find(({ key }) => key === 'metered:agent_storage_gb');
   assert.equal(Number(uncommitted.properties.quantity), 0);
-  assert.ok(Number(uncommitted.properties.price) > 0, 'uncommitted product still shows a rate');
+  assert.equal(
+    uncommitted.properties.price,
+    undefined,
+    'price is left to the product default when nothing was discounted',
+  );
   assert.match(uncommitted.properties.description, /No committed volume\. Available at \$/);
 });
 
@@ -230,18 +240,16 @@ test('itemized Quote line items reconcile to recurring and one-time totals', () 
     expirationDate: '2026-09-30',
     presentation: 'itemized_products',
   }));
+  // An absent price means "use the product default" and always sits on a quantity-0 rate
+  // schedule line, so it contributes nothing either way.
+  const lineAmount = ({ price, quantity }) =>
+    price == null ? 0 : Number(price) * Number(quantity);
   const recurring = items
     .filter(({ properties }) => properties.recurringbillingfrequency)
-    .reduce(
-      (sum, { properties }) => sum + Number(properties.price) * Number(properties.quantity),
-      0,
-    );
+    .reduce((sum, { properties }) => sum + lineAmount(properties), 0);
   const oneTime = items
     .filter(({ properties }) => !properties.recurringbillingfrequency)
-    .reduce(
-      (sum, { properties }) => sum + Number(properties.price) * Number(properties.quantity),
-      0,
-    );
+    .reduce((sum, { properties }) => sum + lineAmount(properties), 0);
   assert.equal(Math.round(recurring * 100) / 100, selected.result.recurringPerPeriod);
   assert.equal(Math.round(oneTime * 100) / 100, selected.result.oneTime);
 });

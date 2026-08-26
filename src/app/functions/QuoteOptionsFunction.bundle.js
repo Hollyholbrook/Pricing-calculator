@@ -1360,7 +1360,9 @@ var require_lineItemModel = __commonJS({
       return {
         ...baseManagedProperties({ option, key, component, product, source }),
         quantity: String(quantity),
-        price: String(round(price, 9)),
+        // An omitted price means "use the product's default". It must stay omitted: round(undefined)
+        // is NaN, and String(NaN) is the literal "NaN", which HubSpot would take as the price.
+        ...price == null ? {} : { price: String(round(price, 9)) },
         description: String(description || "").slice(0, 5e3),
         recurringbillingfrequency: paymentFrequency(paymentsPerYear),
         hs_recurring_billing_period: `P${option.input.termMonths}M`,
@@ -1406,16 +1408,20 @@ var require_lineItemModel = __commonJS({
               key: `metered:${line.productKey}`,
               component: "subscription_product",
               product,
-              // Quantity 0, but a real unit price: this is the rate the customer draws down at
-              // IF they use the product. Zero times anything is zero, so the line shows the price
-              // without adding to the total -- the Enterprise Drawdown Fee above carries the
-              // money, and usage comes out of that pool at these rates.
-              //
-              // The price is the PROPOSED unit rate, which is the list rate unless the rep entered
-              // a discount for this product in the calculator, in which case it is the discounted
-              // rate they actually agreed. Per period, matching the line's own billing frequency.
+              // Quantity 0: the Enterprise Drawdown Fee carries the money and usage comes out of
+              // that pool, so these lines are the rate schedule and add nothing to the total.
               quantity: 0,
-              price: line.billingUnitRate * (12 / option.result.paymentsPerYear),
+              // Price is left to HubSpot unless the rep actually changed it.
+              //
+              // Sending a price overrides the product's own list price, and the code was sending
+              // the monthly rate multiplied up to the billing period -- so a $1.30/month product
+              // showed $15.60 on a line whose description read "$1.30 per CA per month". Omitting
+              // it lets HubSpot hydrate the product's default, which is the number the product
+              // library already holds and the one the customer should see.
+              //
+              // When a discount WAS entered the rate genuinely differs from the default, so it is
+              // sent -- as a monthly rate, the same basis the product is priced on.
+              ...line.discretionaryDiscount > 0 ? { price: line.billingUnitRate } : {},
               description: productDescription(line),
               source
             }),

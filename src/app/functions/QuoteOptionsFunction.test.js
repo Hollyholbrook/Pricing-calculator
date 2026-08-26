@@ -118,6 +118,13 @@ test('locking an option archives every existing Deal line item before creating r
       [],
     );
     assert.ok(properties.hs_product_id, 'line item must still carry hs_product_id');
-    assert.ok(properties.price != null, 'line item must still carry price');
+    // Price may legitimately be absent: an undiscounted rate-schedule line leaves it to the
+    // HubSpot product default. When present it must be a real number, never the string "NaN".
+    if (properties.price != null) {
+      assert.ok(
+        Number.isFinite(Number(properties.price)),
+        `price must be numeric, got ${properties.price}`,
+      );
+    }
   }
 });
