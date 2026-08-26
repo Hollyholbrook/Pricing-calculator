@@ -325,11 +325,13 @@ const professionalServiceOptions = [
 //
 // List Rate is the widest because it holds the graduated tier line, roughly 58 characters of
 // microcopy.
-const PRODUCT_COLUMN_WIDTH = 320;
+const PRODUCT_COLUMN_WIDTH = 300;
 const VOLUME_COLUMN_WIDTH = 120;
-const LIST_RATE_COLUMN_WIDTH = 420;
+// List Rate holds "range  rate" per band; Proposed Rate holds the matching rate on the same row,
+// so the two columns can be read across band by band.
+const LIST_RATE_COLUMN_WIDTH = 300;
 const DISCOUNT_COLUMN_WIDTH = 110;
-const PROPOSED_RATE_COLUMN_WIDTH = 130;
+const PROPOSED_RATE_COLUMN_WIDTH = 200;
 
 const termOptions = [12, 24, 36].map((months) => ({
   value: months,
@@ -743,22 +745,22 @@ const OptionEditor = ({
       line.productKey === "agent_email_thousands" &&
       line.listBandRates.length
     ) {
-      // All four bands on one line. Stacked one per row they made this row four times taller than
-      // the others; List Rate is the widest column in the table now, so they fit across it.
-      // Flex column rather than Stack: a Stack renders block children that ignore the cell's
-      // right alignment, so the blended rate and the tier line sat left while every other row's
-      // rate sat right.
+      // One row per band, with the range labelled. proposedRatePreview renders the matching
+      // proposed rate on the same rows, so the two columns line up band for band and the effect
+      // of a discount can be read straight across. Both recalculate with every input change.
+      //
+      // Flex column rather than Stack: Stack's block children ignore the cell's right alignment,
+      // so these lines sat left while every other row's rate sat right.
       return (
         <Flex direction="column" align="end" gap="flush">
-          <Text>{rateCurrency(line.displayListUnitRate)}</Text>
-          <Text variant="microcopy">
-            {line.listBandRates
-              .map(
-                (band) =>
-                  `${bandRange(band.lower, band.upper)} ${rateCurrency(band.rate)}`,
-              )
-              .join(" · ")}
+          <Text format={{ fontWeight: "bold" }}>
+            {rateCurrency(line.displayListUnitRate)}
           </Text>
+          {line.listBandRates.map((band) => (
+            <Text key={bandRange(band.lower, band.upper)} variant="microcopy">
+              {bandRange(band.lower, band.upper)} · {rateCurrency(band.rate)}
+            </Text>
+          ))}
         </Flex>
       );
     }
@@ -767,6 +769,25 @@ const OptionEditor = ({
 
   const proposedRatePreview = (line: QuoteLine | undefined) => {
     if (!line) return <Text variant="microcopy">—</Text>;
+    if (
+      line.productKey === "agent_email_thousands" &&
+      line.proposedBandRates.length
+    ) {
+      // Same number of rows as the List Rate cell, in the same band order, so the discounted
+      // rate for each band sits directly beside the list rate it came from.
+      return (
+        <Flex direction="column" align="end" gap="flush">
+          <Text format={{ fontWeight: "bold" }}>
+            {rateCurrency(line.displayProposedUnitRate)}
+          </Text>
+          {line.proposedBandRates.map((band) => (
+            <Text key={bandRange(band.lower, band.upper)} variant="microcopy">
+              {rateCurrency(band.rate)}
+            </Text>
+          ))}
+        </Flex>
+      );
+    }
     return <Text>{rateCurrency(line.displayProposedUnitRate)}</Text>;
   };
 
