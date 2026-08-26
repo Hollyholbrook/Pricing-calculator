@@ -6,7 +6,7 @@ const CATALOG = Object.freeze({
   // the standalone Platform product inside that bundle (SKU ENT-FY26), so it is what the
   // subscription line is built from. The previous id, 47269087321, is not in the library export
   // at all and HubSpot rejected it as a bundle.
-  enterprise: { id: '46037350773', name: 'Enterprise', category: 'Platform' },
+  enterprise: { id: '46037350773', name: 'Enterprise Drawdown Fee', category: 'Platform' },
   connect_ca: {
     id: '45820463620',
     name: 'Connect - Email + Calendar Connected Accounts (CA)',
@@ -292,7 +292,6 @@ const buildMeteredLines = (option, source) => {
     .map((line) => {
       const product = CATALOG[line.productKey];
       if (!product) throw new Error('PRODUCT_MAPPING_REQUIRED');
-      const monthsPerPayment = 12 / option.result.paymentsPerYear;
       return {
         key: `metered:${line.productKey}`,
         properties: {
@@ -301,8 +300,13 @@ const buildMeteredLines = (option, source) => {
             key: `metered:${line.productKey}`,
             component: 'subscription_product',
             product,
-            quantity: line.volume,
-            price: line.billingUnitRate * monthsPerPayment,
+            // Zero quantity AND zero price. These seven products are inside the bundle the
+            // Enterprise Drawdown Fee covers, so they are a rate schedule only: the committed
+            // volume and the rate each one draws down at live in the description, and the line
+            // itself adds nothing. Anything OUTSIDE the bundle -- add-ons, support, onboarding,
+            // professional services -- keeps its real quantity and price below.
+            quantity: 0,
+            price: 0,
             description: productDescription(line),
             source,
           }),
@@ -310,24 +314,9 @@ const buildMeteredLines = (option, source) => {
         },
       };
     });
-  const targetPerPeriod =
-    option.result.recurringPerPeriod -
-    option.result.supportAnnual / option.result.paymentsPerYear -
-    option.result.annualAddOns / option.result.paymentsPerYear;
-  const currentPerPeriod = items.reduce(
-    (sum, item) => sum + Number(item.properties.price) * Number(item.properties.quantity),
-    0,
-  );
-  const residual = targetPerPeriod - currentPerPeriod;
-  const finalItem = items.at(-1);
-  if (finalItem && Math.abs(residual) > 1e-9) {
-    const quantity = Number(finalItem.properties.quantity);
-    const adjustedPrice = round(Number(finalItem.properties.price) + residual / quantity, 9);
-    finalItem.properties.price = String(adjustedPrice);
-    finalItem.properties.monthly_unit_price = String(
-      round(adjustedPrice / (12 / option.result.paymentsPerYear), 9),
-    );
-  }
+  // The residual reconciliation that used to live here existed to make these lines sum exactly to
+  // the platform total. They sum to zero now by design, and the drawdown line is taken straight
+  // from proposedPlatformArr, so there is nothing left to reconcile.
   return items;
 };
 
@@ -466,10 +455,13 @@ const buildLineItems = (option, { source, presentation = 'itemized_products', in
   if (!option?.id || !option?.input || !option?.result?.stateHash) {
     throw new Error('OPTION_REQUIRED');
   }
-  const subscriptionLines =
-    presentation === 'subscription_summary'
-      ? [buildSubscriptionSummaryLine(option, source, includeUncommitted)]
-      : buildMeteredLines(option, source);
+  // The Enterprise Drawdown Fee always leads and always carries the platform total. The metered
+  // product lines follow it as a zero-priced rate schedule, in the fixed product order.
+  // 'subscription_summary' means the drawdown line alone, with no per-product breakdown.
+  const subscriptionLines = [
+    buildSubscriptionSummaryLine(option, source, includeUncommitted),
+    ...(presentation === 'subscription_summary' ? [] : buildMeteredLines(option, source)),
+  ];
   return withPositions([
     ...subscriptionLines,
     ...buildSupportLine(option, source),
@@ -479,9 +471,13 @@ const buildLineItems = (option, { source, presentation = 'itemized_products', in
   ]);
 };
 
+// The Deal carries the same structure as the Quote: drawdown fee first with the platform total,
+// then the zero-priced product rate schedule, then support, add-ons and one-time charges. Both
+// surfaces showing the same lines in the same order is the point.
 const buildDealLineItems = (option) =>
   withPositions([
     buildDealBundleLine(option),
+    ...buildMeteredLines(option, 'deal'),
     ...buildSupportLine(option, 'deal'),
     ...buildAddOnLines(option, 'deal'),
     ...buildOnboardingLines(option, 'deal'),

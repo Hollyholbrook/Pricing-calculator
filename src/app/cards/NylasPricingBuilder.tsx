@@ -591,7 +591,9 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
           ? "Pricing locked in — existing draft Quote reused"
           : "Pricing locked in and draft Quote created",
         message: `${body.lineItemCount || 0} calculated line items replaced the Deal line items.${
-          body.quoteUrl ? " The draft Quote link is on the card." : ""
+          body.quoteUrl
+            ? " The draft Quote link is on the card."
+            : " The draft Quote is on the Deal's Quotes card — HubSpot only publishes a quote link once the quote is shared."
         }`,
         type: "success",
       });

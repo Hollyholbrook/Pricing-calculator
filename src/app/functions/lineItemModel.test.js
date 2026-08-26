@@ -66,16 +66,36 @@ test('Deal line items reconcile to the approved calculation', () => {
   const recurringItems = items.filter(
     ({ properties }) => properties.recurringbillingfrequency,
   );
+  // Drawdown fee first, then the committed products as a zero-priced rate schedule in the fixed
+  // product order, then the charges that sit outside the bundle.
   assert.deepEqual(
     recurringItems.map(({ key }) => key),
     [
       'subscription:nylas_enterprise',
+      'metered:connect_ca',
+      'metered:calendar_ca',
+      'metered:notetaker_bot_hours',
       'support:full',
       'addon:enterprise_accelerator',
     ],
   );
   assert.equal(recurringItems[0].properties.hs_product_id, '46037350773');
-  assert.equal(recurringItems[0].properties.name, 'Enterprise');
+  assert.equal(recurringItems[0].properties.name, 'Enterprise Drawdown Fee');
+
+  // Positions are stamped in order, because HubSpot orders by hs_position_on_quote, not creation.
+  assert.deepEqual(
+    items.map(({ properties }) => properties.hs_position_on_quote),
+    items.map((_item, index) => String(index)),
+  );
+
+  // Bundle members carry no money and no quantity: the drawdown fee covers them. Anything
+  // outside the bundle keeps its real quantity and price.
+  for (const item of items.filter(({ key }) => key.startsWith('metered:'))) {
+    assert.equal(Number(item.properties.price), 0, `${item.key} price`);
+    assert.equal(Number(item.properties.quantity), 0, `${item.key} quantity`);
+  }
+  const addOn = items.find(({ key }) => key === 'addon:enterprise_accelerator');
+  assert.ok(Number(addOn.properties.price) > 0, 'add-ons are outside the bundle and keep a price');
   assert.equal(recurringItems[0].properties.quantity, '1');
   assert.equal(
     recurringItems[0].properties.nylas_pricing_component,
@@ -88,7 +108,7 @@ test('Deal line items reconcile to the approved calculation', () => {
     ) / 100,
     selected.result.proposedPlatformArr,
   );
-  assert.equal(recurringItems[1].properties.name, 'Support Services: Full');
+  assert.equal(recurringItems[1].properties.name, 'Connect - Email + Calendar Connected Accounts (CA)');
 });
 
 test('every quote carries a support line, Basic at $0 included', () => {

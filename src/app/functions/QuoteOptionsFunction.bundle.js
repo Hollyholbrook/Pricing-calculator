@@ -1164,7 +1164,7 @@ var require_lineItemModel = __commonJS({
       // the standalone Platform product inside that bundle (SKU ENT-FY26), so it is what the
       // subscription line is built from. The previous id, 47269087321, is not in the library export
       // at all and HubSpot rejected it as a bundle.
-      enterprise: { id: "46037350773", name: "Enterprise", category: "Platform" },
+      enterprise: { id: "46037350773", name: "Enterprise Drawdown Fee", category: "Platform" },
       connect_ca: {
         id: "45820463620",
         name: "Connect - Email + Calendar Connected Accounts (CA)",
@@ -1396,7 +1396,6 @@ var require_lineItemModel = __commonJS({
       ).map((line) => {
         const product = CATALOG[line.productKey];
         if (!product) throw new Error("PRODUCT_MAPPING_REQUIRED");
-        const monthsPerPayment = 12 / option.result.paymentsPerYear;
         return {
           key: `metered:${line.productKey}`,
           properties: {
@@ -1405,8 +1404,13 @@ var require_lineItemModel = __commonJS({
               key: `metered:${line.productKey}`,
               component: "subscription_product",
               product,
-              quantity: line.volume,
-              price: line.billingUnitRate * monthsPerPayment,
+              // Zero quantity AND zero price. These seven products are inside the bundle the
+              // Enterprise Drawdown Fee covers, so they are a rate schedule only: the committed
+              // volume and the rate each one draws down at live in the description, and the line
+              // itself adds nothing. Anything OUTSIDE the bundle -- add-ons, support, onboarding,
+              // professional services -- keeps its real quantity and price below.
+              quantity: 0,
+              price: 0,
               description: productDescription(line),
               source
             }),
@@ -1414,21 +1418,6 @@ var require_lineItemModel = __commonJS({
           }
         };
       });
-      const targetPerPeriod = option.result.recurringPerPeriod - option.result.supportAnnual / option.result.paymentsPerYear - option.result.annualAddOns / option.result.paymentsPerYear;
-      const currentPerPeriod = items.reduce(
-        (sum, item) => sum + Number(item.properties.price) * Number(item.properties.quantity),
-        0
-      );
-      const residual = targetPerPeriod - currentPerPeriod;
-      const finalItem = items.at(-1);
-      if (finalItem && Math.abs(residual) > 1e-9) {
-        const quantity = Number(finalItem.properties.quantity);
-        const adjustedPrice = round(Number(finalItem.properties.price) + residual / quantity, 9);
-        finalItem.properties.price = String(adjustedPrice);
-        finalItem.properties.monthly_unit_price = String(
-          round(adjustedPrice / (12 / option.result.paymentsPerYear), 9)
-        );
-      }
       return items;
     };
     var buildSubscriptionSummaryLine = (option, source, includeUncommitted) => ({
@@ -1544,7 +1533,10 @@ ${rateScheduleText(option, true)}`,
       if (!option?.id || !option?.input || !option?.result?.stateHash) {
         throw new Error("OPTION_REQUIRED");
       }
-      const subscriptionLines = presentation === "subscription_summary" ? [buildSubscriptionSummaryLine(option, source, includeUncommitted)] : buildMeteredLines(option, source);
+      const subscriptionLines = [
+        buildSubscriptionSummaryLine(option, source, includeUncommitted),
+        ...presentation === "subscription_summary" ? [] : buildMeteredLines(option, source)
+      ];
       return withPositions([
         ...subscriptionLines,
         ...buildSupportLine(option, source),
@@ -1555,6 +1547,7 @@ ${rateScheduleText(option, true)}`,
     };
     var buildDealLineItems2 = (option) => withPositions([
       buildDealBundleLine(option),
+      ...buildMeteredLines(option, "deal"),
       ...buildSupportLine(option, "deal"),
       ...buildAddOnLines(option, "deal"),
       ...buildOnboardingLines(option, "deal"),
@@ -2126,7 +2119,6 @@ var syncDealLineItems = async (client, dealId, state, settings) => {
     throw failure;
   }
 };
-var quoteRecordUrl = (portalId, quoteId) => portalId ? `https://app.hubspot.com/contacts/${portalId}/record/0-14/${quoteId}` : "";
 var REQUIRED_QUOTE_TEMPLATE_TYPE = "customizable_quote_template";
 var QUOTE_TEMPLATE_OBJECT_TYPES = ["quote_template", "quote_templates"];
 var readQuoteTemplatePage = async (client, after) => {
@@ -2206,7 +2198,7 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
   if (state.quoteContentHash === hash && state.latestQuoteId) {
     return {
       quoteId: state.latestQuoteId,
-      quoteUrl: state.latestQuoteUrl || quoteRecordUrl(portalId, state.latestQuoteId),
+      quoteUrl: state.latestQuoteUrl || "",
       reused: true
     };
   }
@@ -2294,7 +2286,7 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
       "hs_quote_link",
       "hs_status"
     ]);
-    const quoteUrl = finalized?.properties?.hs_quote_link || quoteRecordUrl(portalId, String(quote.id));
+    const quoteUrl = finalized?.properties?.hs_quote_link || "";
     const generatedAt = (/* @__PURE__ */ new Date()).toISOString();
     await client.crm.deals.basicApi.update(dealId, {
       properties: {

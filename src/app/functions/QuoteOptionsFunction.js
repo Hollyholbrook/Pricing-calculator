@@ -655,9 +655,10 @@ const syncDealLineItems = async (client, dealId, state, settings) => {
   }
 };
 
-const quoteRecordUrl = (portalId, quoteId) =>
-  portalId ? `https://app.hubspot.com/contacts/${portalId}/record/0-14/${quoteId}` : '';
-
+// hs_quote_link is the only documented quote URL and it is the public buyer-facing one. HubSpot
+// exposes no property for an internal CRM record link, and the hand-built
+// /contacts/{portal}/record/0-14/{id} pattern 404s, so it is not built any more. A draft quote
+// with no link yet gets no link, rather than one that leads nowhere.
 // HubSpot accepts only a customizable quote template on this flow. A CPQ template is rejected at
 // the very end, when the quote is flipped to DRAFT and validated as a whole -- after the quote and
 // all of its line items have been created -- so the whole thing is built and then rolled back with
@@ -774,7 +775,7 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
   if (state.quoteContentHash === hash && state.latestQuoteId) {
     return {
       quoteId: state.latestQuoteId,
-      quoteUrl: state.latestQuoteUrl || quoteRecordUrl(portalId, state.latestQuoteId),
+      quoteUrl: state.latestQuoteUrl || '',
       reused: true,
     };
   }
@@ -880,8 +881,7 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
       'hs_quote_link',
       'hs_status',
     ]);
-    const quoteUrl =
-      finalized?.properties?.hs_quote_link || quoteRecordUrl(portalId, String(quote.id));
+    const quoteUrl = finalized?.properties?.hs_quote_link || '';
     const generatedAt = new Date().toISOString();
     await client.crm.deals.basicApi.update(dealId, {
       properties: {
