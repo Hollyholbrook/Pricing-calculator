@@ -263,9 +263,17 @@ const productDescription = (line) => {
   const bandDetail = line.proposedBandRates?.length
     ? ` Graduated monthly rates: ${line.proposedBandRates.map(formatBand).join('; ')}.`
     : '';
+  // Show the list rate alongside the proposed one whenever a discount was applied, so the rate
+  // on the line can be read against what it would otherwise have been.
+  const discountDetail =
+    line.discretionaryDiscount > 0
+      ? ` List $${line.displayListUnitRate.toFixed(2)} per ${line.unitOfMeasure} per month, ` +
+        `less ${(line.discretionaryDiscount * 100).toFixed(2)}%.`
+      : '';
   return (
     `${line.volume.toLocaleString('en-US')} ${line.unitOfMeasure} committed average per month at ` +
     `$${line.proposedUnitRate.toFixed(2)} blended per ${line.unitOfMeasure} per month.` +
+    discountDetail +
     bandDetail +
     ' Usage draws down from the shared prepaid subscription pool at these rates.'
   );
@@ -300,13 +308,16 @@ const buildMeteredLines = (option, source) => {
             key: `metered:${line.productKey}`,
             component: 'subscription_product',
             product,
-            // Zero quantity AND zero price. These seven products are inside the bundle the
-            // Enterprise Drawdown Fee covers, so they are a rate schedule only: the committed
-            // volume and the rate each one draws down at live in the description, and the line
-            // itself adds nothing. Anything OUTSIDE the bundle -- add-ons, support, onboarding,
-            // professional services -- keeps its real quantity and price below.
+            // Quantity 0, but a real unit price: this is the rate the customer draws down at
+            // IF they use the product. Zero times anything is zero, so the line shows the price
+            // without adding to the total -- the Enterprise Drawdown Fee above carries the
+            // money, and usage comes out of that pool at these rates.
+            //
+            // The price is the PROPOSED unit rate, which is the list rate unless the rep entered
+            // a discount for this product in the calculator, in which case it is the discounted
+            // rate they actually agreed. Per period, matching the line's own billing frequency.
             quantity: 0,
-            price: 0,
+            price: line.billingUnitRate * (12 / option.result.paymentsPerYear),
             description: productDescription(line),
             source,
           }),

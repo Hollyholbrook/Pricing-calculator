@@ -88,14 +88,25 @@ test('Deal line items reconcile to the approved calculation', () => {
     items.map((_item, index) => String(index)),
   );
 
-  // Bundle members carry no money and no quantity: the drawdown fee covers them. Anything
-  // outside the bundle keeps its real quantity and price.
+  // Bundle members carry a real unit price -- the rate the customer draws down at if they use
+  // the product -- but quantity 0, so they show the price without adding to the total. The
+  // drawdown fee holds the money.
   for (const item of items.filter(({ key }) => key.startsWith('metered:'))) {
-    assert.equal(Number(item.properties.price), 0, `${item.key} price`);
+    assert.ok(Number(item.properties.price) > 0, `${item.key} shows a unit price`);
     assert.equal(Number(item.properties.quantity), 0, `${item.key} quantity`);
   }
-  const addOn = items.find(({ key }) => key === 'addon:enterprise_accelerator');
-  assert.ok(Number(addOn.properties.price) > 0, 'add-ons are outside the bundle and keep a price');
+
+  // Everything outside the bundle keeps a real quantity: drawdown, support, add-ons, one-times.
+  for (const item of items.filter(({ key }) => !key.startsWith('metered:'))) {
+    assert.ok(
+      Number(item.properties.quantity) > 0,
+      `${item.key} is outside the bundle and keeps its quantity`,
+    );
+  }
+
+  // A discounted product prices at the discounted rate and says so.
+  const discounted = items.find(({ key }) => key === 'metered:connect_ca');
+  assert.match(discounted.properties.description, /List \$[\d.]+ per CA per month, less /);
   assert.equal(recurringItems[0].properties.quantity, '1');
   assert.equal(
     recurringItems[0].properties.nylas_pricing_component,
