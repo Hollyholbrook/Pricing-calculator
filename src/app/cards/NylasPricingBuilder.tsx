@@ -3,7 +3,6 @@ import {
   Alert,
   AutoGrid,
   Box,
-  Button,
   Card,
   Checkbox,
   DateInput,
@@ -11,11 +10,8 @@ import {
   EmptyState,
   ExtensionPointApiActions,
   Flex,
-  Link,
   LoadingButton,
   LoadingSpinner,
-  Modal,
-  ModalBody,
   MultiSelect,
   NumberInput,
   Select,
@@ -328,7 +324,7 @@ const professionalServiceOptions = [
 // Wide enough that no header wraps onto a second line — "Volume / mo." and "Proposed Rate" were
 // both breaking, which is what made the header row look ragged against the values beneath it.
 const VOLUME_COLUMN_WIDTH = 130;
-const LIST_RATE_COLUMN_WIDTH = 130;
+const LIST_RATE_COLUMN_WIDTH = 210;
 const DISCOUNT_COLUMN_WIDTH = 120;
 const PROPOSED_RATE_COLUMN_WIDTH = 140;
 
@@ -441,7 +437,6 @@ hubspot.extend<"crm.record.tab">(({ context, actions }: CrmExtensionProps) => (
 
 const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
   const dealId = String(context.crm.objectId);
-  const [latestQuoteUrl, setLatestQuoteUrl] = useState<string | null>(null);
   const [quoteTemplates, setQuoteTemplates] = useState<
     { id: string; name: string }[]
   >([]);
@@ -471,8 +466,6 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
   const [unsupportedDeal, setUnsupportedDeal] = useState(false);
 
   const updateFromBody = (body: ServerlessBody) => {
-    if (body.latestQuoteUrl !== undefined)
-      setLatestQuoteUrl(body.latestQuoteUrl || null);
     if (body.quoteTemplates) {
       setQuoteTemplates(body.quoteTemplates);
       // Preselect the configured default when it is one of the usable templates, so the picker
@@ -582,19 +575,12 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
         quoteContent,
       });
       // generateQuote is idempotent on the quote content hash, so a repeat lock reuses the
-      // existing Quote rather than creating one. Saying "created" either way misreports what
-      // happened. Surface the URL too — lock_live returns it and the card used to drop it,
-      // leaving the rep told to "review the draft Quote" with no way to reach it.
-      setLatestQuoteUrl(body.quoteUrl || null);
+      // existing Quote rather than creating one. Saying "created" either way misreports it.
       actions.addAlert({
         title: body.reused
           ? "Pricing locked in — existing draft Quote reused"
           : "Pricing locked in and draft Quote created",
-        message: `${body.lineItemCount || 0} calculated line items replaced the Deal line items.${
-          body.quoteUrl
-            ? " The draft Quote link is on the card."
-            : " The draft Quote is on the Deal's Quotes card — HubSpot only publishes a quote link once the quote is shared."
-        }`,
+        message: `${body.lineItemCount || 0} calculated line items replaced the Deal line items. The draft Quote is on the Deal's Quotes card.`,
         type: "success",
       });
     } catch (lockError) {
@@ -635,12 +621,6 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
       {error && (
         <Alert title="Couldn’t complete the pricing action" variant="error">
           {error}
-        </Alert>
-      )}
-
-      {latestQuoteUrl && (
-        <Alert title="Draft Quote ready" variant="success">
-          <Link href={latestQuoteUrl}>Open the draft Quote</Link>
         </Alert>
       )}
 
@@ -750,47 +730,6 @@ const OptionEditor = ({
     return upper == null ? `${from}+` : `${from}–${upper.toLocaleString()}K`;
   };
 
-  // The graduated schedule is available on demand rather than inline. Rendering four bands in the
-  // cell made the Agent Email row several times taller than every other row; a Link with an
-  // overlay keeps the row standard and puts the full schedule one click away.
-  const tiersOverlay = (line: QuoteLine) => (
-    <Modal
-      id="agent-email-tiers"
-      title="Agent Email graduated rates"
-      width="sm"
-    >
-      <ModalBody>
-        <Stack distance="sm">
-          <Text variant="microcopy">
-            Agent Email is priced in graduated tiers. Each band is charged at
-            its own rate, and the rate shown in the table is the blended rate
-            across all bands at the entered volume.
-          </Text>
-          <Table density="compact" flush>
-            <TableHead>
-              <TableRow>
-                <TableHeader>Emails per month</TableHeader>
-                <TableHeader align="right">List</TableHeader>
-                <TableHeader align="right">Proposed</TableHeader>
-              </TableRow>
-            </TableHead>
-            <TableBody>
-              {line.listBandRates.map((band, index) => (
-                <TableRow key={bandRange(band.lower, band.upper)}>
-                  <TableCell>{bandRange(band.lower, band.upper)}</TableCell>
-                  <TableCell align="right">{rateCurrency(band.rate)}</TableCell>
-                  <TableCell align="right">
-                    {rateCurrency(line.proposedBandRates[index]?.rate)}
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </Stack>
-      </ModalBody>
-    </Modal>
-  );
-
   // Read the adjusted list band rates the calculator published. Recomputing them here as
   // rate * (1 - termDiscount) * (1 + paymentPremium) used the multiplicative form, but the server
   // applies the adjustment additively and rounds to cents, so a UI-side reimplementation drifts
@@ -801,14 +740,16 @@ const OptionEditor = ({
       line.productKey === "agent_email_thousands" &&
       line.listBandRates.length
     ) {
+      // Graduated bands shown in full, in the cell. The column is sized to hold them so nothing
+      // wraps; this row is taller than the others because four tiers need four lines.
       return (
         <Stack distance="flush">
           <Text>{rateCurrency(line.displayListUnitRate)}</Text>
-          {/* Link requires an href, so the overlay trigger is a transparent Button — it
-              renders as a link but needs no destination. */}
-          <Button variant="transparent" size="xs" overlay={tiersOverlay(line)}>
-            View tiers
-          </Button>
+          {line.listBandRates.map((band) => (
+            <Text key={bandRange(band.lower, band.upper)} variant="microcopy">
+              {bandRange(band.lower, band.upper)} {rateCurrency(band.rate)}
+            </Text>
+          ))}
         </Stack>
       );
     }
@@ -959,12 +900,6 @@ const OptionEditor = ({
               </Text>
             </Flex>
           </Flex>
-          <Alert title={approvalBannerTitle} variant={approvalBannerVariant}>
-            {[
-              ...previewResult.blockingReasons,
-              ...previewResult.approvalReasons,
-            ].join(" · ") || "This configuration can be locked in as priced."}
-          </Alert>
         </Stack>
       )}
 
@@ -1260,6 +1195,17 @@ const OptionEditor = ({
           </>
         }
       </Stack>
+      {/* The approval state sits with the action it gates, not up in the header: a blocking
+          reason is only actionable next to the button it stops. */}
+      {previewResult && (
+        <Alert title={approvalBannerTitle} variant={approvalBannerVariant}>
+          {[
+            ...previewResult.blockingReasons,
+            ...previewResult.approvalReasons,
+          ].join(" · ") || "This configuration can be locked in as priced."}
+        </Alert>
+      )}
+
       <Flex justify="end">
         <LoadingButton
           variant="primary"
