@@ -785,8 +785,22 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
     quote = await client.crm.quotes.basicApi.create({
       properties: {
         hs_title: content.title,
-        hs_expiration_date: content.expirationDate,
-        hs_contract_effective_start_date: option.input.startDate || '',
+        // Both dates are the order start date -- the contract start the calculator derived from
+        // the rep's Start Date, not the raw input, so the quote and the Deal's contract dates
+        // cannot disagree.
+        //
+        // hs_expiration_date is listed as required at creation, so it cannot simply be dropped.
+        // Rather than invent a rolling "30 days from whenever this ran" and print a date on a
+        // customer-facing quote that nobody chose, it is pinned to the order start date too.
+        //
+        // Never send an empty string for a date: in HubSpot that is not "no date", it lands as
+        // the epoch and prints as January 1, 1970.
+        ...(option.result.dates.contractStartDate
+          ? {
+              hs_expiration_date: option.result.dates.contractStartDate,
+              hs_contract_effective_start_date: option.result.dates.contractStartDate,
+            }
+          : {}),
         hs_comments: quoteText.comments,
         hs_terms: quoteText.terms,
         // Required, and previously not sent at all. Every quote template in the portal is a

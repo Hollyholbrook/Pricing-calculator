@@ -135,10 +135,16 @@ const normalizeDate = (value, fallback) => {
   return candidate;
 };
 
-const defaultExpirationDate = () => {
-  const date = new Date();
-  date.setUTCDate(date.getUTCDate() + 30);
-  return date.toISOString().slice(0, 10);
+// No default expiration. Quotes are not meant to expire here, so an unset expirationDate stays
+// unset rather than silently becoming "30 days from whenever this ran" -- a date the rep never
+// chose, printed on a customer-facing quote.
+//
+// Note: the Quotes API guide lists hs_expiration_date among the properties a quote must include
+// at creation. Omitting it may be rejected. If it is, the failure will say so, and the fix is a
+// deliberate far-future date rather than a rolling 30 days.
+const normalizeOptionalDate = (value) => {
+  if (value == null || value === '') return '';
+  return normalizeDate(value);
 };
 
 const normalizeQuoteContent = (raw = {}, fallbackTitle = 'Nylas Enterprise Quote') => {
@@ -171,7 +177,7 @@ const normalizeQuoteContent = (raw = {}, fallbackTitle = 'Nylas Enterprise Quote
   return {
     title,
     templateId,
-    expirationDate: normalizeDate(raw.expirationDate, defaultExpirationDate()),
+    expirationDate: normalizeOptionalDate(raw.expirationDate),
     presentation,
     includeUncommittedRateSchedule: raw.includeUncommittedRateSchedule === true,
     includeRenewalTerms: raw.includeRenewalTerms !== false,

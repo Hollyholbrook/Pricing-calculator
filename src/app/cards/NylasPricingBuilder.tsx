@@ -435,12 +435,6 @@ const formatDateInput = ({
 }) =>
   `${year}-${String(month + 1).padStart(2, "0")}-${String(date).padStart(2, "0")}`;
 
-const dateAfterDays = (days: number) => {
-  const date = new Date();
-  date.setUTCDate(date.getUTCDate() + days);
-  return date.toISOString().slice(0, 10);
-};
-
 hubspot.extend<"crm.record.tab">(({ context, actions }: CrmExtensionProps) => (
   <NylasPricingBuilder context={context} actions={actions} />
 ));
@@ -459,7 +453,8 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
     // Empty means "use the QUOTE_TEMPLATE_ID secret", which is what happens when the portal
     // exposes no customizable templates to pick from.
     templateId,
-    expirationDate: dateAfterDays(30),
+    // Deliberately empty: these quotes do not expire.
+    expirationDate: "",
     presentation: "itemized_products",
     includeUncommittedRateSchedule: true,
     includeRenewalTerms: true,
