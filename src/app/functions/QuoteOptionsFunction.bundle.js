@@ -1427,10 +1427,7 @@ var require_lineItemModel = __commonJS({
       });
       return items;
     };
-    var drawdownDescription = (option, includeUncommitted) => `Committed monthly product usage, drawn down from one prepaid subscription pool.
-Product rate schedule:
-${rateScheduleText(option, includeUncommitted)}`;
-    var buildSubscriptionSummaryLine = (option, source, includeUncommitted) => ({
+    var buildSubscriptionSummaryLine = (option, source) => ({
       key: "subscription:drawdown",
       properties: recurringProperties({
         option,
@@ -1439,7 +1436,6 @@ ${rateScheduleText(option, includeUncommitted)}`;
         product: CATALOG.enterprise,
         quantity: 1,
         price: option.result.proposedPlatformArr / option.result.paymentsPerYear,
-        description: drawdownDescription(option, includeUncommitted),
         source
       })
     });
@@ -1452,7 +1448,6 @@ ${rateScheduleText(option, includeUncommitted)}`;
         product: CATALOG.enterprise,
         quantity: 1,
         price: option.result.proposedPlatformArr / option.result.paymentsPerYear,
-        description: drawdownDescription(option, true),
         source: "deal"
       })
     });
@@ -1533,12 +1528,12 @@ ${rateScheduleText(option, includeUncommitted)}`;
         };
       });
     };
-    var buildLineItems = (option, { source, presentation = "itemized_products", includeUncommitted = false }) => {
+    var buildLineItems = (option, { source, presentation = "itemized_products" }) => {
       if (!option?.id || !option?.input || !option?.result?.stateHash) {
         throw new Error("OPTION_REQUIRED");
       }
       const subscriptionLines = [
-        buildSubscriptionSummaryLine(option, source, includeUncommitted),
+        buildSubscriptionSummaryLine(option, source),
         ...presentation === "subscription_summary" ? [] : buildMeteredLines(option, source)
       ];
       return withPositions([
@@ -1559,8 +1554,7 @@ ${rateScheduleText(option, includeUncommitted)}`;
     ]);
     var buildQuoteLineItems2 = (option, content) => buildLineItems(option, {
       source: "quote",
-      presentation: content.presentation,
-      includeUncommitted: content.includeUncommittedRateSchedule
+      presentation: content.presentation
     });
     var buildQuoteText2 = (option, content) => {
       const comments = [

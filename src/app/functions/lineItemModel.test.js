@@ -320,3 +320,26 @@ test('Quote and Deal line items carry identical properties', () => {
     );
   }
 });
+
+// The app writes no line item descriptions at all, on either surface.
+//
+// The drawdown fee was the last holdout: it carried the whole per-product rate schedule, and
+// HubSpot collapses newlines when rendering a line item description, so it arrived on the
+// customer-facing quote as one unbroken paragraph. Omitting the property lets HubSpot fall back to
+// the product library's own copy; sending '' would blank that instead.
+test('no line item carries an app-authored description', () => {
+  const selected = option();
+  const content = normalizeQuoteContent({ includeUncommittedRateSchedule: true });
+  for (const [surface, items] of [
+    ['deal', buildDealLineItems(selected)],
+    ['quote', buildQuoteLineItems(selected, content)],
+  ]) {
+    for (const item of items) {
+      assert.equal(
+        item.properties.description,
+        undefined,
+        `${surface} line ${item.properties.name} must leave description to the product library`,
+      );
+    }
+  }
+});

@@ -318,15 +318,20 @@ const buildMeteredLines = (option, source) => {
   return items;
 };
 
-// The Deal and the Quote must carry the SAME drawdown line, not two versions of one. They used to
-// differ only in this description's wording, and that difference actively misled a debugging
-// session: the two texts appearing on one quote read as evidence of two different systems writing
-// line items, when both sets were ours.
-const drawdownDescription = (option, includeUncommitted) =>
-  'Committed monthly product usage, drawn down from one prepaid subscription pool.\n' +
-  `Product rate schedule:\n${rateScheduleText(option, includeUncommitted)}`;
-
-const buildSubscriptionSummaryLine = (option, source, includeUncommitted) => ({
+// No description on the drawdown fee either, which makes this the last app-authored line item
+// description to go.
+//
+// It used to carry the whole rate schedule. HubSpot collapses newlines when it renders a line item
+// description, so the per-product rates arrived as one unbroken paragraph -- and reformatting
+// cannot fix that, because there is no line break to reformat with. The information is not lost:
+// every product is its own line below this one, with its rate and its committed_quantity, and the
+// product library's own copy for Enterprise Drawdown Fee already ends "Monthly usage based rates
+// for the products are indicated below:", which is exactly what follows.
+//
+// includeUncommittedRateSchedule no longer reaches a line item at all. It still selects which
+// products appear in the rate schedule inside the quote's hs_comments, which is rich text and does
+// keep its formatting.
+const buildSubscriptionSummaryLine = (option, source) => ({
   key: 'subscription:drawdown',
   properties: recurringProperties({
     option,
@@ -335,7 +340,6 @@ const buildSubscriptionSummaryLine = (option, source, includeUncommitted) => ({
     product: CATALOG.enterprise,
     quantity: 1,
     price: option.result.proposedPlatformArr / option.result.paymentsPerYear,
-    description: drawdownDescription(option, includeUncommitted),
     source,
   }),
 });
@@ -356,7 +360,6 @@ const buildDealBundleLine = (option) => ({
     product: CATALOG.enterprise,
     quantity: 1,
     price: option.result.proposedPlatformArr / option.result.paymentsPerYear,
-    description: drawdownDescription(option, true),
     source: 'deal',
   }),
 });
@@ -449,7 +452,7 @@ const buildProfessionalServiceLines = (option, source) => {
   });
 };
 
-const buildLineItems = (option, { source, presentation = 'itemized_products', includeUncommitted = false }) => {
+const buildLineItems = (option, { source, presentation = 'itemized_products' }) => {
   if (!option?.id || !option?.input || !option?.result?.stateHash) {
     throw new Error('OPTION_REQUIRED');
   }
@@ -457,7 +460,7 @@ const buildLineItems = (option, { source, presentation = 'itemized_products', in
   // product lines follow it as a zero-priced rate schedule, in the fixed product order.
   // 'subscription_summary' means the drawdown line alone, with no per-product breakdown.
   const subscriptionLines = [
-    buildSubscriptionSummaryLine(option, source, includeUncommitted),
+    buildSubscriptionSummaryLine(option, source),
     ...(presentation === 'subscription_summary' ? [] : buildMeteredLines(option, source)),
   ];
   return withPositions([
@@ -486,7 +489,6 @@ const buildQuoteLineItems = (option, content) =>
   buildLineItems(option, {
     source: 'quote',
     presentation: content.presentation,
-    includeUncommitted: content.includeUncommittedRateSchedule,
   });
 
 const buildQuoteText = (option, content) => {
