@@ -16,7 +16,6 @@ import {
   MultiSelect,
   NumberInput,
   Select,
-  Stack,
   Table,
   TableBody,
   TableCell,
@@ -646,11 +645,10 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
     // a Heading of the same text was a second copy of it. The name there is now
     // "Nylas Pricing Calculator", which makes that chrome the single title.
     //
-    // width="100%" throughout: Stack defaults to "auto", which is content width, and an AutoGrid
-    // inside a content-width Stack has nothing to spread across -- which is why Contract Basics
-    // collapsed to a single column of stacked dropdowns in a container the table filled edge to
-    // edge. AutoGrid has no width prop of its own; it fills its parent.
-    <Stack direction="column" distance="xs" width="100%">
+    // Flex, not Stack: Stack is undocumented and did not lay out vertically even with an
+    // explicit direction. Flex needs no width prop -- it renders a block-level div, so it fills
+    // its parent, which is what the AutoGrids inside it need in order to have room to spread.
+    <Flex direction="column" gap="xs">
       {error && (
         <Alert title="Couldn’t complete the pricing action" variant="error">
           {error}
@@ -671,7 +669,7 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
         onPreview={previewQuote}
         onLock={lockAndCreateQuote}
       />
-    </Stack>
+    </Flex>
   );
 };
 
@@ -861,12 +859,12 @@ const OptionEditor = ({
             <Fragment key={product.key}>
               <TableRow>
                 <TableCell>
-                  <Stack direction="column" distance="flush">
+                  <Flex direction="column" gap="flush">
                     <Text>{product.label}</Text>
                     <Text variant="microcopy">
                       {product.description} · {product.inputUnit}
                     </Text>
-                  </Stack>
+                  </Flex>
                 </TableCell>
                 <TableCell align="center">
                   <NumberInput
@@ -935,7 +933,7 @@ const OptionEditor = ({
       : `${approvalLabel(previewResult?.approvalTierRequired || "none")} approval required`;
 
   return (
-    <Stack direction="column" distance="flush" width="100%">
+    <Flex direction="column" gap="flush">
       {previewError && (
         <Alert title="Pricing is not up to date" variant="error">
           {previewError} The figures below are from your previous entry.
@@ -946,7 +944,7 @@ const OptionEditor = ({
           directly beneath. Previously each of these was its own stacked card, which is most of
           why the card read as a tall single column. */}
       {previewResult && (
-        <Stack direction="column" distance="flush" width="100%">
+        <Flex direction="column" gap="flush">
           <Flex justify="between" align="center" gap="md" wrap>
             <Flex gap="xs" align="center">
               {previewLoading && (
@@ -968,12 +966,12 @@ const OptionEditor = ({
               </Text>
             </Flex>
           </Flex>
-        </Stack>
+        </Flex>
       )}
 
       {/* No Card wrapper: Card supplies fixed padding that cannot be reduced from here, and it
           was the widest source of horizontal inset. */}
-      <Stack direction="column" distance="xs" width="100%">
+      <Flex direction="column" gap="xs">
         {
           <>
             {/* Text rather than Heading for section titles: Heading exposes no size prop, and
@@ -1071,19 +1069,25 @@ const OptionEditor = ({
               Choose support, onboarding, optional services, and any requested
               discount.
             </Text>
-            {/* A Stack, not an AutoGrid, and the order is deliberate.
+            {/* Flex direction="column", and the order is deliberate.
 
                 AutoGrid fills row by row, so the DOM order had to be Support, Onboarding, Support
-                Discount, Onboarding Discount for the two-column layout to pair each select with
-                its own discount in a column. That order is only correct at exactly two columns:
-                at one column it reads Support, Onboarding, Support Discount, Onboarding Discount,
-                which separates every discount from the thing it discounts. And because AutoGrid
-                is responsive, the card silently switched between the two as the content changed
-                width -- the fields appearing to rearrange themselves while being filled in.
+                Discount, Onboarding Discount for a two-column layout to pair each select with its
+                own discount in a column. That order is only correct at exactly two columns: at one
+                column it separates every discount from the thing it discounts. And AutoGrid is
+                responsive, so the card silently switched between the two as content changed width
+                -- the fields appearing to rearrange themselves while being filled in.
 
-                A vertical Stack cannot reflow, so the hierarchy is fixed: each control is
-                immediately followed by its own discount and that discount's pricing summary. */}
-            <Stack direction="column" distance="sm" width="100%">
+                Flex cannot reflow, so the hierarchy is fixed: each control is immediately followed
+                by its own discount and that discount's pricing summary.
+
+                Use Flex, never Stack, for this. Stack appears in the package's exports and type
+                definitions but in none of HubSpot's component documentation, and converting these
+                sections to Stack -- with and without an explicit direction -- deployed twice and
+                rendered horizontally both times. Flex is documented, defaults to row, honours
+                direction="column", and needs no width prop: it renders a block-level div, so it
+                already fills its parent. */}
+            <Flex direction="column" gap="sm">
               <Select
                 label="Support"
                 name="support_level"
@@ -1093,7 +1097,7 @@ const OptionEditor = ({
                   onInputChange("supportLevel", String(value))
                 }
               />
-              <Stack direction="column" distance="xs" width="100%">
+              <Flex direction="column" gap="xs">
                 <NumberInput
                   label="Support Discount"
                   name="support_discount"
@@ -1112,7 +1116,7 @@ const OptionEditor = ({
                   previewResult?.supportAnnual,
                   "per year",
                 )}
-              </Stack>
+              </Flex>
               <Select
                 label="Onboarding"
                 name="onboarding_package"
@@ -1122,7 +1126,7 @@ const OptionEditor = ({
                   onInputChange("onboardingPackage", String(value))
                 }
               />
-              <Stack direction="column" distance="xs" width="100%">
+              <Flex direction="column" gap="xs">
                 <NumberInput
                   label="Onboarding Discount"
                   name="onboarding_discount"
@@ -1143,14 +1147,14 @@ const OptionEditor = ({
                   previewResult?.onboardingAmount,
                   "one-time",
                 )}
-              </Stack>
-            </Stack>
+              </Flex>
+            </Flex>
             <Card>
-              <Stack direction="column" distance="xs">
+              <Flex direction="column" gap="xs">
                 <Text format={{ fontWeight: "bold" }}>
                   Add-ons and professional services
                 </Text>
-                <Stack direction="column" distance="sm" width="100%">
+                <Flex direction="column" gap="sm">
                   <MultiSelect
                     label="Subscription Add-ons"
                     name="add_ons"
@@ -1169,12 +1173,7 @@ const OptionEditor = ({
                       option.input.addOns.includes(String(value)),
                     )
                     .map(({ value, label }) => (
-                      <Stack
-                        direction="column"
-                        key={value}
-                        distance="xs"
-                        width="100%"
-                      >
+                      <Flex key={value} direction="column" gap="xs">
                         <NumberInput
                           label={`${label} Discount`}
                           name={`${value}_discount`}
@@ -1203,7 +1202,7 @@ const OptionEditor = ({
                           )?.annualAmount,
                           "per year",
                         )}
-                      </Stack>
+                      </Flex>
                     ))}
                   <MultiSelect
                     label="Professional Services"
@@ -1214,7 +1213,7 @@ const OptionEditor = ({
                       onInputChange("professionalServices", value.map(String))
                     }
                   />
-                  <Stack direction="column" distance="xs" width="100%">
+                  <Flex direction="column" gap="xs">
                     <NumberInput
                       label="Professional Services Discount"
                       name="professional_services_discount"
@@ -1240,9 +1239,9 @@ const OptionEditor = ({
                         previewResult?.professionalServicesAmount,
                         "one-time",
                       )}
-                  </Stack>
-                </Stack>
-              </Stack>
+                  </Flex>
+                </Flex>
+              </Flex>
             </Card>
           </>
         }
@@ -1306,7 +1305,7 @@ const OptionEditor = ({
             )}
           </>
         }
-      </Stack>
+      </Flex>
       {/* The approval state sits with the action it gates, not up in the header: a blocking
           reason is only actionable next to the button it stops. */}
       {previewResult && (
@@ -1341,6 +1340,6 @@ const OptionEditor = ({
           Lock in &amp; create quote
         </LoadingButton>
       </Flex>
-    </Stack>
+    </Flex>
   );
 };
