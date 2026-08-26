@@ -10,6 +10,7 @@ import {
   EmptyState,
   ExtensionPointApiActions,
   Flex,
+  Heading,
   Input,
   LoadingButton,
   LoadingSpinner,
@@ -412,12 +413,14 @@ const currency = (value?: number) =>
     maximumFractionDigits: 0,
   }).format(value || 0);
 
+// Two decimals, matching the price the line item actually carries. Four decimals showed rates
+// like $1.5484 that no line item could ever be priced at.
 const rateCurrency = (value?: number) =>
   new Intl.NumberFormat("en-US", {
     style: "currency",
     currency: "USD",
     minimumFractionDigits: 2,
-    maximumFractionDigits: 4,
+    maximumFractionDigits: 2,
   }).format(value || 0);
 
 const percent = (value?: number) =>
@@ -1056,7 +1059,7 @@ const OptionEditor = ({
       {previewResult && (
         <Flex direction="column" gap="xs">
           <Flex justify="between" align="center" gap="md" wrap>
-            <Text format={{ fontWeight: "bold" }}>Contract Summary:</Text>
+            <Heading>Contract Summary:</Heading>
             <Flex gap="xs" align="center">
               {previewLoading && (
                 <LoadingSpinner size="xs" label="Updating pricing" />
@@ -1075,9 +1078,10 @@ const OptionEditor = ({
       <Flex direction="column" gap="xs">
         {
           <>
-            {/* Text rather than Heading for section titles: Heading exposes no size prop, and
-                its default is oversized for a section label inside a record tab. */}
-            <Text format={{ fontWeight: "bold" }}>Contract Basics:</Text>
+            {/* Heading, not Text, for every section title. Text has no size prop and both its
+                variants are body-sized, so Heading's default is the only larger size available
+                from the card. */}
+            <Heading>Contract Basics:</Heading>
             <AutoGrid columnWidth={200} flexible gap="sm">
               <DateInput
                 label="Start Date"
@@ -1146,9 +1150,7 @@ const OptionEditor = ({
             {/* A rule instead of whitespace: the gap above this section was the largest on the
                 card and was doing the work a divider should do. */}
             <Divider />
-            <Text format={{ fontWeight: "bold" }}>
-              Monthly Product Commitments:
-            </Text>
+            <Heading>Monthly Product Commitments:</Heading>
             <Text variant="microcopy">
               Enter committed monthly usage. Discounts are optional, entered
               manually, and determine the required approval level.
@@ -1165,40 +1167,38 @@ const OptionEditor = ({
         {
           <>
             <Divider />
-            <Text format={{ fontWeight: "bold" }}>Services and Pricing:</Text>
+            <Heading>Services and Pricing:</Heading>
             <Text variant="microcopy">
               Choose support, onboarding, optional services, and any requested
               discount.
             </Text>
-            {/* Flex direction="column", and the order is deliberate.
+            {/* An AutoGrid of self-contained columns, which is how this gets to be horizontal
+                like Contract Basics without losing the hierarchy.
 
-                AutoGrid fills row by row, so the DOM order had to be Support, Onboarding, Support
-                Discount, Onboarding Discount for a two-column layout to pair each select with its
-                own discount in a column. That order is only correct at exactly two columns: at one
-                column it separates every discount from the thing it discounts. And AutoGrid is
-                responsive, so the card silently switched between the two as content changed width
-                -- the fields appearing to rearrange themselves while being filled in.
+                AutoGrid fills row by row, so putting the four controls in it directly made the DOM
+                order layout-dependent: correct at exactly two columns, wrong at one, and AutoGrid
+                is responsive, so it silently switched between them as content changed width. That
+                is what made the fields appear to rearrange themselves while being filled in.
 
-                Flex cannot reflow, so the hierarchy is fixed: each control is immediately followed
-                by its own discount and that discount's pricing summary.
+                Each grid cell is now a Flex column holding one control, its own discount, and that
+                discount's pricing summary. The cell is the unit that reflows, so a discount can
+                never be separated from the thing it discounts, at any width.
 
-                Use Flex, never Stack, for this. Stack appears in the package's exports and type
-                definitions but in none of HubSpot's component documentation, and converting these
-                sections to Stack -- with and without an explicit direction -- deployed twice and
-                rendered horizontally both times. Flex is documented, defaults to row, honours
-                direction="column", and needs no width prop: it renders a block-level div, so it
-                already fills its parent. */}
-            <Flex direction="column" gap="sm">
-              <Select
-                label="Support"
-                name="support_level"
-                value={option.input.supportLevel}
-                options={supportOptions}
-                onChange={(value) =>
-                  onInputChange("supportLevel", String(value))
-                }
-              />
-              <Flex direction="column" gap="xs">
+                Use Flex, never Stack, inside these cells. Stack appears in the package's exports
+                and type definitions but in none of HubSpot's component documentation, and
+                converting these sections to Stack -- with and without an explicit direction --
+                deployed twice and rendered horizontally both times. */}
+            <AutoGrid columnWidth={280} flexible gap="md">
+              <Flex direction="column" gap="sm">
+                <Select
+                  label="Support"
+                  name="support_level"
+                  value={option.input.supportLevel}
+                  options={supportOptions}
+                  onChange={(value) =>
+                    onInputChange("supportLevel", String(value))
+                  }
+                />
                 <NumberInput
                   label="Support Discount"
                   name="support_discount"
@@ -1218,16 +1218,16 @@ const OptionEditor = ({
                   "per year",
                 )}
               </Flex>
-              <Select
-                label="Onboarding"
-                name="onboarding_package"
-                value={option.input.onboardingPackage}
-                options={onboardingOptions}
-                onChange={(value) =>
-                  onInputChange("onboardingPackage", String(value))
-                }
-              />
-              <Flex direction="column" gap="xs">
+              <Flex direction="column" gap="sm">
+                <Select
+                  label="Onboarding"
+                  name="onboarding_package"
+                  value={option.input.onboardingPackage}
+                  options={onboardingOptions}
+                  onChange={(value) =>
+                    onInputChange("onboardingPackage", String(value))
+                  }
+                />
                 <NumberInput
                   label="Onboarding Discount"
                   name="onboarding_discount"
@@ -1249,72 +1249,72 @@ const OptionEditor = ({
                   "one-time",
                 )}
               </Flex>
-            </Flex>
+            </AutoGrid>
             <Card>
               <Flex direction="column" gap="xs">
-                <Text format={{ fontWeight: "bold" }}>
-                  Add-ons and professional services:
-                </Text>
-                <Flex direction="column" gap="sm">
-                  <MultiSelect
-                    label="Subscription Add-ons"
-                    name="add_ons"
-                    value={option.input.addOns}
-                    options={addOnOptions}
-                    onChange={(value) =>
-                      onInputChange("addOns", value.map(String))
-                    }
-                  />
-                  {/* Only the add-ons actually selected get a discount field. Rendering one per
+                <Heading>Add-ons and professional services:</Heading>
+                <AutoGrid columnWidth={280} flexible gap="md">
+                  <Flex direction="column" gap="sm">
+                    <MultiSelect
+                      label="Subscription Add-ons"
+                      name="add_ons"
+                      value={option.input.addOns}
+                      options={addOnOptions}
+                      onChange={(value) =>
+                        onInputChange("addOns", value.map(String))
+                      }
+                    />
+                    {/* Only the add-ons actually selected get a discount field. Rendering one per
                       option meant a column of read-only 0% inputs for things nobody is buying,
                       which is most of this section's height and reads as broken rather than
                       inactive. */}
-                  {addOnOptions
-                    .filter(({ value }) =>
-                      option.input.addOns.includes(String(value)),
-                    )
-                    .map(({ value, label }) => (
-                      <Flex key={value} direction="column" gap="xs">
-                        <NumberInput
-                          label={`${label} Discount`}
-                          name={`${value}_discount`}
-                          value={
-                            (option.input.addOnDiscounts?.[String(value)] ||
-                              0) * 100
-                          }
-                          min={0}
-                          max={100}
-                          precision={2}
-                          formatStyle="percentage"
-                          onChange={(discount) =>
-                            onInputChange("addOnDiscounts", {
-                              ...(option.input.addOnDiscounts || {}),
-                              [String(value)]: (discount || 0) / 100,
-                            })
-                          }
-                        />
-                        {discountPreview(
-                          previewResult?.selectedAddOns.find(
-                            ({ key }) => key === value,
-                          )?.listAnnualAmount,
-                          option.input.addOnDiscounts?.[String(value)] || 0,
-                          previewResult?.selectedAddOns.find(
-                            ({ key }) => key === value,
-                          )?.annualAmount,
-                          "per year",
-                        )}
-                      </Flex>
-                    ))}
-                  <MultiSelect
-                    label="Professional Services"
-                    name="professional_services"
-                    value={option.input.professionalServices}
-                    options={professionalServiceOptions}
-                    onChange={(value) =>
-                      onInputChange("professionalServices", value.map(String))
-                    }
-                  />
-                  <Flex direction="column" gap="xs">
+                    {addOnOptions
+                      .filter(({ value }) =>
+                        option.input.addOns.includes(String(value)),
+                      )
+                      .map(({ value, label }) => (
+                        <Flex key={value} direction="column" gap="xs">
+                          <NumberInput
+                            label={`${label} Discount`}
+                            name={`${value}_discount`}
+                            value={
+                              (option.input.addOnDiscounts?.[String(value)] ||
+                                0) * 100
+                            }
+                            min={0}
+                            max={100}
+                            precision={2}
+                            formatStyle="percentage"
+                            onChange={(discount) =>
+                              onInputChange("addOnDiscounts", {
+                                ...(option.input.addOnDiscounts || {}),
+                                [String(value)]: (discount || 0) / 100,
+                              })
+                            }
+                          />
+                          {discountPreview(
+                            previewResult?.selectedAddOns.find(
+                              ({ key }) => key === value,
+                            )?.listAnnualAmount,
+                            option.input.addOnDiscounts?.[String(value)] || 0,
+                            previewResult?.selectedAddOns.find(
+                              ({ key }) => key === value,
+                            )?.annualAmount,
+                            "per year",
+                          )}
+                        </Flex>
+                      ))}
+                  </Flex>
+                  <Flex direction="column" gap="sm">
+                    <MultiSelect
+                      label="Professional Services"
+                      name="professional_services"
+                      value={option.input.professionalServices}
+                      options={professionalServiceOptions}
+                      onChange={(value) =>
+                        onInputChange("professionalServices", value.map(String))
+                      }
+                    />
                     <NumberInput
                       label="Professional Services Discount"
                       name="professional_services_discount"
@@ -1341,7 +1341,7 @@ const OptionEditor = ({
                         "one-time",
                       )}
                   </Flex>
-                </Flex>
+                </AutoGrid>
               </Flex>
             </Card>
           </>
@@ -1351,9 +1351,7 @@ const OptionEditor = ({
           <>
             <Divider />
             <Box>
-              <Text format={{ fontWeight: "bold" }}>
-                Renewal and Contract Terms:
-              </Text>
+              <Heading>Renewal and Contract Terms:</Heading>
               <Text variant="microcopy">
                 Standard terms automatically renew for 12 months. Non-renewal
                 notice must be provided at least 60 days before the subscription

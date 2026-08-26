@@ -1369,7 +1369,9 @@ var require_lineItemModel = __commonJS({
         quantity: String(quantity),
         // An omitted price means "use the product's default". It must stay omitted: round(undefined)
         // is NaN, and String(NaN) is the literal "NaN", which HubSpot would take as the price.
-        ...price == null ? {} : { price: String(round(price, 9)) },
+        // Two decimals. A price is money, and 9 decimals put values like 1.393524 and 0.773333333
+        // into HubSpot's Unit Price column -- neither is a price anyone can be charged.
+        ...price == null ? {} : { price: String(round(price, 2)) },
         // Omitted when blank so HubSpot falls back to the product library's own description.
         // Sending '' would overwrite that with nothing.
         ...description ? { description: String(description).slice(0, 5e3) } : {},

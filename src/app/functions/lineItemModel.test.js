@@ -124,12 +124,19 @@ test('Deal line items reconcile to the approved calculation', () => {
     recurringItems[0].properties.nylas_pricing_component,
     'subscription_drawdown',
   );
-  assert.equal(
-    Math.round(
-      (Number(recurringItems[0].properties.price) * selected.result.paymentsPerYear +
-        Number.EPSILON) * 100,
-    ) / 100,
-    selected.result.proposedPlatformArr,
+  // The drawdown line is priced at the platform ARR divided across the payments in a year, and
+  // that per-payment figure is rounded to cents, because it is money someone is invoiced.
+  //
+  // So it cannot always multiply back to the exact ARR: 80128.38 / 4 is 20032.095, which is not a
+  // chargeable amount. At 20032.10 a quarter the year comes to 80128.40. The invoice is right and
+  // the calculator's figure is the theoretical one; the gap is at most half a cent per payment.
+  const drawdownPrice = Number(recurringItems[0].properties.price);
+  const perPayment = selected.result.proposedPlatformArr / selected.result.paymentsPerYear;
+  assert.equal(drawdownPrice, Math.round((perPayment + Number.EPSILON) * 100) / 100);
+  assert.ok(
+    Math.abs(drawdownPrice * selected.result.paymentsPerYear - selected.result.proposedPlatformArr) <=
+      selected.result.paymentsPerYear * 0.005,
+    'annual total may differ from ARR only by the per-payment rounding',
   );
   assert.equal(recurringItems[1].properties.name, 'Connect - Email + Calendar Connected Accounts (CA)');
 });
