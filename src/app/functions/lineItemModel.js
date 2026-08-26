@@ -132,7 +132,6 @@ const withPositions = (items) =>
     properties: { ...item.properties, hs_position_on_quote: String(index) },
   }));
 
-
 const round = (value, decimals = 2) => {
   const multiplier = 10 ** decimals;
   return Math.round((Number(value) + Number.EPSILON) * multiplier) / multiplier;
@@ -231,7 +230,9 @@ const recurringProperties = ({ option, key, component, product, price, quantity,
     // An omitted price means "use the product's default". It must stay omitted: round(undefined)
     // is NaN, and String(NaN) is the literal "NaN", which HubSpot would take as the price.
     ...(price == null ? {} : { price: String(round(price, 9)) }),
-    description: String(description || '').slice(0, 5_000),
+    // Omitted when blank so HubSpot falls back to the product library's own description.
+    // Sending '' would overwrite that with nothing.
+    ...(description ? { description: String(description).slice(0, 5_000) } : {}),
     recurringbillingfrequency: paymentFrequency(paymentsPerYear),
     hs_recurring_billing_period: `P${option.input.termMonths}M`,
     hs_recurring_billing_number_of_payments: String(
@@ -249,44 +250,9 @@ const oneTimeProperties = ({ option, key, component, product, price, description
   ...baseManagedProperties({ option, key, component, product, source }),
   quantity: '1',
   price: String(round(price)),
-  description: String(description || '').slice(0, 5_000),
+  ...(description ? { description: String(description).slice(0, 5_000) } : {}),
 });
 
-// Band boundaries are expressed in thousands of emails, so printing them raw beside
-// "per 1,000 emails" read as "0-50 emails" on the customer-facing Quote. Use the same K notation
-// the card shows, and give the open-ended top band a real "500K+" instead of "500–+".
-const formatBand = ({ lower, upper, rate }) => {
-  const from = lower === 0 ? '0' : `${lower.toLocaleString('en-US')}K`;
-  const range = upper == null ? `${from}+` : `${from}–${upper.toLocaleString('en-US')}K`;
-  return `${range}: $${rate.toFixed(2)} per 1,000 emails`;
-};
-
-const productDescription = (line) => {
-  const bandDetail = line.proposedBandRates?.length
-    ? ` Graduated monthly rates: ${line.proposedBandRates.map(formatBand).join('; ')}.`
-    : '';
-  // Show the list rate alongside the proposed one whenever a discount was applied, so the rate
-  // on the line can be read against what it would otherwise have been.
-  const discountDetail =
-    line.discretionaryDiscount > 0
-      ? ` List $${line.displayListUnitRate.toFixed(2)} per ${line.unitOfMeasure} per month, ` +
-        `less ${(line.discretionaryDiscount * 100).toFixed(2)}%.`
-      : '';
-  // An uncommitted product reads differently: there is no committed average to state, just the
-  // rate that applies if it gets used.
-  const commitment =
-    line.volume > 0
-      ? `${line.volume.toLocaleString('en-US')} ${line.unitOfMeasure} committed average per month at ` +
-        `$${line.proposedUnitRate.toFixed(2)} blended per ${line.unitOfMeasure} per month.`
-      : `No committed volume. Available at $${line.displayProposedUnitRate.toFixed(2)} per ` +
-        `${line.unitOfMeasure} per month if used.`;
-  return (
-    commitment +
-    discountDetail +
-    bandDetail +
-    ' Usage draws down from the shared prepaid subscription pool at these rates.'
-  );
-};
 
 const rateScheduleText = (option, includeUncommitted) =>
   option.result.lines
@@ -336,10 +302,13 @@ const buildMeteredLines = (option, source) => {
             ...(line.discretionaryDiscount > 0
               ? { price: line.billingUnitRate }
               : {}),
-            description: productDescription(line),
             source,
           }),
           monthly_unit_price: String(line.billingUnitRate),
+          // The monthly committed average, as data rather than the prose it used to sit in.
+          // quantity stays 0 so these lines still contribute nothing to the Deal total -- the
+          // committed money is carried by the drawdown fee, not by these rate-schedule lines.
+          committed_quantity: String(line.volume),
         },
       };
     });
@@ -402,7 +371,6 @@ const buildSupportLine = (option, source) => {
         product,
         quantity: 1,
         price: option.result.supportAnnual / option.result.paymentsPerYear,
-        description: `${product.name}, billed with the subscription.`,
         source,
       }),
     },
@@ -422,7 +390,6 @@ const buildAddOnLines = (option, source) =>
         product,
         quantity: 1,
         price: addOn.annualAmount / option.result.paymentsPerYear,
-        description: `${addOn.label}, billed with the subscription.`,
         source,
       }),
     };
@@ -444,7 +411,6 @@ const buildOnboardingLines = (option, source) => {
         component: 'onboarding',
         product,
         price: option.result.onboardingAmount,
-        description: 'One-time onboarding fee.',
         source,
       }),
     },
@@ -473,7 +439,6 @@ const buildProfessionalServiceLines = (option, source) => {
         component: 'professional_services',
         product,
         price: prices[index],
-        description: `One-time professional service. Price reflects the ${selected.length}-item bundle.`,
         source,
       }),
     };

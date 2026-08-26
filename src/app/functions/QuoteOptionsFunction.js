@@ -559,6 +559,10 @@ const HUBSPOT_LINE_ITEM_PROPERTIES = new Set([
   // 'product_category' deliberately omitted: it is not a HubSpot-defined Line Item property, so
   // in a portal that never had it created every create fails with a 400 and the sync collapses.
   'units',
+  // Custom, not HubSpot-defined: it carries the monthly committed volume for each metered product,
+  // which used to be stated in prose in the description. A portal that never created it rejects
+  // the whole create, so createLineItem retries without it rather than failing the sync.
+  'committed_quantity',
   'recurringbillingfrequency',
   'hs_recurring_billing_period',
   'hs_recurring_billing_terms',
@@ -593,10 +597,31 @@ const isProductBundleRejection = (error) => {
   return /product bundle/i.test(message) || /could not hydrate/i.test(message);
 };
 
+// committed_quantity is a custom property. In a portal where it was never created, naming it
+// returns 400 and — because the sync archives first and creates second — takes every line item on
+// the Deal with it. The volume is useful but not worth that, so it is dropped and retried once.
+const isUnknownPropertyRejection = (error, property) => {
+  const message = String(
+    error?.body?.message || error?.response?.body?.message || error?.message || '',
+  );
+  return message.includes(property) && /propert/i.test(message);
+};
+
 const createLineItem = async (client, properties, associations) => {
   try {
     return await client.crm.lineItems.basicApi.create({ properties, associations });
   } catch (error) {
+    if (
+      properties.committed_quantity != null &&
+      isUnknownPropertyRejection(error, 'committed_quantity')
+    ) {
+      const { committed_quantity: unknown, ...withoutCommitted } = properties;
+      console.warn(
+        'Nylas pricing: this portal has no committed_quantity Line Item property. ' +
+          'Creating the line item without it.',
+      );
+      return createLineItem(client, withoutCommitted, associations);
+    }
     if (!properties.hs_product_id || !isProductBundleRejection(error)) throw error;
     const { hs_product_id: bundledProductId, ...withoutProduct } = properties;
     console.warn(
@@ -980,6 +1005,9 @@ exports.main = async (context) => {
         ...stateResponse(state),
         quoteTemplates: await usableQuoteTemplates(client),
         defaultQuoteTemplateId: String(process.env.QUOTE_TEMPLATE_ID || ''),
+        // The card shows this as the Quote title placeholder, so a rep who leaves the field
+        // blank can see the name the quote will actually get rather than being surprised by it.
+        dealName: state.dealName,
       });
     }
     if (action === 'preview') {

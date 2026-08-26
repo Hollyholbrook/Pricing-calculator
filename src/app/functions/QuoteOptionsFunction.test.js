@@ -127,4 +127,11 @@ test('locking an option archives every existing Deal line item before creating r
       );
     }
   }
+  // committed_quantity is custom, so the allow-list is the one place that can silently swallow it.
+  // Connect is the only committed product in this fixture, at 2,000 CA per month.
+  const connect = createdProperties.find(
+    ({ name }) => name === 'Connect - Email + Calendar Connected Accounts (CA)',
+  );
+  assert.equal(connect.committed_quantity, '2000');
+  assert.equal(connect.quantity, '0');
 });

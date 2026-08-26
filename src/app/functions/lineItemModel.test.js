@@ -115,9 +115,10 @@ test('Deal line items reconcile to the approved calculation', () => {
     );
   }
 
-  // A discounted product prices at the discounted rate and says so.
+  // A discounted product prices at the discounted rate. The app writes no description: the
+  // customer-facing quote shows the product library's own copy, not text assembled here.
   const discounted = items.find(({ key }) => key === 'metered:connect_ca');
-  assert.match(discounted.properties.description, /List \$[\d.]+ per CA per month, less /);
+  assert.equal(discounted.properties.description, undefined);
   assert.equal(recurringItems[0].properties.quantity, '1');
   assert.equal(
     recurringItems[0].properties.nylas_pricing_component,
@@ -166,7 +167,21 @@ test('every bundle product appears even with no commitment or discount', () => {
     undefined,
     'price is left to the product default when nothing was discounted',
   );
-  assert.match(uncommitted.properties.description, /No committed volume\. Available at \$/);
+  assert.equal(uncommitted.properties.description, undefined);
+  // The committed volume rides on committed_quantity, not in prose, and not in quantity -- these
+  // lines must keep quantity 0 so they add nothing to the Deal total.
+  assert.equal(uncommitted.properties.committed_quantity, '0');
+  const committed = metered.find(({ key }) => key === 'metered:connect_ca');
+  assert.equal(committed.properties.committed_quantity, '1000');
+  assert.equal(committed.properties.quantity, '0');
+  // Nothing outside the rate schedule carries it.
+  for (const item of items.filter(({ key }) => !key.startsWith('metered:'))) {
+    assert.equal(
+      item.properties.committed_quantity,
+      undefined,
+      `${item.key} is not a metered product line`,
+    );
+  }
 });
 
 test('every quote carries a support line, Basic at $0 included', () => {
@@ -259,4 +274,16 @@ test('Quote content rejects unknown fields', () => {
     () => normalizeQuoteContent({ title: 'Test', unexpected: true }),
     /INVALID_QUOTE_CONTENT/,
   );
+});
+
+// The Quote title field in the card relies on all three of these. An untouched field must omit
+// the key rather than send '', because a present-but-empty title is a validation error rather
+// than a request for the default.
+test('Quote title falls back only when the key is absent, never when it is blank', () => {
+  assert.equal(normalizeQuoteContent({}, 'Acme – Live calculator').title, 'Acme – Live calculator');
+  assert.equal(normalizeQuoteContent({ title: '  Renewal FY27  ' }).title, 'Renewal FY27');
+  assert.throws(() => normalizeQuoteContent({ title: '' }), /INVALID_QUOTE_CONTENT/);
+  assert.throws(() => normalizeQuoteContent({ title: '   ' }), /INVALID_QUOTE_CONTENT/);
+  assert.throws(() => normalizeQuoteContent({ title: 'x'.repeat(161) }), /INVALID_QUOTE_CONTENT/);
+  assert.equal(normalizeQuoteContent({ title: 'x'.repeat(160) }).title.length, 160);
 });

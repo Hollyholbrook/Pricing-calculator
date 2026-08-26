@@ -10,6 +10,7 @@ import {
   EmptyState,
   ExtensionPointApiActions,
   Flex,
+  Input,
   LoadingButton,
   LoadingSpinner,
   MultiSelect,
@@ -190,10 +191,14 @@ interface ServerlessBody {
   previewResult?: QuoteResult;
   quoteTemplates?: { id: string; name: string }[];
   defaultQuoteTemplateId?: string;
+  dealName?: string;
 }
 
 interface QuoteContent {
-  title: string;
+  // Optional, not blank-able: normalizeQuoteContent falls back to "<deal name> – <option name>"
+  // when the key is absent, but a present-and-empty title is a validation error. So an untouched
+  // field must omit the key rather than send "".
+  title?: string;
   templateId: string;
   expirationDate: string;
   presentation: "itemized_products" | "subscription_summary";
@@ -333,6 +338,14 @@ const LIST_RATE_COLUMN_WIDTH = 300;
 const DISCOUNT_COLUMN_WIDTH = 110;
 const PROPOSED_RATE_COLUMN_WIDTH = 200;
 
+// Mirrors the server-side limit in normalizeQuoteContent. Checked here too so an over-long title
+// is caught in the field, rather than after Save and Lock as a generic INVALID_QUOTE_CONTENT.
+const QUOTE_TITLE_MAX_LENGTH = 160;
+
+// The server names an untitled quote "<deal name> – <option name>", so the placeholder can only
+// show the rep what they will get if this name and the one on the option stay in step.
+const LIVE_OPTION_NAME = "Live calculator";
+
 const termOptions = [12, 24, 36].map((months) => ({
   value: months,
   label: `${months} months`,
@@ -446,10 +459,19 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
     { id: string; name: string }[]
   >([]);
   const [templateId, setTemplateId] = useState("");
+  const [quoteTitle, setQuoteTitle] = useState("");
+  const [dealName, setDealName] = useState("");
+  const trimmedQuoteTitle = quoteTitle.trim();
+  const quoteTitleTooLong = trimmedQuoteTitle.length > QUOTE_TITLE_MAX_LENGTH;
+  const fallbackQuoteTitle = dealName
+    ? `${dealName} – ${LIVE_OPTION_NAME}`
+    : "";
   // The card exposes no controls for the rest of these, so they are constants rather than state
   // whose setter is never called.
   const quoteContent: QuoteContent = {
-    title: "Nylas Enterprise Quote",
+    // Omitted when blank so the server names the quote "<deal name> – <option name>". Sending an
+    // empty string instead would fail validation as INVALID_QUOTE_CONTENT.
+    ...(trimmedQuoteTitle ? { title: trimmedQuoteTitle } : {}),
     // Empty means "use the QUOTE_TEMPLATE_ID secret", which is what happens when the portal
     // exposes no customizable templates to pick from.
     templateId,
@@ -461,7 +483,7 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
     includeSpecialTerms: true,
   };
   const [editing, setEditing] = useState<QuoteOption>({
-    name: "Live calculator",
+    name: LIVE_OPTION_NAME,
     status: "draft",
     input: emptyInput(),
   });
@@ -471,6 +493,7 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
   const [unsupportedDeal, setUnsupportedDeal] = useState(false);
 
   const updateFromBody = (body: ServerlessBody) => {
+    if (body.dealName) setDealName(body.dealName);
     if (body.quoteTemplates) {
       setQuoteTemplates(body.quoteTemplates);
       // Preselect the configured default when it is one of the usable templates, so the picker
@@ -640,6 +663,10 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
         quoteTemplates={quoteTemplates}
         templateId={templateId}
         onTemplateChange={setTemplateId}
+        quoteTitle={quoteTitle}
+        quoteTitlePlaceholder={fallbackQuoteTitle}
+        quoteTitleTooLong={quoteTitleTooLong}
+        onQuoteTitleChange={setQuoteTitle}
         onInputChange={updateInput}
         onPreview={previewQuote}
         onLock={lockAndCreateQuote}
@@ -654,6 +681,10 @@ const OptionEditor = ({
   quoteTemplates,
   templateId,
   onTemplateChange,
+  quoteTitle,
+  quoteTitlePlaceholder,
+  quoteTitleTooLong,
+  onQuoteTitleChange,
   onInputChange,
   onPreview,
   onLock,
@@ -663,6 +694,10 @@ const OptionEditor = ({
   quoteTemplates: { id: string; name: string }[];
   templateId: string;
   onTemplateChange: (value: string) => void;
+  quoteTitle: string;
+  quoteTitlePlaceholder: string;
+  quoteTitleTooLong: boolean;
+  onQuoteTitleChange: (value: string) => void;
   onInputChange: <K extends keyof QuoteInput>(
     field: K,
     value: QuoteInput[K],
@@ -982,6 +1017,27 @@ const OptionEditor = ({
                   onChange={(value) => onTemplateChange(String(value))}
                 />
               )}
+              {/* onChange, not onInput: onInput fires per keystroke and would re-render the whole
+                  card on every character. onChange commits on blur, which is what state wants. */}
+              <Input
+                label="Quote title"
+                name="quote_title"
+                type="text"
+                value={quoteTitle}
+                placeholder={quoteTitlePlaceholder || "Name shown on the quote"}
+                description={
+                  quoteTitlePlaceholder
+                    ? `Leave blank to use “${quoteTitlePlaceholder}”.`
+                    : "Leave blank to name the quote after the Deal."
+                }
+                error={quoteTitleTooLong}
+                validationMessage={
+                  quoteTitleTooLong
+                    ? `Keep the title to ${QUOTE_TITLE_MAX_LENGTH} characters or fewer.`
+                    : undefined
+                }
+                onChange={(value) => onQuoteTitleChange(String(value))}
+              />
             </AutoGrid>
           </>
         }
@@ -1252,7 +1308,11 @@ const OptionEditor = ({
             committedProductCount === 0 ||
             !pricingIsCurrent ||
             !previewResult ||
-            previewResult.blockingReasons.length > 0
+            previewResult.blockingReasons.length > 0 ||
+            // The server rejects an over-long title with a generic INVALID_QUOTE_CONTENT, after
+            // the Deal line items have already been replaced. Blocking here keeps the field's own
+            // message as the only thing the rep has to read.
+            quoteTitleTooLong
           }
         >
           Lock in &amp; create quote

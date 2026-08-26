@@ -1363,7 +1363,9 @@ var require_lineItemModel = __commonJS({
         // An omitted price means "use the product's default". It must stay omitted: round(undefined)
         // is NaN, and String(NaN) is the literal "NaN", which HubSpot would take as the price.
         ...price == null ? {} : { price: String(round(price, 9)) },
-        description: String(description || "").slice(0, 5e3),
+        // Omitted when blank so HubSpot falls back to the product library's own description.
+        // Sending '' would overwrite that with nothing.
+        ...description ? { description: String(description).slice(0, 5e3) } : {},
         recurringbillingfrequency: paymentFrequency(paymentsPerYear),
         hs_recurring_billing_period: `P${option.input.termMonths}M`,
         hs_recurring_billing_number_of_payments: String(
@@ -1378,19 +1380,8 @@ var require_lineItemModel = __commonJS({
       ...baseManagedProperties({ option, key, component, product, source }),
       quantity: "1",
       price: String(round(price)),
-      description: String(description || "").slice(0, 5e3)
+      ...description ? { description: String(description).slice(0, 5e3) } : {}
     });
-    var formatBand = ({ lower, upper, rate }) => {
-      const from = lower === 0 ? "0" : `${lower.toLocaleString("en-US")}K`;
-      const range = upper == null ? `${from}+` : `${from}\u2013${upper.toLocaleString("en-US")}K`;
-      return `${range}: $${rate.toFixed(2)} per 1,000 emails`;
-    };
-    var productDescription = (line) => {
-      const bandDetail = line.proposedBandRates?.length ? ` Graduated monthly rates: ${line.proposedBandRates.map(formatBand).join("; ")}.` : "";
-      const discountDetail = line.discretionaryDiscount > 0 ? ` List $${line.displayListUnitRate.toFixed(2)} per ${line.unitOfMeasure} per month, less ${(line.discretionaryDiscount * 100).toFixed(2)}%.` : "";
-      const commitment = line.volume > 0 ? `${line.volume.toLocaleString("en-US")} ${line.unitOfMeasure} committed average per month at $${line.proposedUnitRate.toFixed(2)} blended per ${line.unitOfMeasure} per month.` : `No committed volume. Available at $${line.displayProposedUnitRate.toFixed(2)} per ${line.unitOfMeasure} per month if used.`;
-      return commitment + discountDetail + bandDetail + " Usage draws down from the shared prepaid subscription pool at these rates.";
-    };
     var rateScheduleText = (option, includeUncommitted) => option.result.lines.filter((line) => line.committed || includeUncommitted).map(
       (line) => `${line.productName}: $${line.availableUnitRate.toFixed(2)} per ${line.unitOfMeasure}/month` + (line.committed ? ` (${line.volume.toLocaleString("en-US")} committed/month)` : " (uncommitted)")
     ).join("\n");
@@ -1422,10 +1413,13 @@ var require_lineItemModel = __commonJS({
               // When a discount WAS entered the rate genuinely differs from the default, so it is
               // sent -- as a monthly rate, the same basis the product is priced on.
               ...line.discretionaryDiscount > 0 ? { price: line.billingUnitRate } : {},
-              description: productDescription(line),
               source
             }),
-            monthly_unit_price: String(line.billingUnitRate)
+            monthly_unit_price: String(line.billingUnitRate),
+            // The monthly committed average, as data rather than the prose it used to sit in.
+            // quantity stays 0 so these lines still contribute nothing to the Deal total -- the
+            // committed money is carried by the drawdown fee, not by these rate-schedule lines.
+            committed_quantity: String(line.volume)
           }
         };
       });
@@ -1471,7 +1465,6 @@ ${rateScheduleText(option, true)}`,
             product,
             quantity: 1,
             price: option.result.supportAnnual / option.result.paymentsPerYear,
-            description: `${product.name}, billed with the subscription.`,
             source
           })
         }
@@ -1489,7 +1482,6 @@ ${rateScheduleText(option, true)}`,
           product,
           quantity: 1,
           price: addOn.annualAmount / option.result.paymentsPerYear,
-          description: `${addOn.label}, billed with the subscription.`,
           source
         })
       };
@@ -1507,7 +1499,6 @@ ${rateScheduleText(option, true)}`,
             component: "onboarding",
             product,
             price: option.result.onboardingAmount,
-            description: "One-time onboarding fee.",
             source
           })
         }
@@ -1534,7 +1525,6 @@ ${rateScheduleText(option, true)}`,
             component: "professional_services",
             product,
             price: prices[index],
-            description: `One-time professional service. Price reflects the ${selected.length}-item bundle.`,
             source
           })
         };
@@ -2057,6 +2047,10 @@ var HUBSPOT_LINE_ITEM_PROPERTIES = /* @__PURE__ */ new Set([
   // 'product_category' deliberately omitted: it is not a HubSpot-defined Line Item property, so
   // in a portal that never had it created every create fails with a 400 and the sync collapses.
   "units",
+  // Custom, not HubSpot-defined: it carries the monthly committed volume for each metered product,
+  // which used to be stated in prose in the description. A portal that never created it rejects
+  // the whole create, so createLineItem retries without it rather than failing the sync.
+  "committed_quantity",
   "recurringbillingfrequency",
   "hs_recurring_billing_period",
   "hs_recurring_billing_terms",
@@ -2077,10 +2071,23 @@ var isProductBundleRejection = (error) => {
   );
   return /product bundle/i.test(message) || /could not hydrate/i.test(message);
 };
+var isUnknownPropertyRejection = (error, property) => {
+  const message = String(
+    error?.body?.message || error?.response?.body?.message || error?.message || ""
+  );
+  return message.includes(property) && /propert/i.test(message);
+};
 var createLineItem = async (client, properties, associations) => {
   try {
     return await client.crm.lineItems.basicApi.create({ properties, associations });
   } catch (error) {
+    if (properties.committed_quantity != null && isUnknownPropertyRejection(error, "committed_quantity")) {
+      const { committed_quantity: unknown, ...withoutCommitted } = properties;
+      console.warn(
+        "Nylas pricing: this portal has no committed_quantity Line Item property. Creating the line item without it."
+      );
+      return createLineItem(client, withoutCommitted, associations);
+    }
     if (!properties.hs_product_id || !isProductBundleRejection(error)) throw error;
     const { hs_product_id: bundledProductId, ...withoutProduct } = properties;
     console.warn(
@@ -2385,7 +2392,10 @@ exports.main = async (context) => {
         success: true,
         ...stateResponse(state),
         quoteTemplates: await usableQuoteTemplates(client),
-        defaultQuoteTemplateId: String(process.env.QUOTE_TEMPLATE_ID || "")
+        defaultQuoteTemplateId: String(process.env.QUOTE_TEMPLATE_ID || ""),
+        // The card shows this as the Quote title placeholder, so a rep who leaves the field
+        // blank can see the name the quote will actually get rather than being surprised by it.
+        dealName: state.dealName
       });
     }
     if (action === "preview") {
