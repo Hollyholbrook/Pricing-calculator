@@ -423,6 +423,106 @@ const rateCurrency = (value?: number) =>
 const percent = (value?: number) =>
   `${Math.round((value || 0) * 10_000) / 100}%`;
 
+// A zero in this table means "not part of this deal". The workbook prints a dash rather than
+// $0 for those, which keeps the eye on the rows that carry money.
+const summaryAmount = (value: number) => (value ? currency(value) : "—");
+
+const summaryTable = (result: QuoteResult, termMonths: number) => {
+  const years = termMonths / 12;
+  const perPeriod = (annual: number) => annual / result.paymentsPerYear;
+  const rows: { label: string; oneTime: number; annual: number }[] = [
+    { label: "Onboarding", oneTime: result.onboardingAmount, annual: 0 },
+    {
+      label: "Professional Services",
+      oneTime: result.professionalServicesAmount,
+      annual: 0,
+    },
+    {
+      label: "Subscription Drawdown",
+      oneTime: 0,
+      annual: result.proposedPlatformArr,
+    },
+    { label: "Subscription Add-ons", oneTime: 0, annual: result.annualAddOns },
+    { label: "Subscription Support", oneTime: 0, annual: result.supportAnnual },
+  ];
+  return (
+    <Flex direction="column" gap="xs">
+      <Table bordered={false} density="condensed">
+        <TableHead>
+          <TableRow>
+            <TableHeader width={220}>{""}</TableHeader>
+            <TableHeader width={140} align="right">
+              One-time Fees
+            </TableHeader>
+            <TableHeader width={160} align="right">
+              {`Recurring Fees Per ${result.billingPeriod}`}
+            </TableHeader>
+            <TableHeader width={170} align="right">
+              Recurring Fees Per Year (ARR)
+            </TableHeader>
+            <TableHeader width={150} align="right">
+              Total Fees for Term
+            </TableHeader>
+          </TableRow>
+        </TableHead>
+        <TableBody>
+          {rows.map(({ label, oneTime, annual }) => (
+            <TableRow key={label}>
+              <TableCell width={220}>
+                <Text>{label}</Text>
+              </TableCell>
+              <TableCell width={140} align="right">
+                <Text>{summaryAmount(oneTime)}</Text>
+              </TableCell>
+              <TableCell width={160} align="right">
+                <Text>{summaryAmount(perPeriod(annual))}</Text>
+              </TableCell>
+              <TableCell width={170} align="right">
+                <Text>{summaryAmount(annual)}</Text>
+              </TableCell>
+              <TableCell width={150} align="right">
+                <Text>{summaryAmount(oneTime + annual * years)}</Text>
+              </TableCell>
+            </TableRow>
+          ))}
+          {/* Totals come from the calculation, not from summing the rows above: the rows are a
+              presentation of the same figures, and the calculation is the one source of truth
+              for what the customer is being charged. They reconcile exactly. */}
+          <TableRow>
+            <TableCell width={220}>
+              <Text format={{ fontWeight: "bold" }}>Totals</Text>
+            </TableCell>
+            <TableCell width={140} align="right">
+              <Text format={{ fontWeight: "bold" }}>
+                {summaryAmount(result.oneTime)}
+              </Text>
+            </TableCell>
+            <TableCell width={160} align="right">
+              <Text format={{ fontWeight: "bold" }}>
+                {summaryAmount(result.recurringPerPeriod)}
+              </Text>
+            </TableCell>
+            <TableCell width={170} align="right">
+              <Text format={{ fontWeight: "bold" }}>
+                {summaryAmount(result.committedArr)}
+              </Text>
+            </TableCell>
+            <TableCell width={150} align="right">
+              <Text format={{ fontWeight: "bold" }}>
+                {summaryAmount(result.tcv)}
+              </Text>
+            </TableCell>
+          </TableRow>
+        </TableBody>
+      </Table>
+      <Flex justify="between" align="center" gap="md" wrap>
+        <Text format={{ fontWeight: "bold" }}>TOTAL CONTRACT VALUE (TCV)</Text>
+        <Text format={{ fontWeight: "bold" }}>{currency(result.tcv)}</Text>
+      </Flex>
+    </Flex>
+  );
+};
+
 const approvalLabel = (value?: string) =>
   ({
     none: "No approval",
@@ -942,12 +1042,17 @@ const OptionEditor = ({
         </Alert>
       )}
 
-      {/* Compact header: totals on the right of one row, approval as a full-width banner
-          directly beneath. Previously each of these was its own stacked card, which is most of
-          why the card read as a tall single column. */}
+      {/* Contract Summary, laid out like section VI of the pricing workbook: a row per charge
+          type, and columns for one-time, per-billing-period, annual and whole-term.
+
+          Every figure here is read from the calculation, never recomputed: the rows sum to
+          result.oneTime, result.recurringPerPeriod, result.committedArr and result.tcv exactly.
+          The term column is the one-time amount for one-time rows, and annual x years for
+          recurring rows -- which is how the workbook's "Total Fees for Term" column works. */}
       {previewResult && (
-        <Flex direction="column" gap="flush">
+        <Flex direction="column" gap="xs">
           <Flex justify="between" align="center" gap="md" wrap>
+            <Text format={{ fontWeight: "bold" }}>Contract Summary:</Text>
             <Flex gap="xs" align="center">
               {previewLoading && (
                 <LoadingSpinner size="xs" label="Updating pricing" />
@@ -956,18 +1061,8 @@ const OptionEditor = ({
                 <Text variant="microcopy">Updating pricing…</Text>
               )}
             </Flex>
-            <Flex gap="md" align="center" wrap>
-              <Text format={{ fontWeight: "bold" }}>
-                ARR {currency(previewResult.committedArr)}
-              </Text>
-              <Text format={{ fontWeight: "bold" }}>
-                One-time {currency(previewResult.oneTime)}
-              </Text>
-              <Text format={{ fontWeight: "bold" }}>
-                TCV {currency(previewResult.tcv)}
-              </Text>
-            </Flex>
           </Flex>
+          {summaryTable(previewResult, option.input.termMonths)}
         </Flex>
       )}
 
@@ -978,7 +1073,7 @@ const OptionEditor = ({
           <>
             {/* Text rather than Heading for section titles: Heading exposes no size prop, and
                 its default is oversized for a section label inside a record tab. */}
-            <Text format={{ fontWeight: "bold" }}>Contract Basics</Text>
+            <Text format={{ fontWeight: "bold" }}>Contract Basics:</Text>
             <AutoGrid columnWidth={200} flexible gap="sm">
               <DateInput
                 label="Start Date"
@@ -1048,7 +1143,7 @@ const OptionEditor = ({
                 card and was doing the work a divider should do. */}
             <Divider />
             <Text format={{ fontWeight: "bold" }}>
-              Monthly Product Commitments
+              Monthly Product Commitments:
             </Text>
             <Text variant="microcopy">
               Enter committed monthly usage. Discounts are optional, entered
@@ -1066,7 +1161,7 @@ const OptionEditor = ({
         {
           <>
             <Divider />
-            <Text format={{ fontWeight: "bold" }}>Services and Pricing</Text>
+            <Text format={{ fontWeight: "bold" }}>Services and Pricing:</Text>
             <Text variant="microcopy">
               Choose support, onboarding, optional services, and any requested
               discount.
@@ -1154,7 +1249,7 @@ const OptionEditor = ({
             <Card>
               <Flex direction="column" gap="xs">
                 <Text format={{ fontWeight: "bold" }}>
-                  Add-ons and professional services
+                  Add-ons and professional services:
                 </Text>
                 <Flex direction="column" gap="sm">
                   <MultiSelect
@@ -1253,7 +1348,7 @@ const OptionEditor = ({
             <Divider />
             <Box>
               <Text format={{ fontWeight: "bold" }}>
-                Renewal and Contract Terms
+                Renewal and Contract Terms:
               </Text>
               <Text variant="microcopy">
                 Standard terms automatically renew for 12 months. Non-renewal
