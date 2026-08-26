@@ -751,11 +751,12 @@ const OptionEditor = ({
       //
       // Flex column rather than Stack: Stack's block children ignore the cell's right alignment,
       // so these lines sat left while every other row's rate sat right.
+      // No blended headline above the bands. At zero volume the blended rate is just the entry
+      // band, so it repeated "0-50K · $1.00" directly beneath it. Removed from this cell and the
+      // proposed one together -- dropping it from only one would offset the rows and break the
+      // band-for-band read across the two columns.
       return (
         <Flex direction="column" align="end" gap="flush">
-          <Text format={{ fontWeight: "bold" }}>
-            {rateCurrency(line.displayListUnitRate)}
-          </Text>
           {line.listBandRates.map((band) => (
             <Text key={bandRange(band.lower, band.upper)} variant="microcopy">
               {bandRange(band.lower, band.upper)} · {rateCurrency(band.rate)}
@@ -777,9 +778,6 @@ const OptionEditor = ({
       // rate for each band sits directly beside the list rate it came from.
       return (
         <Flex direction="column" align="end" gap="flush">
-          <Text format={{ fontWeight: "bold" }}>
-            {rateCurrency(line.displayProposedUnitRate)}
-          </Text>
           {line.proposedBandRates.map((band) => (
             <Text key={bandRange(band.lower, band.upper)} variant="microcopy">
               {rateCurrency(band.rate)}
