@@ -1319,6 +1319,11 @@ var require_lineItemModel = __commonJS({
         "title",
         "expirationDate",
         "presentation",
+        // These three no longer change anything the app sends. They used to select what went into the
+        // quote's hs_comments and hs_terms; the app no longer writes either, because hs_terms is what
+        // the template's "Payment Terms:" section renders and the template owns that text. They stay
+        // accepted so the card's existing payload still validates, and they stay in the content hash.
+        // Do not build new behaviour on them without deciding what owns the quote's prose.
         "includeUncommittedRateSchedule",
         "includeRenewalTerms",
         "includeSpecialTerms",
@@ -1384,9 +1389,6 @@ var require_lineItemModel = __commonJS({
       price: String(round(price)),
       ...description ? { description: String(description).slice(0, 5e3) } : {}
     });
-    var rateScheduleText = (option, includeUncommitted) => option.result.lines.filter((line) => line.committed || includeUncommitted).map(
-      (line) => `${line.productName}: $${line.availableUnitRate.toFixed(2)} per ${line.unitOfMeasure}/month` + (line.committed ? ` (${line.volume.toLocaleString("en-US")} committed/month)` : " (uncommitted)")
-    ).join("\n");
     var buildMeteredLines = (option, source) => {
       const items = option.result.lines.slice().sort(
         (left, right) => productOrderIndex(left.productKey) - productOrderIndex(right.productKey)
@@ -1556,34 +1558,11 @@ var require_lineItemModel = __commonJS({
       source: "quote",
       presentation: content.presentation
     });
-    var buildQuoteText2 = (option, content) => {
-      const comments = [
-        "Subscription usage draws down from one prepaid pool across all products at the quoted rates. Unused funds carry forward during the term and expire at term end. Usage beyond the pool is billed monthly in arrears at the same quoted rates; there is no separate overage premium."
-      ];
-      if (content.includeUncommittedRateSchedule) {
-        comments.push(`Product rate schedule:
-${rateScheduleText(option, true)}`);
-      }
-      const terms = [];
-      if (content.includeRenewalTerms) {
-        terms.push(
-          option.input.autoRenewal ? "Automatically renews for 12 months unless notice is given at least 60 days before renewal." : "Does not automatically renew. Non-renewal notice must be provided at least 60 days before the subscription end date."
-        );
-      }
-      if (content.includeSpecialTerms && option.input.specialTerms) {
-        terms.push(option.input.specialTerms);
-      }
-      return {
-        comments: comments.join("\n\n").slice(0, 5e3),
-        terms: terms.join("\n\n").slice(0, 5e3)
-      };
-    };
     var contentHash2 = (option, content) => crypto2.createHash("sha256").update(JSON.stringify({ optionId: option.id, stateHash: option.result.stateHash, content })).digest("hex");
     module2.exports = {
       CATALOG,
       buildDealLineItems: buildDealLineItems2,
       buildQuoteLineItems: buildQuoteLineItems2,
-      buildQuoteText: buildQuoteText2,
       contentHash: contentHash2,
       normalizeQuoteContent: normalizeQuoteContent2
     };
@@ -1606,7 +1585,6 @@ var {
 var {
   buildDealLineItems,
   buildQuoteLineItems,
-  buildQuoteText,
   contentHash,
   normalizeQuoteContent
 } = require_lineItemModel();
@@ -2218,7 +2196,6 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
     };
   }
   const lineItems = buildQuoteLineItems(option, content);
-  const quoteText = buildQuoteText(option, content);
   let quote;
   const createdLineItemIds = [];
   try {
@@ -2239,8 +2216,13 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
           hs_expiration_date: option.result.dates.contractStartDate,
           hs_contract_effective_start_date: option.result.dates.contractStartDate
         } : {},
-        hs_comments: quoteText.comments,
-        hs_terms: quoteText.terms,
+        // hs_comments and hs_terms are deliberately not sent.
+        //
+        // hs_terms is the property the quote template's "Payment Terms:" section renders. The app
+        // was writing the renewal sentence into it, so a renewal term printed under a Payment
+        // Terms heading -- duplicating the template's own [Auto Renewal Terms] token -- while
+        // Billing schedule and Payment Method came up empty. The template owns this text; the
+        // calculator has no business overwriting it.
         // Required, and previously not sent at all. Every quote template in the portal is a
         // cpq_template, and a quote must declare CPQ_QUOTE to be compatible with them. Without
         // it the quote defaults to the legacy model and HubSpot rejects the CPQ template it is

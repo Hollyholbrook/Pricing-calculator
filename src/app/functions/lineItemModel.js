@@ -180,6 +180,11 @@ const normalizeQuoteContent = (raw = {}, fallbackTitle = 'Nylas Enterprise Quote
     'title',
     'expirationDate',
     'presentation',
+    // These three no longer change anything the app sends. They used to select what went into the
+    // quote's hs_comments and hs_terms; the app no longer writes either, because hs_terms is what
+    // the template's "Payment Terms:" section renders and the template owns that text. They stay
+    // accepted so the card's existing payload still validates, and they stay in the content hash.
+    // Do not build new behaviour on them without deciding what owns the quote's prose.
     'includeUncommittedRateSchedule',
     'includeRenewalTerms',
     'includeSpecialTerms',
@@ -253,16 +258,6 @@ const oneTimeProperties = ({ option, key, component, product, price, description
   ...(description ? { description: String(description).slice(0, 5_000) } : {}),
 });
 
-
-const rateScheduleText = (option, includeUncommitted) =>
-  option.result.lines
-    .filter((line) => line.committed || includeUncommitted)
-    .map(
-      (line) =>
-        `${line.productName}: $${line.availableUnitRate.toFixed(2)} per ${line.unitOfMeasure}/month` +
-        (line.committed ? ` (${line.volume.toLocaleString('en-US')} committed/month)` : ' (uncommitted)'),
-    )
-    .join('\n');
 
 // Every product in the bundle appears on every quote, committed or not. A product with no volume
 // still has a rate the customer would draw down at if they used it, and the drawdown fee they are
@@ -491,32 +486,6 @@ const buildQuoteLineItems = (option, content) =>
     presentation: content.presentation,
   });
 
-const buildQuoteText = (option, content) => {
-  const comments = [
-    'Subscription usage draws down from one prepaid pool across all products at the quoted rates. ' +
-      'Unused funds carry forward during the term and expire at term end. Usage beyond the pool is ' +
-      'billed monthly in arrears at the same quoted rates; there is no separate overage premium.',
-  ];
-  if (content.includeUncommittedRateSchedule) {
-    comments.push(`Product rate schedule:\n${rateScheduleText(option, true)}`);
-  }
-
-  const terms = [];
-  if (content.includeRenewalTerms) {
-    terms.push(
-      option.input.autoRenewal
-        ? 'Automatically renews for 12 months unless notice is given at least 60 days before renewal.'
-        : 'Does not automatically renew. Non-renewal notice must be provided at least 60 days before the subscription end date.',
-    );
-  }
-  if (content.includeSpecialTerms && option.input.specialTerms) {
-    terms.push(option.input.specialTerms);
-  }
-  return {
-    comments: comments.join('\n\n').slice(0, 5_000),
-    terms: terms.join('\n\n').slice(0, 5_000),
-  };
-};
 
 const contentHash = (option, content) =>
   crypto
@@ -528,7 +497,6 @@ module.exports = {
   CATALOG,
   buildDealLineItems,
   buildQuoteLineItems,
-  buildQuoteText,
   contentHash,
   normalizeQuoteContent,
 };

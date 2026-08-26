@@ -14,7 +14,6 @@ const {
 const {
   buildDealLineItems,
   buildQuoteLineItems,
-  buildQuoteText,
   contentHash,
   normalizeQuoteContent,
 } = require('./lineItemModel');
@@ -807,7 +806,6 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
 
   // Built before the try so PRODUCT_MAPPING_REQUIRED fails before a quote record exists.
   const lineItems = buildQuoteLineItems(option, content);
-  const quoteText = buildQuoteText(option, content);
   let quote;
   const createdLineItemIds = [];
   try {
@@ -830,8 +828,13 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
               hs_contract_effective_start_date: option.result.dates.contractStartDate,
             }
           : {}),
-        hs_comments: quoteText.comments,
-        hs_terms: quoteText.terms,
+        // hs_comments and hs_terms are deliberately not sent.
+        //
+        // hs_terms is the property the quote template's "Payment Terms:" section renders. The app
+        // was writing the renewal sentence into it, so a renewal term printed under a Payment
+        // Terms heading -- duplicating the template's own [Auto Renewal Terms] token -- while
+        // Billing schedule and Payment Method came up empty. The template owns this text; the
+        // calculator has no business overwriting it.
         // Required, and previously not sent at all. Every quote template in the portal is a
         // cpq_template, and a quote must declare CPQ_QUOTE to be compatible with them. Without
         // it the quote defaults to the legacy model and HubSpot rejects the CPQ template it is
