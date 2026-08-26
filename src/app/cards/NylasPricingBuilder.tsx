@@ -622,7 +622,12 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
     // No title here: HubSpot renders the card name from card-hsmeta.json above this content, so
     // a Heading of the same text was a second copy of it. The name there is now
     // "Nylas Pricing Calculator", which makes that chrome the single title.
-    <Stack distance="xs">
+    //
+    // width="100%" throughout: Stack defaults to "auto", which is content width, and an AutoGrid
+    // inside a content-width Stack has nothing to spread across -- which is why Contract Basics
+    // collapsed to a single column of stacked dropdowns in a container the table filled edge to
+    // edge. AutoGrid has no width prop of its own; it fills its parent.
+    <Stack distance="xs" width="100%">
       {error && (
         <Alert title="Couldn’t complete the pricing action" variant="error">
           {error}
@@ -895,7 +900,7 @@ const OptionEditor = ({
       : `${approvalLabel(previewResult?.approvalTierRequired || "none")} approval required`;
 
   return (
-    <Stack distance="flush">
+    <Stack distance="flush" width="100%">
       {previewError && (
         <Alert title="Pricing is not up to date" variant="error">
           {previewError} The figures below are from your previous entry.
@@ -906,7 +911,7 @@ const OptionEditor = ({
           directly beneath. Previously each of these was its own stacked card, which is most of
           why the card read as a tall single column. */}
       {previewResult && (
-        <Stack distance="flush">
+        <Stack distance="flush" width="100%">
           <Flex justify="between" align="center" gap="md" wrap>
             <Flex gap="xs" align="center">
               {previewLoading && (
@@ -933,13 +938,13 @@ const OptionEditor = ({
 
       {/* No Card wrapper: Card supplies fixed padding that cannot be reduced from here, and it
           was the widest source of horizontal inset. */}
-      <Stack distance="xs">
+      <Stack distance="xs" width="100%">
         {
           <>
             {/* Text rather than Heading for section titles: Heading exposes no size prop, and
                 its default is oversized for a section label inside a record tab. */}
             <Text format={{ fontWeight: "bold" }}>Contract Basics</Text>
-            <AutoGrid columnWidth={170} flexible gap="sm">
+            <AutoGrid columnWidth={200} flexible gap="sm">
               <DateInput
                 label="Start Date"
                 name="start_date"
@@ -1010,7 +1015,7 @@ const OptionEditor = ({
               Choose support, onboarding, optional services, and any requested
               discount.
             </Text>
-            <AutoGrid columnWidth={165} flexible gap="sm">
+            <AutoGrid columnWidth={200} flexible gap="sm">
               <Select
                 label="Support"
                 name="support_level"
