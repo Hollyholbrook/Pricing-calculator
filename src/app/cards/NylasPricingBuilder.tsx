@@ -330,13 +330,18 @@ const professionalServiceOptions = [
 // "Connected accounts" hyphenated across three lines. There is no column that should soak up the
 // remainder -- the widths are simply stated, so the layout is the same whatever the card width.
 //
-// List Rate is the widest because it holds the graduated tier line, roughly 58 characters of
-// microcopy.
+// Volume has to hold a real committed figure, not a rate. At 120 it clipped "2,342,300" to
+// "2,342,3" -- the input fills its cell, so the cell width is the field width, and a number the
+// rep cannot read back is worse than any amount of whitespace elsewhere. The 60px it needed came
+// out of List Rate rather than off the end of the table, so the total is unchanged at 1030 and no
+// other column is starved.
 const PRODUCT_COLUMN_WIDTH = 300;
-const VOLUME_COLUMN_WIDTH = 120;
+const VOLUME_COLUMN_WIDTH = 180;
 // List Rate holds "range  rate" per band; Proposed Rate holds the matching rate on the same row,
-// so the two columns can be read across band by band.
-const LIST_RATE_COLUMN_WIDTH = 300;
+// so the two columns can be read across band by band. The widest band line is
+// "100K–500K · $0.35", which fits 240 with room to spare -- the old 300 was sized for the
+// four-decimal rates that no longer exist now that prices round to cents.
+const LIST_RATE_COLUMN_WIDTH = 240;
 const DISCOUNT_COLUMN_WIDTH = 110;
 const PROPOSED_RATE_COLUMN_WIDTH = 200;
 
