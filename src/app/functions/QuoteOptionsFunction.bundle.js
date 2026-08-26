@@ -1263,6 +1263,23 @@ var require_lineItemModel = __commonJS({
       }
     });
     var PRESENTATIONS = Object.freeze(["itemized_products", "subscription_summary"]);
+    var PRODUCT_LINE_ORDER = Object.freeze([
+      "connect_ca",
+      "calendar_ca",
+      "notetaker_bot_hours",
+      "agent_accounts",
+      "agent_storage_gb",
+      "agent_bandwidth_gb",
+      "agent_email_thousands"
+    ]);
+    var productOrderIndex = (productKey) => {
+      const index = PRODUCT_LINE_ORDER.indexOf(productKey);
+      return index === -1 ? PRODUCT_LINE_ORDER.length : index;
+    };
+    var withPositions = (items) => items.map((item, index) => ({
+      ...item,
+      properties: { ...item.properties, hs_position_on_quote: String(index) }
+    }));
     var round = (value, decimals = 2) => {
       const multiplier = 10 ** decimals;
       return Math.round((Number(value) + Number.EPSILON) * multiplier) / multiplier;
@@ -1350,7 +1367,9 @@ var require_lineItemModel = __commonJS({
         hs_recurring_billing_number_of_payments: String(
           option.input.termMonths / 12 * paymentsPerYear
         ),
-        ...option.input.startDate ? { hs_recurring_billing_start_date: option.input.startDate } : {}
+        // The derived contract start, so a line item's billing start cannot disagree with the
+        // quote's effective start date or the Deal's contract dates.
+        ...option.result.dates?.contractStartDate ? { hs_recurring_billing_start_date: option.result.dates.contractStartDate } : {}
       };
     };
     var oneTimeProperties = ({ option, key, component, product, price, description, source }) => ({
@@ -1372,7 +1391,9 @@ var require_lineItemModel = __commonJS({
       (line) => `${line.productName}: $${line.availableUnitRate.toFixed(2)} per ${line.unitOfMeasure}/month` + (line.committed ? ` (${line.volume.toLocaleString("en-US")} committed/month)` : " (uncommitted)")
     ).join("\n");
     var buildMeteredLines = (option, source) => {
-      const items = option.result.lines.filter(({ committed }) => committed).map((line) => {
+      const items = option.result.lines.filter(({ committed }) => committed).slice().sort(
+        (left, right) => productOrderIndex(left.productKey) - productOrderIndex(right.productKey)
+      ).map((line) => {
         const product = CATALOG[line.productKey];
         if (!product) throw new Error("PRODUCT_MAPPING_REQUIRED");
         const monthsPerPayment = 12 / option.result.paymentsPerYear;
@@ -1524,21 +1545,21 @@ ${rateScheduleText(option, true)}`,
         throw new Error("OPTION_REQUIRED");
       }
       const subscriptionLines = presentation === "subscription_summary" ? [buildSubscriptionSummaryLine(option, source, includeUncommitted)] : buildMeteredLines(option, source);
-      return [
+      return withPositions([
         ...subscriptionLines,
         ...buildSupportLine(option, source),
         ...buildAddOnLines(option, source),
         ...buildOnboardingLines(option, source),
         ...buildProfessionalServiceLines(option, source)
-      ];
+      ]);
     };
-    var buildDealLineItems2 = (option) => [
+    var buildDealLineItems2 = (option) => withPositions([
       buildDealBundleLine(option),
       ...buildSupportLine(option, "deal"),
       ...buildAddOnLines(option, "deal"),
       ...buildOnboardingLines(option, "deal"),
       ...buildProfessionalServiceLines(option, "deal")
-    ];
+    ]);
     var buildQuoteLineItems2 = (option, content) => buildLineItems(option, {
       source: "quote",
       presentation: content.presentation,
@@ -2037,7 +2058,9 @@ var HUBSPOT_LINE_ITEM_PROPERTIES = /* @__PURE__ */ new Set([
   "hs_recurring_billing_terms",
   "hs_recurring_billing_number_of_payments",
   "hs_recurring_billing_start_date",
-  "hs_billing_start_delay_type"
+  "hs_billing_start_delay_type",
+  // Drives display order on the Deal and the Quote.
+  "hs_position_on_quote"
 ]);
 var hubSpotLineItemProperties = (properties) => Object.fromEntries(
   Object.entries(properties).filter(

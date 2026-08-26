@@ -565,6 +565,8 @@ const HUBSPOT_LINE_ITEM_PROPERTIES = new Set([
   'hs_recurring_billing_number_of_payments',
   'hs_recurring_billing_start_date',
   'hs_billing_start_delay_type',
+  // Drives display order on the Deal and the Quote.
+  'hs_position_on_quote',
 ]);
 
 const hubSpotLineItemProperties = (properties) =>

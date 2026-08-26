@@ -106,6 +106,32 @@ const CATALOG = Object.freeze({
 });
 
 const PRESENTATIONS = Object.freeze(['itemized_products', 'subscription_summary']);
+// The order line items must appear in on the Deal and the Quote. HubSpot does not honour creation
+// order -- display order comes from hs_position_on_quote -- so the sequence is stated here and
+// stamped onto every line below.
+const PRODUCT_LINE_ORDER = Object.freeze([
+  'connect_ca',
+  'calendar_ca',
+  'notetaker_bot_hours',
+  'agent_accounts',
+  'agent_storage_gb',
+  'agent_bandwidth_gb',
+  'agent_email_thousands',
+]);
+
+const productOrderIndex = (productKey) => {
+  const index = PRODUCT_LINE_ORDER.indexOf(productKey);
+  return index === -1 ? PRODUCT_LINE_ORDER.length : index;
+};
+
+// hs_position_on_quote drives display order. Stamped as a 0-based sequence over the final list, so
+// the order is whatever the builders produced rather than whatever HubSpot happened to return.
+const withPositions = (items) =>
+  items.map((item, index) => ({
+    ...item,
+    properties: { ...item.properties, hs_position_on_quote: String(index) },
+  }));
+
 
 const round = (value, decimals = 2) => {
   const multiplier = 10 ** decimals;
@@ -209,8 +235,10 @@ const recurringProperties = ({ option, key, component, product, price, quantity,
     hs_recurring_billing_number_of_payments: String(
       (option.input.termMonths / 12) * paymentsPerYear,
     ),
-    ...(option.input.startDate
-      ? { hs_recurring_billing_start_date: option.input.startDate }
+    // The derived contract start, so a line item's billing start cannot disagree with the
+    // quote's effective start date or the Deal's contract dates.
+    ...(option.result.dates?.contractStartDate
+      ? { hs_recurring_billing_start_date: option.result.dates.contractStartDate }
       : {}),
   };
 };
@@ -256,6 +284,11 @@ const rateScheduleText = (option, includeUncommitted) =>
 const buildMeteredLines = (option, source) => {
   const items = option.result.lines
     .filter(({ committed }) => committed)
+    .slice()
+    .sort(
+      (left, right) =>
+        productOrderIndex(left.productKey) - productOrderIndex(right.productKey),
+    )
     .map((line) => {
       const product = CATALOG[line.productKey];
       if (!product) throw new Error('PRODUCT_MAPPING_REQUIRED');
@@ -437,22 +470,23 @@ const buildLineItems = (option, { source, presentation = 'itemized_products', in
     presentation === 'subscription_summary'
       ? [buildSubscriptionSummaryLine(option, source, includeUncommitted)]
       : buildMeteredLines(option, source);
-  return [
+  return withPositions([
     ...subscriptionLines,
     ...buildSupportLine(option, source),
     ...buildAddOnLines(option, source),
     ...buildOnboardingLines(option, source),
     ...buildProfessionalServiceLines(option, source),
-  ];
+  ]);
 };
 
-const buildDealLineItems = (option) => [
-  buildDealBundleLine(option),
-  ...buildSupportLine(option, 'deal'),
-  ...buildAddOnLines(option, 'deal'),
-  ...buildOnboardingLines(option, 'deal'),
-  ...buildProfessionalServiceLines(option, 'deal'),
-];
+const buildDealLineItems = (option) =>
+  withPositions([
+    buildDealBundleLine(option),
+    ...buildSupportLine(option, 'deal'),
+    ...buildAddOnLines(option, 'deal'),
+    ...buildOnboardingLines(option, 'deal'),
+    ...buildProfessionalServiceLines(option, 'deal'),
+  ]);
 
 const buildQuoteLineItems = (option, content) =>
   buildLineItems(option, {
