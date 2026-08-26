@@ -2220,10 +2220,9 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
       reused: true
     };
   }
-  const lineItems = buildQuoteLineItems(option, content);
+  buildQuoteLineItems(option, content);
   const quoteText = buildQuoteText(option, content);
   let quote;
-  const createdLineItemIds = [];
   try {
     quote = await client.crm.quotes.basicApi.create({
       properties: {
@@ -2262,20 +2261,6 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
       templateId,
       [{ associationCategory: "HUBSPOT_DEFINED", associationTypeId: 286 }]
     );
-    await Promise.all(lineItems.map(async (item) => {
-      const created = await createLineItem(
-        client,
-        hubSpotLineItemProperties(item.properties),
-        // 68, not 67. Association type ids are directional: 67 is defined FROM the quote
-        // (0-14) TO the line item, but this association is declared on the line item's own
-        // create call, so the "from" side is the line item (0-8). HubSpot rejected it with
-        // "invalid from object type 0-8 ... expected: 0-14. For definition 0-67". 68 is the
-        // line-item-to-quote direction, which is why it was here originally -- the same reason
-        // the Deal sync uses 20 on its line-item creates.
-        [createAssociation(quote.id, 68)]
-      );
-      createdLineItemIds.push(String(created.id));
-    }));
     const [contactIds, companyIds] = await Promise.all([
       associatedIds(client, "deals", dealId, "contacts", 10),
       associatedIds(client, "deals", dealId, "companies", 1)
@@ -2317,9 +2302,6 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
     });
     return { quoteId: String(quote.id), quoteUrl, generatedAt, reused: false };
   } catch (error) {
-    for (const id of createdLineItemIds) {
-      await client.crm.lineItems.basicApi.archive(id).catch(() => void 0);
-    }
     if (quote?.id) await client.crm.quotes.basicApi.archive(quote.id).catch(() => void 0);
     await client.crm.deals.basicApi.update(dealId, { properties: { pricing_quote_generation_status: "failed" } }).catch(() => void 0);
     const diagnostics = {

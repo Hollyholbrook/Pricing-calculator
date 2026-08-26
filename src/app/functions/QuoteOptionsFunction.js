@@ -805,10 +805,13 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
     };
   }
 
-  const lineItems = buildQuoteLineItems(option, content);
+  // buildQuoteLineItems is still called, for its validation only: it throws
+  // PRODUCT_MAPPING_REQUIRED when a selected item has no product in the library. Better to fail
+  // before a quote record exists than after. Its output is deliberately discarded -- see the note
+  // below on why the quote owns no line items.
+  buildQuoteLineItems(option, content);
   const quoteText = buildQuoteText(option, content);
   let quote;
-  const createdLineItemIds = [];
   try {
     quote = await client.crm.quotes.basicApi.create({
       properties: {
@@ -856,23 +859,22 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
       [{ associationCategory: 'HUBSPOT_DEFINED', associationTypeId: 286 }],
     );
 
-    // Record each id as soon as it exists. Collecting them from Promise.all only records them
-    // when every create succeeds, so the rollback below archived nothing in exactly the case it
-    // was written for and leaked orphaned quote line items on every failed attempt.
-    await Promise.all(lineItems.map(async (item) => {
-      const created = await createLineItem(
-        client,
-        hubSpotLineItemProperties(item.properties),
-        // 68, not 67. Association type ids are directional: 67 is defined FROM the quote
-        // (0-14) TO the line item, but this association is declared on the line item's own
-        // create call, so the "from" side is the line item (0-8). HubSpot rejected it with
-        // "invalid from object type 0-8 ... expected: 0-14. For definition 0-67". 68 is the
-        // line-item-to-quote direction, which is why it was here originally -- the same reason
-        // the Deal sync uses 20 on its line-item creates.
-        [createAssociation(quote.id, 68)],
-      );
-      createdLineItemIds.push(String(created.id));
-    }));
+    // No line items are created on the quote itself, deliberately.
+    //
+    // A CPQ quote associated to a Deal renders that Deal's line items. Creating our own set on
+    // the quote as well meant every product appeared twice on the customer-facing quote -- once
+    // from the Deal, once from here. The duplicates were not a bundle expanding, as their
+    // product-library prices suggested: both sets were ours.
+    //
+    // The Deal's line items are the ones to keep. syncDealLineItems runs first as part of Lock
+    // in, and its lines already carry everything the rep entered: committed_quantity, the agreed
+    // rates where a discount was applied, and hs_position_on_quote for display order. So the
+    // quote inherits a complete, correctly ordered set and nothing here has to duplicate it.
+    //
+    // If a future change does need line items owned by the quote, the association is declared on
+    // the line item's own create call, so it takes type 68 -- the line-item-to-quote direction --
+    // not the quote-side 67. Using 67 fails with "invalid from object type 0-8 ... expected:
+    // 0-14. For definition 0-67".
 
     const [contactIds, companyIds] = await Promise.all([
       associatedIds(client, 'deals', dealId, 'contacts', 10),
@@ -919,9 +921,8 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
     });
     return { quoteId: String(quote.id), quoteUrl, generatedAt, reused: false };
   } catch (error) {
-    for (const id of createdLineItemIds) {
-      await client.crm.lineItems.basicApi.archive(id).catch(() => undefined);
-    }
+    // Nothing to unwind but the quote itself: the quote owns no line items, and the Deal's are
+    // managed by syncDealLineItems, which has its own rollback.
     if (quote?.id) await client.crm.quotes.basicApi.archive(quote.id).catch(() => undefined);
     await client.crm.deals.basicApi
       .update(dealId, { properties: { pricing_quote_generation_status: 'failed' } })
