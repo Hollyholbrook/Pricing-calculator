@@ -650,7 +650,7 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
     // inside a content-width Stack has nothing to spread across -- which is why Contract Basics
     // collapsed to a single column of stacked dropdowns in a container the table filled edge to
     // edge. AutoGrid has no width prop of its own; it fills its parent.
-    <Stack distance="xs" width="100%">
+    <Stack direction="column" distance="xs" width="100%">
       {error && (
         <Alert title="Couldn’t complete the pricing action" variant="error">
           {error}
@@ -861,7 +861,7 @@ const OptionEditor = ({
             <Fragment key={product.key}>
               <TableRow>
                 <TableCell>
-                  <Stack distance="flush">
+                  <Stack direction="column" distance="flush">
                     <Text>{product.label}</Text>
                     <Text variant="microcopy">
                       {product.description} · {product.inputUnit}
@@ -935,7 +935,7 @@ const OptionEditor = ({
       : `${approvalLabel(previewResult?.approvalTierRequired || "none")} approval required`;
 
   return (
-    <Stack distance="flush" width="100%">
+    <Stack direction="column" distance="flush" width="100%">
       {previewError && (
         <Alert title="Pricing is not up to date" variant="error">
           {previewError} The figures below are from your previous entry.
@@ -946,7 +946,7 @@ const OptionEditor = ({
           directly beneath. Previously each of these was its own stacked card, which is most of
           why the card read as a tall single column. */}
       {previewResult && (
-        <Stack distance="flush" width="100%">
+        <Stack direction="column" distance="flush" width="100%">
           <Flex justify="between" align="center" gap="md" wrap>
             <Flex gap="xs" align="center">
               {previewLoading && (
@@ -973,7 +973,7 @@ const OptionEditor = ({
 
       {/* No Card wrapper: Card supplies fixed padding that cannot be reduced from here, and it
           was the widest source of horizontal inset. */}
-      <Stack distance="xs" width="100%">
+      <Stack direction="column" distance="xs" width="100%">
         {
           <>
             {/* Text rather than Heading for section titles: Heading exposes no size prop, and
@@ -1083,7 +1083,7 @@ const OptionEditor = ({
 
                 A vertical Stack cannot reflow, so the hierarchy is fixed: each control is
                 immediately followed by its own discount and that discount's pricing summary. */}
-            <Stack distance="sm" width="100%">
+            <Stack direction="column" distance="sm" width="100%">
               <Select
                 label="Support"
                 name="support_level"
@@ -1093,7 +1093,7 @@ const OptionEditor = ({
                   onInputChange("supportLevel", String(value))
                 }
               />
-              <Stack distance="xs" width="100%">
+              <Stack direction="column" distance="xs" width="100%">
                 <NumberInput
                   label="Support Discount"
                   name="support_discount"
@@ -1122,7 +1122,7 @@ const OptionEditor = ({
                   onInputChange("onboardingPackage", String(value))
                 }
               />
-              <Stack distance="xs" width="100%">
+              <Stack direction="column" distance="xs" width="100%">
                 <NumberInput
                   label="Onboarding Discount"
                   name="onboarding_discount"
@@ -1146,11 +1146,11 @@ const OptionEditor = ({
               </Stack>
             </Stack>
             <Card>
-              <Stack distance="xs">
+              <Stack direction="column" distance="xs">
                 <Text format={{ fontWeight: "bold" }}>
                   Add-ons and professional services
                 </Text>
-                <Stack distance="sm" width="100%">
+                <Stack direction="column" distance="sm" width="100%">
                   <MultiSelect
                     label="Subscription Add-ons"
                     name="add_ons"
@@ -1169,7 +1169,12 @@ const OptionEditor = ({
                       option.input.addOns.includes(String(value)),
                     )
                     .map(({ value, label }) => (
-                      <Stack key={value} distance="xs" width="100%">
+                      <Stack
+                        direction="column"
+                        key={value}
+                        distance="xs"
+                        width="100%"
+                      >
                         <NumberInput
                           label={`${label} Discount`}
                           name={`${value}_discount`}
@@ -1209,7 +1214,7 @@ const OptionEditor = ({
                       onInputChange("professionalServices", value.map(String))
                     }
                   />
-                  <Stack distance="xs" width="100%">
+                  <Stack direction="column" distance="xs" width="100%">
                     <NumberInput
                       label="Professional Services Discount"
                       name="professional_services_discount"
