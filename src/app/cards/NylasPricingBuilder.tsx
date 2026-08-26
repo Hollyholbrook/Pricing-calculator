@@ -1071,7 +1071,19 @@ const OptionEditor = ({
               Choose support, onboarding, optional services, and any requested
               discount.
             </Text>
-            <AutoGrid columnWidth={200} flexible gap="sm">
+            {/* A Stack, not an AutoGrid, and the order is deliberate.
+
+                AutoGrid fills row by row, so the DOM order had to be Support, Onboarding, Support
+                Discount, Onboarding Discount for the two-column layout to pair each select with
+                its own discount in a column. That order is only correct at exactly two columns:
+                at one column it reads Support, Onboarding, Support Discount, Onboarding Discount,
+                which separates every discount from the thing it discounts. And because AutoGrid
+                is responsive, the card silently switched between the two as the content changed
+                width -- the fields appearing to rearrange themselves while being filled in.
+
+                A vertical Stack cannot reflow, so the hierarchy is fixed: each control is
+                immediately followed by its own discount and that discount's pricing summary. */}
+            <Stack distance="sm" width="100%">
               <Select
                 label="Support"
                 name="support_level"
@@ -1081,16 +1093,7 @@ const OptionEditor = ({
                   onInputChange("supportLevel", String(value))
                 }
               />
-              <Select
-                label="Onboarding"
-                name="onboarding_package"
-                value={option.input.onboardingPackage}
-                options={onboardingOptions}
-                onChange={(value) =>
-                  onInputChange("onboardingPackage", String(value))
-                }
-              />
-              <Stack distance="xs">
+              <Stack distance="xs" width="100%">
                 <NumberInput
                   label="Support Discount"
                   name="support_discount"
@@ -1110,7 +1113,16 @@ const OptionEditor = ({
                   "per year",
                 )}
               </Stack>
-              <Stack distance="xs">
+              <Select
+                label="Onboarding"
+                name="onboarding_package"
+                value={option.input.onboardingPackage}
+                options={onboardingOptions}
+                onChange={(value) =>
+                  onInputChange("onboardingPackage", String(value))
+                }
+              />
+              <Stack distance="xs" width="100%">
                 <NumberInput
                   label="Onboarding Discount"
                   name="onboarding_discount"
@@ -1132,13 +1144,13 @@ const OptionEditor = ({
                   "one-time",
                 )}
               </Stack>
-            </AutoGrid>
+            </Stack>
             <Card>
               <Stack distance="xs">
                 <Text format={{ fontWeight: "bold" }}>
                   Add-ons and professional services
                 </Text>
-                <AutoGrid columnWidth={190} flexible gap="sm">
+                <Stack distance="sm" width="100%">
                   <MultiSelect
                     label="Subscription Add-ons"
                     name="add_ons"
@@ -1148,29 +1160,35 @@ const OptionEditor = ({
                       onInputChange("addOns", value.map(String))
                     }
                   />
-                  {addOnOptions.map(({ value, label }) => (
-                    <Stack key={value} distance="xs">
-                      <NumberInput
-                        label={`${label} Discount`}
-                        name={`${value}_discount`}
-                        value={
-                          (option.input.addOnDiscounts?.[String(value)] || 0) *
-                          100
-                        }
-                        min={0}
-                        max={100}
-                        precision={2}
-                        formatStyle="percentage"
-                        readOnly={!option.input.addOns.includes(String(value))}
-                        onChange={(discount) =>
-                          onInputChange("addOnDiscounts", {
-                            ...(option.input.addOnDiscounts || {}),
-                            [String(value)]: (discount || 0) / 100,
-                          })
-                        }
-                      />
-                      {option.input.addOns.includes(String(value)) &&
-                        discountPreview(
+                  {/* Only the add-ons actually selected get a discount field. Rendering one per
+                      option meant a column of read-only 0% inputs for things nobody is buying,
+                      which is most of this section's height and reads as broken rather than
+                      inactive. */}
+                  {addOnOptions
+                    .filter(({ value }) =>
+                      option.input.addOns.includes(String(value)),
+                    )
+                    .map(({ value, label }) => (
+                      <Stack key={value} distance="xs" width="100%">
+                        <NumberInput
+                          label={`${label} Discount`}
+                          name={`${value}_discount`}
+                          value={
+                            (option.input.addOnDiscounts?.[String(value)] ||
+                              0) * 100
+                          }
+                          min={0}
+                          max={100}
+                          precision={2}
+                          formatStyle="percentage"
+                          onChange={(discount) =>
+                            onInputChange("addOnDiscounts", {
+                              ...(option.input.addOnDiscounts || {}),
+                              [String(value)]: (discount || 0) / 100,
+                            })
+                          }
+                        />
+                        {discountPreview(
                           previewResult?.selectedAddOns.find(
                             ({ key }) => key === value,
                           )?.listAnnualAmount,
@@ -1180,8 +1198,8 @@ const OptionEditor = ({
                           )?.annualAmount,
                           "per year",
                         )}
-                    </Stack>
-                  ))}
+                      </Stack>
+                    ))}
                   <MultiSelect
                     label="Professional Services"
                     name="professional_services"
@@ -1191,7 +1209,7 @@ const OptionEditor = ({
                       onInputChange("professionalServices", value.map(String))
                     }
                   />
-                  <Stack distance="xs">
+                  <Stack distance="xs" width="100%">
                     <NumberInput
                       label="Professional Services Discount"
                       name="professional_services_discount"
@@ -1218,7 +1236,7 @@ const OptionEditor = ({
                         "one-time",
                       )}
                   </Stack>
-                </AutoGrid>
+                </Stack>
               </Stack>
             </Card>
           </>
