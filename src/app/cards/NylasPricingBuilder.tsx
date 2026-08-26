@@ -515,8 +515,12 @@ const summaryTable = (result: QuoteResult, termMonths: number) => {
           </TableRow>
         </TableBody>
       </Table>
-      <Flex justify="between" align="center" gap="md" wrap>
-        <Text format={{ fontWeight: "bold" }}>TOTAL CONTRACT VALUE (TCV)</Text>
+      {/* Label and figure sit together on the left, not at opposite edges of the card.
+          justify="between" put the number a full table-width from the words naming it, and this is
+          the one pairing in the block that should read as a single phrase. The label is microcopy
+          so the emphasis lands on the amount rather than on the caps. */}
+      <Flex gap="xs" align="baseline">
+        <Text variant="microcopy">TOTAL CONTRACT VALUE (TCV)</Text>
         <Text format={{ fontWeight: "bold" }}>{currency(result.tcv)}</Text>
       </Flex>
     </Flex>
