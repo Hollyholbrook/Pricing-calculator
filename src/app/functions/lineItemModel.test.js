@@ -72,9 +72,14 @@ test('Deal line items reconcile to the approved calculation', () => {
     recurringItems.map(({ key }) => key),
     [
       'subscription:nylas_enterprise',
+      // All seven bundle products, in the fixed order, committed or not.
       'metered:connect_ca',
       'metered:calendar_ca',
       'metered:notetaker_bot_hours',
+      'metered:agent_accounts',
+      'metered:agent_storage_gb',
+      'metered:agent_bandwidth_gb',
+      'metered:agent_email_thousands',
       'support:full',
       'addon:enterprise_accelerator',
     ],
@@ -120,6 +125,38 @@ test('Deal line items reconcile to the approved calculation', () => {
     selected.result.proposedPlatformArr,
   );
   assert.equal(recurringItems[1].properties.name, 'Connect - Email + Calendar Connected Accounts (CA)');
+});
+
+test('every bundle product appears even with no commitment or discount', () => {
+  const input = {
+    termMonths: 12,
+    paymentFrequency: 'annual_in_advance',
+    // Only one product committed; the other six must still appear.
+    volumes: { connect_ca: 1_000 },
+    supportLevel: 'basic',
+    onboardingPackage: 'none',
+    professionalServices: [],
+    addOns: [],
+  };
+  const items = buildDealLineItems({ id: 'o', input, result: calculateQuote(input) });
+  const metered = items.filter(({ key }) => key.startsWith('metered:'));
+  assert.deepEqual(
+    metered.map(({ key }) => key.replace('metered:', '')),
+    [
+      'connect_ca',
+      'calendar_ca',
+      'notetaker_bot_hours',
+      'agent_accounts',
+      'agent_storage_gb',
+      'agent_bandwidth_gb',
+      'agent_email_thousands',
+    ],
+  );
+  // An uncommitted product still states the rate it would draw down at.
+  const uncommitted = metered.find(({ key }) => key === 'metered:agent_storage_gb');
+  assert.equal(Number(uncommitted.properties.quantity), 0);
+  assert.ok(Number(uncommitted.properties.price) > 0, 'uncommitted product still shows a rate');
+  assert.match(uncommitted.properties.description, /No committed volume\. Available at \$/);
 });
 
 test('every quote carries a support line, Basic at $0 included', () => {

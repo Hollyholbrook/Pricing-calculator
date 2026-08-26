@@ -270,9 +270,16 @@ const productDescription = (line) => {
       ? ` List $${line.displayListUnitRate.toFixed(2)} per ${line.unitOfMeasure} per month, ` +
         `less ${(line.discretionaryDiscount * 100).toFixed(2)}%.`
       : '';
+  // An uncommitted product reads differently: there is no committed average to state, just the
+  // rate that applies if it gets used.
+  const commitment =
+    line.volume > 0
+      ? `${line.volume.toLocaleString('en-US')} ${line.unitOfMeasure} committed average per month at ` +
+        `$${line.proposedUnitRate.toFixed(2)} blended per ${line.unitOfMeasure} per month.`
+      : `No committed volume. Available at $${line.displayProposedUnitRate.toFixed(2)} per ` +
+        `${line.unitOfMeasure} per month if used.`;
   return (
-    `${line.volume.toLocaleString('en-US')} ${line.unitOfMeasure} committed average per month at ` +
-    `$${line.proposedUnitRate.toFixed(2)} blended per ${line.unitOfMeasure} per month.` +
+    commitment +
     discountDetail +
     bandDetail +
     ' Usage draws down from the shared prepaid subscription pool at these rates.'
@@ -289,9 +296,12 @@ const rateScheduleText = (option, includeUncommitted) =>
     )
     .join('\n');
 
+// Every product in the bundle appears on every quote, committed or not. A product with no volume
+// still has a rate the customer would draw down at if they used it, and the drawdown fee they are
+// paying covers all of them -- so leaving the unused ones off made the quote look like a narrower
+// entitlement than it is. No filter on `committed`.
 const buildMeteredLines = (option, source) => {
   const items = option.result.lines
-    .filter(({ committed }) => committed)
     .slice()
     .sort(
       (left, right) =>

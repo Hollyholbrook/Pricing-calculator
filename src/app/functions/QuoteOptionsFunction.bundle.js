@@ -1386,13 +1386,14 @@ var require_lineItemModel = __commonJS({
     var productDescription = (line) => {
       const bandDetail = line.proposedBandRates?.length ? ` Graduated monthly rates: ${line.proposedBandRates.map(formatBand).join("; ")}.` : "";
       const discountDetail = line.discretionaryDiscount > 0 ? ` List $${line.displayListUnitRate.toFixed(2)} per ${line.unitOfMeasure} per month, less ${(line.discretionaryDiscount * 100).toFixed(2)}%.` : "";
-      return `${line.volume.toLocaleString("en-US")} ${line.unitOfMeasure} committed average per month at $${line.proposedUnitRate.toFixed(2)} blended per ${line.unitOfMeasure} per month.` + discountDetail + bandDetail + " Usage draws down from the shared prepaid subscription pool at these rates.";
+      const commitment = line.volume > 0 ? `${line.volume.toLocaleString("en-US")} ${line.unitOfMeasure} committed average per month at $${line.proposedUnitRate.toFixed(2)} blended per ${line.unitOfMeasure} per month.` : `No committed volume. Available at $${line.displayProposedUnitRate.toFixed(2)} per ${line.unitOfMeasure} per month if used.`;
+      return commitment + discountDetail + bandDetail + " Usage draws down from the shared prepaid subscription pool at these rates.";
     };
     var rateScheduleText = (option, includeUncommitted) => option.result.lines.filter((line) => line.committed || includeUncommitted).map(
       (line) => `${line.productName}: $${line.availableUnitRate.toFixed(2)} per ${line.unitOfMeasure}/month` + (line.committed ? ` (${line.volume.toLocaleString("en-US")} committed/month)` : " (uncommitted)")
     ).join("\n");
     var buildMeteredLines = (option, source) => {
-      const items = option.result.lines.filter(({ committed }) => committed).slice().sort(
+      const items = option.result.lines.slice().sort(
         (left, right) => productOrderIndex(left.productKey) - productOrderIndex(right.productKey)
       ).map((line) => {
         const product = CATALOG[line.productKey];

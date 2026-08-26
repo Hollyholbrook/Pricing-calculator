@@ -93,14 +93,20 @@ test('locking an option archives every existing Deal line item before creating r
   };
 
   const synced = await _test.syncDealLineItems(client, 'deal-1', state, settings);
-  // Drawdown fee, then the committed product as a zero rate-schedule line, then the support tier
-  // (always present, at least Basic), then $0 Quick Launch onboarding.
-  assert.equal(synced.count, 4);
+  // Drawdown fee, then all seven bundle products as a rate schedule whether committed or not,
+  // then the support tier (always present, at least Basic), then $0 Quick Launch onboarding.
+  assert.equal(synced.count, 10);
   assert.deepEqual(events, [
     'archive:old-unmanaged',
     'archive:old-managed',
     'create:Enterprise Drawdown Fee',
     'create:Connect - Email + Calendar Connected Accounts (CA)',
+    'create:Connect - Calendar-Only Connected Accounts (CA)',
+    'create:Notetaker - Bot Hours',
+    'create:Agent Accounts - # of Agents',
+    'create:Agent Accounts - GB / Storage',
+    'create:Agent Accounts - GB / Bandwidth',
+    'create:Agent Accounts - Per 1,000 Emails Sent',
     'create:Support Services: Basic',
     'create:QuickLaunch Onboarding',
   ]);
