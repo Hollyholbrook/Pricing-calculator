@@ -805,13 +805,11 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
     };
   }
 
-  // buildQuoteLineItems is still called, for its validation only: it throws
-  // PRODUCT_MAPPING_REQUIRED when a selected item has no product in the library. Better to fail
-  // before a quote record exists than after. Its output is deliberately discarded -- see the note
-  // below on why the quote owns no line items.
-  buildQuoteLineItems(option, content);
+  // Built before the try so PRODUCT_MAPPING_REQUIRED fails before a quote record exists.
+  const lineItems = buildQuoteLineItems(option, content);
   const quoteText = buildQuoteText(option, content);
   let quote;
+  const createdLineItemIds = [];
   try {
     quote = await client.crm.quotes.basicApi.create({
       properties: {
@@ -859,22 +857,36 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
       [{ associationCategory: 'HUBSPOT_DEFINED', associationTypeId: 286 }],
     );
 
-    // No line items are created on the quote itself, deliberately.
+    // The quote owns its line items, and they carry the same information as the Deal's.
     //
-    // A CPQ quote associated to a Deal renders that Deal's line items. Creating our own set on
-    // the quote as well meant every product appeared twice on the customer-facing quote -- once
-    // from the Deal, once from here. The duplicates were not a bundle expanding, as their
-    // product-library prices suggested: both sets were ours.
+    // These were removed once, when every product appeared twice on generated quotes and the
+    // second set looked like it had to be coming from here. It was not: the quote template
+    // itself had products configured on it, which is now fixed portal-side. Removing these took
+    // the calculator's own numbers off the quote along with the duplicates.
     //
-    // The Deal's line items are the ones to keep. syncDealLineItems runs first as part of Lock
-    // in, and its lines already carry everything the rep entered: committed_quantity, the agreed
-    // rates where a discount was applied, and hs_position_on_quote for display order. So the
-    // quote inherits a complete, correctly ordered set and nothing here has to duplicate it.
+    // buildQuoteLineItems and buildDealLineItems produce identical properties for the itemized
+    // presentation the card always sends -- same products, prices, quantities,
+    // committed_quantity and hs_position_on_quote ordering. A test asserts that, so the two
+    // surfaces cannot silently drift apart again.
     //
-    // If a future change does need line items owned by the quote, the association is declared on
-    // the line item's own create call, so it takes type 68 -- the line-item-to-quote direction --
-    // not the quote-side 67. Using 67 fails with "invalid from object type 0-8 ... expected:
-    // 0-14. For definition 0-67".
+    // Record each id as soon as it exists. Collecting them from Promise.all only records them
+    // when every create succeeds, so the rollback below archived nothing in exactly the case it
+    // was written for and leaked orphaned quote line items on every failed attempt.
+    await Promise.all(
+      lineItems.map(async (item) => {
+        const created = await createLineItem(
+          client,
+          hubSpotLineItemProperties(item.properties),
+          // 68, not 67. Association type ids are directional: 67 is defined FROM the quote
+          // (0-14) TO the line item, but this association is declared on the line item's own
+          // create call, so the "from" side is the line item (0-8). HubSpot rejected it with
+          // "invalid from object type 0-8 ... expected: 0-14. For definition 0-67". 68 is the
+          // line-item-to-quote direction -- the same reason the Deal sync uses 20.
+          [createAssociation(quote.id, 68)],
+        );
+        createdLineItemIds.push(String(created.id));
+      }),
+    );
 
     const [contactIds, companyIds] = await Promise.all([
       associatedIds(client, 'deals', dealId, 'contacts', 10),
@@ -921,8 +933,11 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
     });
     return { quoteId: String(quote.id), quoteUrl, generatedAt, reused: false };
   } catch (error) {
-    // Nothing to unwind but the quote itself: the quote owns no line items, and the Deal's are
-    // managed by syncDealLineItems, which has its own rollback.
+    // Archive the quote's own line items before the quote, so a failed attempt leaves nothing
+    // orphaned. The Deal's line items are syncDealLineItems' to roll back, not this function's.
+    for (const id of createdLineItemIds) {
+      await client.crm.lineItems.basicApi.archive(id).catch(() => undefined);
+    }
     if (quote?.id) await client.crm.quotes.basicApi.archive(quote.id).catch(() => undefined);
     await client.crm.deals.basicApi
       .update(dealId, { properties: { pricing_quote_generation_status: 'failed' } })

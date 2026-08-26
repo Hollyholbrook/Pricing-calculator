@@ -318,6 +318,14 @@ const buildMeteredLines = (option, source) => {
   return items;
 };
 
+// The Deal and the Quote must carry the SAME drawdown line, not two versions of one. They used to
+// differ only in this description's wording, and that difference actively misled a debugging
+// session: the two texts appearing on one quote read as evidence of two different systems writing
+// line items, when both sets were ours.
+const drawdownDescription = (option, includeUncommitted) =>
+  'Committed monthly product usage, drawn down from one prepaid subscription pool.\n' +
+  `Product rate schedule:\n${rateScheduleText(option, includeUncommitted)}`;
+
 const buildSubscriptionSummaryLine = (option, source, includeUncommitted) => ({
   key: 'subscription:drawdown',
   properties: recurringProperties({
@@ -327,9 +335,7 @@ const buildSubscriptionSummaryLine = (option, source, includeUncommitted) => ({
     product: CATALOG.enterprise,
     quantity: 1,
     price: option.result.proposedPlatformArr / option.result.paymentsPerYear,
-    description:
-      'Prepaid Nylas Enterprise subscription drawdown pool. Product rates:\n' +
-      rateScheduleText(option, includeUncommitted),
+    description: drawdownDescription(option, includeUncommitted),
     source,
   }),
 });
@@ -350,9 +356,7 @@ const buildDealBundleLine = (option) => ({
     product: CATALOG.enterprise,
     quantity: 1,
     price: option.result.proposedPlatformArr / option.result.paymentsPerYear,
-    description:
-      'Committed monthly product usage, drawn down from one prepaid subscription pool.\n' +
-      `Product rate schedule:\n${rateScheduleText(option, true)}`,
+    description: drawdownDescription(option, true),
     source: 'deal',
   }),
 });

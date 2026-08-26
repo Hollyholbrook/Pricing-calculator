@@ -287,3 +287,36 @@ test('Quote title falls back only when the key is absent, never when it is blank
   assert.throws(() => normalizeQuoteContent({ title: 'x'.repeat(161) }), /INVALID_QUOTE_CONTENT/);
   assert.equal(normalizeQuoteContent({ title: 'x'.repeat(160) }).title.length, 160);
 });
+
+// The Quote and the Deal must show the customer the same thing. They diverged once -- only in the
+// drawdown fee's description wording -- and that difference was read, during a real debugging
+// session, as evidence that two different systems were writing line items. Both sets were ours.
+//
+// The nylas_* properties are excluded: they are stripped by hubSpotLineItemProperties before any
+// create, so they never reach HubSpot. Everything HubSpot actually receives must match.
+const sentToHubSpot = ({ properties }) =>
+  Object.fromEntries(
+    Object.entries(properties).filter(([key]) => !key.startsWith('nylas_')),
+  );
+
+test('Quote and Deal line items carry identical properties', () => {
+  const selected = option();
+  const dealItems = buildDealLineItems(selected);
+  const quoteItems = buildQuoteLineItems(
+    selected,
+    // What the card actually sends: itemized, with the uncommitted products in the rate schedule.
+    normalizeQuoteContent({
+      presentation: 'itemized_products',
+      includeUncommittedRateSchedule: true,
+    }),
+  );
+
+  assert.equal(quoteItems.length, dealItems.length);
+  for (const [index, dealItem] of dealItems.entries()) {
+    assert.deepEqual(
+      sentToHubSpot(quoteItems[index]),
+      sentToHubSpot(dealItem),
+      `line ${index} (${dealItem.properties.name}) must match on the Quote and the Deal`,
+    );
+  }
+});
