@@ -132,6 +132,59 @@ const withPositions = (items) =>
     properties: { ...item.properties, hs_position_on_quote: String(index) },
   }));
 
+// The four fee columns from the Contract Summary, carried on each line item that holds money.
+//
+// EMPTY UNTIL THE PORTAL'S INTERNAL NAMES ARE FILLED IN. These are custom Line item properties, so
+// a name the portal does not have returns 400 -- and because syncDealLineItems archives before it
+// creates, one wrong name empties the Deal and creates nothing. While a slot is '', that field is
+// simply not sent, so the code is safe to deploy before the properties exist.
+//
+// Fill each value with the internal name from Settings > Properties > object: Line item, and add
+// the same names to HUBSPOT_LINE_ITEM_PROPERTIES in QuoteOptionsFunction.js.
+const FEE_TOTAL_PROPERTIES = Object.freeze({
+  oneTime: 'one_time_fees',
+  // The per-BILLING-PERIOD amount, not the annualised one: it sits on a record that already
+  // carries recurringbillingfrequency, so "recurring fees" on that line reads as what is billed
+  // each cycle. There is no separate ARR property in the portal. If this should be the annual
+  // figure instead, change this one mapping to recurringPerYear -- both are computed.
+  recurringPerPeriod: 'recurring_fees',
+  totalForTerm: 'total_fees_for_term',
+});
+
+// Only lines that carry money. The seven metered lines are a rate schedule at quantity 0: they
+// contribute nothing to any total, so all four values would be 0 on them -- noise on a
+// customer-facing quote.
+const carriesFees = (key) => !String(key).startsWith('metered:');
+
+const feeTotals = (item, option) => {
+  const price = Number(item.properties.price);
+  if (!Number.isFinite(price)) return null;
+  const amount = price * Number(item.properties.quantity || 0);
+  // A line is recurring exactly when it carries a billing frequency -- the same test the Contract
+  // Summary and the reconciliation test use.
+  const recurring = Boolean(item.properties.recurringbillingfrequency);
+  const perPeriod = recurring ? amount : 0;
+  const perYear = perPeriod * option.result.paymentsPerYear;
+  return {
+    oneTime: recurring ? 0 : amount,
+    recurringPerPeriod: perPeriod,
+    recurringPerYear: perYear,
+    totalForTerm: recurring ? perYear * (option.input.termMonths / 12) : amount,
+  };
+};
+
+const withFeeTotals = (items, option) =>
+  items.map((item) => {
+    if (!carriesFees(item.key)) return item;
+    const values = feeTotals(item, option);
+    if (!values) return item;
+    const properties = { ...item.properties };
+    for (const [slot, name] of Object.entries(FEE_TOTAL_PROPERTIES)) {
+      if (name) properties[name] = String(round(values[slot], 2));
+    }
+    return { ...item, properties };
+  });
+
 const round = (value, decimals = 2) => {
   const multiplier = 10 ** decimals;
   return Math.round((Number(value) + Number.EPSILON) * multiplier) / multiplier;
@@ -460,27 +513,33 @@ const buildLineItems = (option, { source, presentation = 'itemized_products' }) 
     buildSubscriptionSummaryLine(option, source),
     ...(presentation === 'subscription_summary' ? [] : buildMeteredLines(option, source)),
   ];
-  return withPositions([
-    ...subscriptionLines,
-    ...buildSupportLine(option, source),
-    ...buildAddOnLines(option, source),
-    ...buildOnboardingLines(option, source),
-    ...buildProfessionalServiceLines(option, source),
-  ]);
+  return withFeeTotals(
+    withPositions([
+      ...subscriptionLines,
+      ...buildSupportLine(option, source),
+      ...buildAddOnLines(option, source),
+      ...buildOnboardingLines(option, source),
+      ...buildProfessionalServiceLines(option, source),
+    ]),
+    option,
+  );
 };
 
 // The Deal carries the same structure as the Quote: drawdown fee first with the platform total,
 // then the zero-priced product rate schedule, then support, add-ons and one-time charges. Both
 // surfaces showing the same lines in the same order is the point.
 const buildDealLineItems = (option) =>
-  withPositions([
-    buildDealBundleLine(option),
-    ...buildMeteredLines(option, 'deal'),
-    ...buildSupportLine(option, 'deal'),
-    ...buildAddOnLines(option, 'deal'),
-    ...buildOnboardingLines(option, 'deal'),
-    ...buildProfessionalServiceLines(option, 'deal'),
-  ]);
+  withFeeTotals(
+    withPositions([
+      buildDealBundleLine(option),
+      ...buildMeteredLines(option, 'deal'),
+      ...buildSupportLine(option, 'deal'),
+      ...buildAddOnLines(option, 'deal'),
+      ...buildOnboardingLines(option, 'deal'),
+      ...buildProfessionalServiceLines(option, 'deal'),
+    ]),
+    option,
+  );
 
 const buildQuoteLineItems = (option, content) =>
   buildLineItems(option, {
@@ -497,6 +556,8 @@ const contentHash = (option, content) =>
 
 module.exports = {
   CATALOG,
+  FEE_TOTAL_PROPERTIES,
+  _test: { feeTotals, withFeeTotals },
   buildDealLineItems,
   buildQuoteLineItems,
   contentHash,

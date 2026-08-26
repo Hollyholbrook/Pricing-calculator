@@ -562,6 +562,11 @@ const HUBSPOT_LINE_ITEM_PROPERTIES = new Set([
   // which used to be stated in prose in the description. A portal that never created it rejects
   // the whole create, so createLineItem retries without it rather than failing the sync.
   'committed_quantity',
+  // The Contract Summary's fee columns, carried on every line that holds money. Custom, like
+  // committed_quantity, so they are dropped and retried if a portal does not have them.
+  'one_time_fees',
+  'recurring_fees',
+  'total_fees_for_term',
   'recurringbillingfrequency',
   'hs_recurring_billing_period',
   'hs_recurring_billing_terms',
@@ -596,9 +601,18 @@ const isProductBundleRejection = (error) => {
   return /product bundle/i.test(message) || /could not hydrate/i.test(message);
 };
 
-// committed_quantity is a custom property. In a portal where it was never created, naming it
-// returns 400 and — because the sync archives first and creates second — takes every line item on
-// the Deal with it. The volume is useful but not worth that, so it is dropped and retried once.
+// Custom Line Item properties, none of them HubSpot-defined. In a portal where one was never
+// created, naming it returns 400 and -- because the sync archives first and creates second --
+// takes every line item on the Deal with it. Each is useful but none is worth that, so a create
+// rejected over one of these drops it and retries. The retry is recursive, so a portal missing
+// several of them still ends up with a line item rather than an empty Deal.
+const OPTIONAL_CUSTOM_LINE_ITEM_PROPERTIES = [
+  'committed_quantity',
+  'one_time_fees',
+  'recurring_fees',
+  'total_fees_for_term',
+];
+
 const isUnknownPropertyRejection = (error, property) => {
   const message = String(
     error?.body?.message || error?.response?.body?.message || error?.message || '',
@@ -610,16 +624,17 @@ const createLineItem = async (client, properties, associations) => {
   try {
     return await client.crm.lineItems.basicApi.create({ properties, associations });
   } catch (error) {
-    if (
-      properties.committed_quantity != null &&
-      isUnknownPropertyRejection(error, 'committed_quantity')
-    ) {
-      const { committed_quantity: unknown, ...withoutCommitted } = properties;
+    const rejected = OPTIONAL_CUSTOM_LINE_ITEM_PROPERTIES.find(
+      (property) =>
+        properties[property] != null && isUnknownPropertyRejection(error, property),
+    );
+    if (rejected) {
+      const { [rejected]: unused, ...withoutRejected } = properties;
       console.warn(
-        'Nylas pricing: this portal has no committed_quantity Line Item property. ' +
+        `Nylas pricing: this portal has no ${rejected} Line Item property. ` +
           'Creating the line item without it.',
       );
-      return createLineItem(client, withoutCommitted, associations);
+      return createLineItem(client, withoutRejected, associations);
     }
     if (!properties.hs_product_id || !isProductBundleRejection(error)) throw error;
     const { hs_product_id: bundledProductId, ...withoutProduct } = properties;

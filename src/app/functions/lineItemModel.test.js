@@ -350,3 +350,53 @@ test('no line item carries an app-authored description', () => {
     }
   }
 });
+
+// The fee columns, carried on every line that holds money.
+//
+// The guarantee worth protecting is that they reconcile: summed across the line items they must
+// equal the calculation's own oneTime, recurringPerPeriod and tcv. If they ever drift, the quote
+// and the Contract Summary are telling the customer two different things.
+test('fee columns sum to the calculation', () => {
+  const selected = option();
+  const items = buildDealLineItems(selected);
+  let oneTime = 0;
+  let recurring = 0;
+  let term = 0;
+  for (const item of items) {
+    if (item.key.startsWith('metered:')) {
+      // A rate-schedule line carries no money, so it carries none of these.
+      assert.equal(item.properties.one_time_fees, undefined, `${item.key} one_time_fees`);
+      assert.equal(item.properties.recurring_fees, undefined, `${item.key} recurring_fees`);
+      assert.equal(item.properties.total_fees_for_term, undefined, `${item.key} term total`);
+      continue;
+    }
+    oneTime += Number(item.properties.one_time_fees);
+    recurring += Number(item.properties.recurring_fees);
+    term += Number(item.properties.total_fees_for_term);
+    // A line is one or the other, never both.
+    assert.ok(
+      Number(item.properties.one_time_fees) === 0 ||
+        Number(item.properties.recurring_fees) === 0,
+      `${item.key} cannot be both one-time and recurring`,
+    );
+  }
+  // One-time and per-period are exact: those prices are what the line is billed.
+  assert.equal(Math.round(oneTime * 100) / 100, selected.result.oneTime);
+  assert.equal(Math.round(recurring * 100) / 100, selected.result.recurringPerPeriod);
+
+  // The term total is not, and cannot be. Each recurring line's price is rounded to cents, and
+  // the term multiplies that by every payment in the contract, so the half-cent rounding on each
+  // line is amplified by payments x years. The line items are right -- they say what will actually
+  // be invoiced -- and tcv is the unrounded arithmetic. The gap is bounded, not arbitrary.
+  const recurringLines = items.filter(
+    ({ key, properties }) =>
+      !key.startsWith('metered:') && properties.recurringbillingfrequency,
+  ).length;
+  const payments = selected.result.paymentsPerYear * (selected.input.termMonths / 12);
+  const tolerance = recurringLines * payments * 0.005;
+  assert.ok(
+    Math.abs(term - selected.result.tcv) <= tolerance,
+    `term total ${term} differs from tcv ${selected.result.tcv} by more than the ` +
+      `${tolerance} that per-payment cent rounding can explain`,
+  );
+});

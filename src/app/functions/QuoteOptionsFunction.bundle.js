@@ -1282,6 +1282,40 @@ var require_lineItemModel = __commonJS({
       ...item,
       properties: { ...item.properties, hs_position_on_quote: String(index) }
     }));
+    var FEE_TOTAL_PROPERTIES = Object.freeze({
+      oneTime: "one_time_fees",
+      // The per-BILLING-PERIOD amount, not the annualised one: it sits on a record that already
+      // carries recurringbillingfrequency, so "recurring fees" on that line reads as what is billed
+      // each cycle. There is no separate ARR property in the portal. If this should be the annual
+      // figure instead, change this one mapping to recurringPerYear -- both are computed.
+      recurringPerPeriod: "recurring_fees",
+      totalForTerm: "total_fees_for_term"
+    });
+    var carriesFees = (key) => !String(key).startsWith("metered:");
+    var feeTotals = (item, option) => {
+      const price = Number(item.properties.price);
+      if (!Number.isFinite(price)) return null;
+      const amount = price * Number(item.properties.quantity || 0);
+      const recurring = Boolean(item.properties.recurringbillingfrequency);
+      const perPeriod = recurring ? amount : 0;
+      const perYear = perPeriod * option.result.paymentsPerYear;
+      return {
+        oneTime: recurring ? 0 : amount,
+        recurringPerPeriod: perPeriod,
+        recurringPerYear: perYear,
+        totalForTerm: recurring ? perYear * (option.input.termMonths / 12) : amount
+      };
+    };
+    var withFeeTotals = (items, option) => items.map((item) => {
+      if (!carriesFees(item.key)) return item;
+      const values = feeTotals(item, option);
+      if (!values) return item;
+      const properties = { ...item.properties };
+      for (const [slot, name] of Object.entries(FEE_TOTAL_PROPERTIES)) {
+        if (name) properties[name] = String(round(values[slot], 2));
+      }
+      return { ...item, properties };
+    });
     var round = (value, decimals = 2) => {
       const multiplier = 10 ** decimals;
       return Math.round((Number(value) + Number.EPSILON) * multiplier) / multiplier;
@@ -1540,22 +1574,28 @@ var require_lineItemModel = __commonJS({
         buildSubscriptionSummaryLine(option, source),
         ...presentation === "subscription_summary" ? [] : buildMeteredLines(option, source)
       ];
-      return withPositions([
-        ...subscriptionLines,
-        ...buildSupportLine(option, source),
-        ...buildAddOnLines(option, source),
-        ...buildOnboardingLines(option, source),
-        ...buildProfessionalServiceLines(option, source)
-      ]);
+      return withFeeTotals(
+        withPositions([
+          ...subscriptionLines,
+          ...buildSupportLine(option, source),
+          ...buildAddOnLines(option, source),
+          ...buildOnboardingLines(option, source),
+          ...buildProfessionalServiceLines(option, source)
+        ]),
+        option
+      );
     };
-    var buildDealLineItems2 = (option) => withPositions([
-      buildDealBundleLine(option),
-      ...buildMeteredLines(option, "deal"),
-      ...buildSupportLine(option, "deal"),
-      ...buildAddOnLines(option, "deal"),
-      ...buildOnboardingLines(option, "deal"),
-      ...buildProfessionalServiceLines(option, "deal")
-    ]);
+    var buildDealLineItems2 = (option) => withFeeTotals(
+      withPositions([
+        buildDealBundleLine(option),
+        ...buildMeteredLines(option, "deal"),
+        ...buildSupportLine(option, "deal"),
+        ...buildAddOnLines(option, "deal"),
+        ...buildOnboardingLines(option, "deal"),
+        ...buildProfessionalServiceLines(option, "deal")
+      ]),
+      option
+    );
     var buildQuoteLineItems2 = (option, content) => buildLineItems(option, {
       source: "quote",
       presentation: content.presentation
@@ -1563,6 +1603,8 @@ var require_lineItemModel = __commonJS({
     var contentHash2 = (option, content) => crypto2.createHash("sha256").update(JSON.stringify({ optionId: option.id, stateHash: option.result.stateHash, content })).digest("hex");
     module2.exports = {
       CATALOG,
+      FEE_TOTAL_PROPERTIES,
+      _test: { feeTotals, withFeeTotals },
       buildDealLineItems: buildDealLineItems2,
       buildQuoteLineItems: buildQuoteLineItems2,
       contentHash: contentHash2,
@@ -2028,6 +2070,11 @@ var HUBSPOT_LINE_ITEM_PROPERTIES = /* @__PURE__ */ new Set([
   // which used to be stated in prose in the description. A portal that never created it rejects
   // the whole create, so createLineItem retries without it rather than failing the sync.
   "committed_quantity",
+  // The Contract Summary's fee columns, carried on every line that holds money. Custom, like
+  // committed_quantity, so they are dropped and retried if a portal does not have them.
+  "one_time_fees",
+  "recurring_fees",
+  "total_fees_for_term",
   "recurringbillingfrequency",
   "hs_recurring_billing_period",
   "hs_recurring_billing_terms",
@@ -2048,6 +2095,12 @@ var isProductBundleRejection = (error) => {
   );
   return /product bundle/i.test(message) || /could not hydrate/i.test(message);
 };
+var OPTIONAL_CUSTOM_LINE_ITEM_PROPERTIES = [
+  "committed_quantity",
+  "one_time_fees",
+  "recurring_fees",
+  "total_fees_for_term"
+];
 var isUnknownPropertyRejection = (error, property) => {
   const message = String(
     error?.body?.message || error?.response?.body?.message || error?.message || ""
@@ -2058,12 +2111,15 @@ var createLineItem = async (client, properties, associations) => {
   try {
     return await client.crm.lineItems.basicApi.create({ properties, associations });
   } catch (error) {
-    if (properties.committed_quantity != null && isUnknownPropertyRejection(error, "committed_quantity")) {
-      const { committed_quantity: unknown, ...withoutCommitted } = properties;
+    const rejected = OPTIONAL_CUSTOM_LINE_ITEM_PROPERTIES.find(
+      (property) => properties[property] != null && isUnknownPropertyRejection(error, property)
+    );
+    if (rejected) {
+      const { [rejected]: unused, ...withoutRejected } = properties;
       console.warn(
-        "Nylas pricing: this portal has no committed_quantity Line Item property. Creating the line item without it."
+        `Nylas pricing: this portal has no ${rejected} Line Item property. Creating the line item without it.`
       );
-      return createLineItem(client, withoutCommitted, associations);
+      return createLineItem(client, withoutRejected, associations);
     }
     if (!properties.hs_product_id || !isProductBundleRejection(error)) throw error;
     const { hs_product_id: bundledProductId, ...withoutProduct } = properties;
