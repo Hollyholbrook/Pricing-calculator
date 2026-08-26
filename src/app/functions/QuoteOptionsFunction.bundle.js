@@ -19,7 +19,9 @@ var require_pricingRules = __commonJS({
       products: [
         {
           key: "connect_ca",
-          name: "Connect",
+          // "Connect" alone is ambiguous next to "Calendar Only" on a customer-facing quote -- both
+          // are Connect products. Display only; every lookup is by `key`.
+          name: "Email + Calendar",
           unitOfMeasure: "CA",
           bands: [
             [0, 500, 1.7],

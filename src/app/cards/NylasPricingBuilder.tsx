@@ -233,7 +233,9 @@ const products: {
 }[] = [
   {
     key: "connect_ca",
-    label: "Connect",
+    // Matches the rate-schedule name in pricingRules: "Connect" alone does not distinguish this
+    // from the Calendar-Only product, which is also a Connect SKU.
+    label: "Email + Calendar",
     description: "Connected accounts",
     inputUnit: "CA/month",
   },
