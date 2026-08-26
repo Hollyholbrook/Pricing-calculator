@@ -315,18 +315,17 @@ const professionalServiceOptions = [
   },
 ];
 
-// One width for all four numeric columns keeps them equal; Product uses width="max" to take
-// everything left over. Wide enough for a four-decimal rate ("$1.0260") beside the widest header
-// ("Proposed Rate") without wrapping, which is what made the rate columns look cut off.
-// width takes 'min' | 'max' | 'auto' | pixels — percentages are not expressible, so the requested
-// 66 / 8 / 10 / 8 / 8 split is applied as a proportional pixel budget. Product uses "max" and
-// absorbs whatever is left, which is the 66% share at a normal card width.
-// Wide enough that no header wraps onto a second line — "Volume / mo." and "Proposed Rate" were
-// both breaking, which is what made the header row look ragged against the values beneath it.
-const VOLUME_COLUMN_WIDTH = 130;
-const LIST_RATE_COLUMN_WIDTH = 210;
-const DISCOUNT_COLUMN_WIDTH = 120;
-const PROPOSED_RATE_COLUMN_WIDTH = 140;
+// List Rate is the column that absorbs the slack, not Product.
+//
+// width takes 'min' | 'max' | 'auto' | pixels; percentages are not expressible. With Product on
+// "max" it took every spare pixel and the fixed widths here behaved as a ceiling rather than a
+// floor: List Rate collapsed to its minimum and the graduated tier text wrapped a few characters
+// at a time, turning the Agent Email row into a tall column of fragments. Product is fixed now
+// and List Rate is "max", so the tiers get the wide middle of the table to lay out across.
+const PRODUCT_COLUMN_WIDTH = 300;
+const VOLUME_COLUMN_WIDTH = 110;
+const DISCOUNT_COLUMN_WIDTH = 110;
+const PROPOSED_RATE_COLUMN_WIDTH = 130;
 
 const termOptions = [12, 24, 36].map((months) => ({
   value: months,
@@ -740,16 +739,19 @@ const OptionEditor = ({
       line.productKey === "agent_email_thousands" &&
       line.listBandRates.length
     ) {
-      // Graduated bands shown in full, in the cell. The column is sized to hold them so nothing
-      // wraps; this row is taller than the others because four tiers need four lines.
+      // All four bands on one line. Stacked one per row they made this row four times taller than
+      // the others; List Rate is the widest column in the table now, so they fit across it.
       return (
         <Stack distance="flush">
           <Text>{rateCurrency(line.displayListUnitRate)}</Text>
-          {line.listBandRates.map((band) => (
-            <Text key={bandRange(band.lower, band.upper)} variant="microcopy">
-              {bandRange(band.lower, band.upper)} {rateCurrency(band.rate)}
-            </Text>
-          ))}
+          <Text variant="microcopy">
+            {line.listBandRates
+              .map(
+                (band) =>
+                  `${bandRange(band.lower, band.upper)} ${rateCurrency(band.rate)}`,
+              )
+              .join(" · ")}
+          </Text>
         </Stack>
       );
     }
@@ -768,11 +770,11 @@ const OptionEditor = ({
           {/* width accepts 'min' | 'max' | 'auto' | number (pixels) — percentages are not
               expressible. Product takes max so it absorbs all remaining width, and the four
               numeric columns share one equal fixed width, right-aligned in both header and body. */}
-          <TableHeader width="max">Product</TableHeader>
+          <TableHeader width={PRODUCT_COLUMN_WIDTH}>Product</TableHeader>
           <TableHeader width={VOLUME_COLUMN_WIDTH} align="center">
             Volume / mo.
           </TableHeader>
-          <TableHeader width={LIST_RATE_COLUMN_WIDTH} align="right">
+          <TableHeader width="max" align="right">
             List Rate
           </TableHeader>
           <TableHeader width={DISCOUNT_COLUMN_WIDTH} align="center">
