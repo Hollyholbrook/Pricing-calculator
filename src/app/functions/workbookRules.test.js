@@ -14,10 +14,9 @@ const baseInput = {
   addOns: [],
 };
 
-// Two entries in this file are no longer workbook transcriptions and are called out where they
-// appear: Agent Email's bands (from the HubSpot product library) and the onboarding amounts (from
-// Holly, 2026-08-27). Everything else here is still the workbook, verbatim, and is the only guard
-// against silent rate drift -- do not regenerate these expectations from the code.
+// One entry in this file is not a workbook transcription and is called out where it appears: the
+// onboarding amounts (from Holly, 2026-08-27). Everything else here is the workbook, verbatim, and
+// is the only guard against silent rate drift -- do not regenerate these expectations from code.
 
 test('rate card is an exact transcription of the workbook', () => {
   assert.deepEqual(
@@ -42,11 +41,8 @@ test('rate card is an exact transcription of the workbook', () => {
         [5_000, 10_000, 0.35], [10_000, null, 0.3],
       ],
       agent_accounts: [[0, null, 0.2]],
-      // NOT the workbook: the HubSpot product library "Agent Accounts - Per 1,000 Emails Sent"
-      // supersedes it for this product. Tier 1 is free and tier 2 is $0.70; the workbook said
-      // $1.00 and $0.75. Boundaries are unchanged.
       agent_email_thousands: [
-        [0, 50, 0], [50, 100, 0.7], [100, 500, 0.35], [500, null, 0.25],
+        [0, 50, 1], [50, 100, 0.75], [100, 500, 0.35], [500, null, 0.25],
       ],
       agent_storage_gb: [[0, null, 0.2]],
       agent_bandwidth_gb: [[0, null, 0.5]],
@@ -96,10 +92,7 @@ test('every product uses workbook quantity times monthly rate times 12', () => {
     calendar_ca: 500,
     notetaker_bot_hours: 1_000,
     agent_accounts: 1_000,
-    // 100 rather than the workbook's 50: the first 50,000 emails a month are free under the
-    // product-library tiers, so at 50 this line would be $0 and would prove nothing about
-    // quantity x rate x 12. At 100 it is 50 free plus 50 at $0.70.
-    agent_email_thousands: 100,
+    agent_email_thousands: 50,
     agent_storage_gb: 1_000,
     agent_bandwidth_gb: 1_000,
   };
@@ -108,7 +101,7 @@ test('every product uses workbook quantity times monthly rate times 12', () => {
     calendar_ca: 7_800,
     notetaker_bot_hours: 7_200,
     agent_accounts: 2_400,
-    agent_email_thousands: 420,
+    agent_email_thousands: 600,
     agent_storage_gb: 2_400,
     agent_bandwidth_gb: 6_000,
   };
@@ -118,7 +111,7 @@ test('every product uses workbook quantity times monthly rate times 12', () => {
     assert.equal(line.annualCommitment, expectedAnnual[line.productKey], line.productKey);
     assert.equal(line.annualCommitment, line.proposedMrr * 12, line.productKey);
   }
-  assert.equal(result.proposedPlatformArr, 36_420);
+  assert.equal(result.proposedPlatformArr, 36_600);
 });
 
 test('every product exposes its workbook base price before quantities are entered', () => {
@@ -128,9 +121,7 @@ test('every product exposes its workbook base price before quantities are entere
     calendar_ca: 1.3,
     notetaker_bot_hours: 0.6,
     agent_accounts: 0.2,
-    // $0, not the workbook's $1.00 -- the product library's first tier is free, so the card's
-    // "starting at" figure for Agent Email is legitimately zero.
-    agent_email_thousands: 0,
+    agent_email_thousands: 1,
     agent_storage_gb: 0.2,
     agent_bandwidth_gb: 0.5,
   };

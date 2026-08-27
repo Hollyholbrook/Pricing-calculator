@@ -72,17 +72,23 @@ module.exports = Object.freeze({
       name: 'Agent Email',
       unitOfMeasure: '1,000 emails',
       pricingModel: 'graduated_adjusted_bands',
-      // From the HubSpot product library, which supersedes the workbook for this product --
-      // Holly's decision, 2026-08-27, after the two were found to disagree. The product
-      // "Agent Accounts - Per 1,000 Emails Sent" lists tiers 0-49,999 at $0.00, 50,000-99,999
-      // at $0.70, 100,000-499,999 at $0.35, 500,000+ at $0.25.
+      // THE WORKBOOK IS THE AUTHORITY HERE. It reads:
+      //   From $1.00/k for 1 - 50K    $0.75/k for 50K - 100K
+      //   $0.35/k for 100K - 500K     $0.25/k for 500K+
+      // and email is the one product with published bands: "Priced per deal (no published bands
+      // - Except email)".
       //
-      // Boundaries are unchanged: HubSpot states them in emails, these are in thousands of
-      // emails, and 50,000 emails is 50 of these units. Only tiers 1 and 2 moved -- $1.00 to
-      // $0.00, making the first 50,000 emails a month free, and $0.75 to $0.70.
+      // History, 2026-08-27, recorded so nobody repeats it. These were briefly changed to $0.00
+      // and $0.70 to match the HubSpot product "Agent Accounts - Per 1,000 Emails Sent", on the
+      // belief that the library was newer than the workbook. The workbook then turned out to
+      // agree with these original figures, so the LIBRARY is the outlier and the change was
+      // reverted. Do not move these to match HubSpot again without checking the workbook first.
+      //
+      // HubSpot's product does confirm the pricing METHOD is Graduated, which is what this model
+      // implements: each tier charges only the units that fall inside it.
       bands: [
-        [0, 50, 0],
-        [50, 100, 0.7],
+        [0, 50, 1],
+        [50, 100, 0.75],
         [100, 500, 0.35],
         [500, null, 0.25],
       ],

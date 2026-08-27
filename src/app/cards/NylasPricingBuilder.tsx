@@ -1043,15 +1043,24 @@ const OptionEditor = ({
     return upper == null ? `${from}+` : `${from}–${upper.toLocaleString()}K`;
   };
 
-  // Read the adjusted list band rates the calculator published. Recomputing them here as
-  // rate * (1 - termDiscount) * (1 + paymentPremium) used the multiplicative form, but the server
-  // applies the adjustment additively and rounds to cents, so a UI-side reimplementation drifts
-  // from the rates the quote is built from.
+  // This column shows the LIST rate: the published price, exactly as it appears in the pricing
+  // workbook and the HubSpot product library. It reads `baseBandRates` / `baseUnitRate`.
+  //
+  // It used to read `listBandRates` / `displayListUnitRate`, which are the list rates with the
+  // TERM DISCOUNT and PAYMENT PREMIUM already folded in. On a Monthly In Advance deal that is
+  // +8%, so a column headed "List Rate" showed $1.08 where the workbook says $1.00, $0.22 where
+  // it says $0.20, and $0.54 where it says $0.50 -- every figure out by 8% and none of them
+  // matching either source of truth. Switching the deal to Annual In Advance made them all look
+  // correct again, which is a nasty way to discover it.
+  //
+  // The term and payment adjustments have not gone anywhere: they are in the Proposed Rate
+  // column, which is what the customer actually pays, and they still drive every total. Nothing
+  // about the money changed here -- only which of the two figures this column names.
   const listRatePreview = (line: QuoteLine | undefined) => {
     if (!line) return <Text variant="microcopy">—</Text>;
     if (
       line.productKey === "agent_email_thousands" &&
-      line.listBandRates.length
+      line.baseBandRates.length
     ) {
       // One row per band, with the range labelled. proposedRatePreview renders the matching
       // proposed rate on the same rows, so the two columns line up band for band and the effect
@@ -1065,7 +1074,7 @@ const OptionEditor = ({
       // band-for-band read across the two columns.
       return (
         <Flex direction="column" align="end" gap="flush">
-          {line.listBandRates.map((band) => (
+          {line.baseBandRates.map((band) => (
             <Text key={bandRange(band.lower, band.upper)} variant="microcopy">
               {bandRange(band.lower, band.upper)} · {rateCurrency(band.rate)}
             </Text>
@@ -1073,7 +1082,7 @@ const OptionEditor = ({
         </Flex>
       );
     }
-    return <Text>{rateCurrency(line.displayListUnitRate)}</Text>;
+    return <Text>{rateCurrency(line.baseUnitRate)}</Text>;
   };
 
   const proposedRatePreview = (line: QuoteLine | undefined) => {
@@ -1324,6 +1333,17 @@ const OptionEditor = ({
             <Text variant="microcopy">
               Enter committed monthly usage. Discounts are optional, entered
               manually, and determine the required approval level.
+            </Text>
+            {/* Says out loud why Proposed Rate can sit above List Rate at 0% discount: the term
+                discount and the payment-schedule premium land in the proposed rate, not the list
+                one. Without this the row reads as though the Discount column is lying. The
+                premiums themselves are deliberately not named here -- they live in
+                pricingRules.js, and restating them in the card is the reimplementation that made
+                the List Rate column wrong in the first place. */}
+            <Text variant="microcopy">
+              List Rate is the published price. Proposed Rate applies the
+              contract term and payment schedule first, then any discount — so
+              it can sit above list even at 0%.
             </Text>
             {productTable(products)}
             {committedProductCount === 0 && (

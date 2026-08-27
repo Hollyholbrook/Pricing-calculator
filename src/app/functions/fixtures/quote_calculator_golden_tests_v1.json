@@ -41,13 +41,13 @@
     "expected": {
       "termDiscount": 0.025,
       "paymentPremium": 0.06,
-      "listPlatformArr": 89666.4,
-      "proposedPlatformArr": 80799.6,
-      "supportAnnual": 8079.96,
+      "listPlatformArr": 90326.4,
+      "proposedPlatformArr": 81417.6,
+      "supportAnnual": 8141.76,
       "annualAddOns": 2480.4,
-      "committedArr": 91359.96,
+      "committedArr": 92039.76,
       "oneTime": 13800,
-      "tcv": 196519.92,
+      "tcv": 197879.52,
       "approvalStatus": "WITHIN_GUARDRAILS",
       "lines": [
         {
@@ -89,11 +89,11 @@
         {
           "productKey": "agent_email_thousands",
           "volume": 120,
-          "baseBlendedRate": 0.35,
-          "listUnitRate": 0.36,
-          "proposedUnitRate": 0.34,
-          "listMrr": 43.2,
-          "proposedMrr": 41.3
+          "baseBlendedRate": 0.788,
+          "listUnitRate": 0.82,
+          "proposedUnitRate": 0.77,
+          "listMrr": 98.2,
+          "proposedMrr": 92.8
         },
         {
           "productKey": "agent_storage_gb",
@@ -115,6 +115,6 @@
         }
       ]
     },
-    "note": "Transcribed from the One-Subscription Pricing Workbook, then re-baselined 2026-08-27 for two deliberate overrides: Agent Email list rates now come from the HubSpot product library (line index 4), and onboarding is 5/10/15K per Holly. The remaining six product lines are unchanged workbook figures."
+    "note": "Transcribed from the One-Subscription Pricing Workbook. One deliberate override, 2026-08-27: onboarding is 5/10/15K per Holly, which lifts oneTime by $5,000 (Quick Launch + went 5K->10K) and TCV with it. Every rate is still the workbook, verbatim."
   }
 ]
