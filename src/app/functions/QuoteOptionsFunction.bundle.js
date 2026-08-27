@@ -1682,6 +1682,13 @@ var DEAL_PAYMENT_METHOD = Object.freeze({
     ach: "ACH/Bank Transfer"
   })
 });
+var DEAL_AUTO_RENEWAL = Object.freeze({
+  property: "auto_renewal__c",
+  values: Object.freeze({
+    yes: "Yes",
+    no: "No"
+  })
+});
 var DEAL_PAYMENT_FREQUENCY = Object.freeze({
   property: "payment_frequency",
   values: Object.freeze({
@@ -1691,7 +1698,18 @@ var DEAL_PAYMENT_FREQUENCY = Object.freeze({
     monthly_in_advance: "Monthly In Advance"
   })
 });
-var DEAL_CHOICE_PROPERTIES = [DEAL_PAYMENT_METHOD, DEAL_PAYMENT_FREQUENCY];
+var DEAL_CHOICE_PROPERTIES = [
+  DEAL_PAYMENT_METHOD,
+  DEAL_PAYMENT_FREQUENCY,
+  DEAL_AUTO_RENEWAL
+];
+var UNVERIFIED_DEAL_PROPERTIES = [
+  "pricing_contract_type",
+  "pricing_multi_year_discount_pct",
+  "pricing_multi_product_discount_pct",
+  "pricing_discount_reason",
+  "pricing_approval_timestamp"
+];
 var choiceProperty = ({ property, values }, choice) => {
   if (!property) return {};
   if (choice === "" || choice == null) return { [property]: "" };
@@ -1700,6 +1718,14 @@ var choiceProperty = ({ property, values }, choice) => {
 };
 var paymentMethodProperties = (paymentMethod) => choiceProperty(DEAL_PAYMENT_METHOD, paymentMethod);
 var paymentFrequencyProperties = (paymentFrequency) => choiceProperty(DEAL_PAYMENT_FREQUENCY, paymentFrequency);
+var autoRenewalProperties = (autoRenewal) => choiceProperty(DEAL_AUTO_RENEWAL, autoRenewal === true ? "yes" : "no");
+var DISCOUNT_REASON_MAX_LENGTH = 4e3;
+var discountReasonProperties = (discountReason) => {
+  if (typeof discountReason !== "string") return {};
+  return {
+    pricing_discount_reason: discountReason.trim().slice(0, DISCOUNT_REASON_MAX_LENGTH)
+  };
+};
 var MAX_OPTIONS = 10;
 var MAX_PAYLOAD_LENGTH = 6e4;
 var SAFE_ERRORS = Object.freeze({
@@ -1774,7 +1800,11 @@ var updateDealProperties = async (client, dealId, properties) => {
     const message = String(
       error?.body?.message || error?.response?.body?.message || error?.message || ""
     );
-    const rejectedProperty = DEAL_CHOICE_PROPERTIES.map(({ property }) => property).find(
+    const guarded = [
+      ...DEAL_CHOICE_PROPERTIES.map(({ property }) => property),
+      ...UNVERIFIED_DEAL_PROPERTIES
+    ];
+    const rejectedProperty = guarded.find(
       (property) => property && properties[property] != null && message.includes(property)
     );
     if (!rejectedProperty) throw error;
@@ -1988,6 +2018,19 @@ var buildSelectedProperties = (option, approvalStatus) => {
     pricing_tcv: String(result.tcv),
     pricing_list_price_tcv: String(result.listTcv),
     pricing_blended_effective_discount_pct: String(roundForProperty(effectiveDiscount)),
+    // Raw fractions, matching pricing_blended_effective_discount_pct above: 0.025 for 2.5%, not
+    // 2.5. HubSpot's percentage property type renders the multiplication.
+    pricing_multi_year_discount_pct: String(roundForProperty(result.termDiscount)),
+    // NOT a percentage, despite the property name -- this is the total discount in DOLLARS across
+    // the full term, list TCV minus quoted TCV. Holly's instruction: "multi-product discount should
+    // be the total discount amount for full term even if it's %". Left as-is rather than renamed so
+    // the existing approval block keeps reading it; the name is the portal's, not a bug here.
+    pricing_multi_product_discount_pct: String(
+      Math.round((result.listTcv - result.tcv + Number.EPSILON) * 100) / 100
+    ),
+    // Every quote this app builds is the drawdown model: one prepaid pool the metered products
+    // draw against. 'flat' exists for a volume-commitment shape the calculator does not produce.
+    pricing_contract_type: "drawdown",
     pricing_has_100pct_line: String(result.largestDiscretionaryDiscount === 1),
     pricing_100pct_lines_summary: result.largestDiscretionaryDiscount === 1 ? "One or more quote lines are discounted 100%" : "",
     pricing_approval_tier_required: result.approvalTierRequired,
@@ -2082,6 +2125,9 @@ var lockLiveCalculation = async (client, dealId, state, parameters, portalId, se
   properties[SELECTED_OPTION_NAME_PROPERTY] = liveOption.name;
   Object.assign(properties, paymentMethodProperties(parameters.paymentMethod));
   Object.assign(properties, paymentFrequencyProperties(input.paymentFrequency));
+  Object.assign(properties, autoRenewalProperties(input.autoRenewal));
+  Object.assign(properties, discountReasonProperties(parameters.discountReason));
+  properties.pricing_approval_timestamp = String(Date.now());
   const document = {
     schemaVersion: "1.0",
     revision: (state.document?.revision || 0) + 1,
@@ -2626,6 +2672,8 @@ exports._test = Object.freeze({
   associatedIds,
   deleteOption,
   lockLiveCalculation,
+  autoRenewalProperties,
+  discountReasonProperties,
   paymentFrequencyProperties,
   paymentMethodProperties,
   syncDealLineItems,

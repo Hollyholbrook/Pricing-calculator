@@ -53,14 +53,27 @@ const configuredQuoteTemplateId = () =>
 // If that warning appears, read the real internal values off the property in Settings and correct
 // them here.
 //
-// payment_method and payment_frequency are the ONLY non-pricing_* Deal properties the app writes.
-// Everything else it touches on a Deal is namespaced pricing_*; see
+// payment_method, payment_frequency and auto_renewal__c are the ONLY non-pricing_* Deal properties
+// the app writes. Everything else it touches on a Deal is namespaced pricing_*; see
 // claude/quote-text-ownership.md for why that mattered.
 const DEAL_PAYMENT_METHOD = Object.freeze({
   property: 'payment_method',
   values: Object.freeze({
     credit_card: 'Credit Card',
     ach: 'ACH/Bank Transfer',
+  }),
+});
+
+// Auto-renewal, as Yes/No. The __c suffix says this one is synced from Salesforce, so its values
+// are that system's, not HubSpot's -- another reason not to infer them.
+//
+// The card's control is inverted ("Non-renewal" checked means autoRenewal false) and the input
+// defaults to true, so an untouched configuration writes Yes.
+const DEAL_AUTO_RENEWAL = Object.freeze({
+  property: 'auto_renewal__c',
+  values: Object.freeze({
+    yes: 'Yes',
+    no: 'No',
   }),
 });
 
@@ -79,7 +92,23 @@ const DEAL_PAYMENT_FREQUENCY = Object.freeze({
 // Every Deal enumeration the app mirrors from the calculator. Listed once so the retry guard below
 // covers all of them: these are the only properties here whose names and values came from outside
 // the code, and any one of them can be wrong.
-const DEAL_CHOICE_PROPERTIES = [DEAL_PAYMENT_METHOD, DEAL_PAYMENT_FREQUENCY];
+const DEAL_CHOICE_PROPERTIES = [
+  DEAL_PAYMENT_METHOD,
+  DEAL_PAYMENT_FREQUENCY,
+  DEAL_AUTO_RENEWAL,
+];
+
+// Properties added from a pasted list of internal names rather than from a verified write. Any one
+// of them could be misnamed, and they ride in the same update as everything else -- which on Lock
+// in runs after the Deal's line items have already been replaced. So the guard below drops a
+// rejected one and retries, exactly as it does for the two enumerations above.
+const UNVERIFIED_DEAL_PROPERTIES = [
+  'pricing_contract_type',
+  'pricing_multi_year_discount_pct',
+  'pricing_multi_product_discount_pct',
+  'pricing_discount_reason',
+  'pricing_approval_timestamp',
+];
 
 // '' is a real answer meaning "not specified", and must clear the property rather than be ignored.
 // An unrecognised choice is dropped instead: the card is the only caller, so that can only mean the
@@ -96,6 +125,22 @@ const paymentMethodProperties = (paymentMethod) =>
 
 const paymentFrequencyProperties = (paymentFrequency) =>
   choiceProperty(DEAL_PAYMENT_FREQUENCY, paymentFrequency);
+
+// Always one or the other, never blank: autoRenewal is a boolean the card always has a value for,
+// so there is no "not specified" case to clear.
+const autoRenewalProperties = (autoRenewal) =>
+  choiceProperty(DEAL_AUTO_RENEWAL, autoRenewal === true ? 'yes' : 'no');
+
+// Free text the rep types when they discount. Trimmed and capped rather than validated: there is no
+// right answer to check it against, and an over-long value would fail the whole update.
+const DISCOUNT_REASON_MAX_LENGTH = 4_000;
+
+const discountReasonProperties = (discountReason) => {
+  if (typeof discountReason !== 'string') return {};
+  return {
+    pricing_discount_reason: discountReason.trim().slice(0, DISCOUNT_REASON_MAX_LENGTH),
+  };
+};
 
 // The seller on the quote is deliberately NOT set here.
 //
@@ -214,7 +259,11 @@ const updateDealProperties = async (client, dealId, properties) => {
     const message = String(
       error?.body?.message || error?.response?.body?.message || error?.message || '',
     );
-    const rejectedProperty = DEAL_CHOICE_PROPERTIES.map(({ property }) => property).find(
+    const guarded = [
+      ...DEAL_CHOICE_PROPERTIES.map(({ property }) => property),
+      ...UNVERIFIED_DEAL_PROPERTIES,
+    ];
+    const rejectedProperty = guarded.find(
       (property) =>
         property && properties[property] != null && message.includes(property),
     );
@@ -469,6 +518,19 @@ const buildSelectedProperties = (option, approvalStatus) => {
     pricing_tcv: String(result.tcv),
     pricing_list_price_tcv: String(result.listTcv),
     pricing_blended_effective_discount_pct: String(roundForProperty(effectiveDiscount)),
+    // Raw fractions, matching pricing_blended_effective_discount_pct above: 0.025 for 2.5%, not
+    // 2.5. HubSpot's percentage property type renders the multiplication.
+    pricing_multi_year_discount_pct: String(roundForProperty(result.termDiscount)),
+    // NOT a percentage, despite the property name -- this is the total discount in DOLLARS across
+    // the full term, list TCV minus quoted TCV. Holly's instruction: "multi-product discount should
+    // be the total discount amount for full term even if it's %". Left as-is rather than renamed so
+    // the existing approval block keeps reading it; the name is the portal's, not a bug here.
+    pricing_multi_product_discount_pct: String(
+      Math.round((result.listTcv - result.tcv + Number.EPSILON) * 100) / 100,
+    ),
+    // Every quote this app builds is the drawdown model: one prepaid pool the metered products
+    // draw against. 'flat' exists for a volume-commitment shape the calculator does not produce.
+    pricing_contract_type: 'drawdown',
     pricing_has_100pct_line: String(result.largestDiscretionaryDiscount === 1),
     pricing_100pct_lines_summary:
       result.largestDiscretionaryDiscount === 1 ? 'One or more quote lines are discounted 100%' : '',
@@ -596,6 +658,11 @@ const lockLiveCalculation = async (
   // From the normalized input, not the raw parameters: that is the value the calculation actually
   // used, so the Deal cannot disagree with the pricing.
   Object.assign(properties, paymentFrequencyProperties(input.paymentFrequency));
+  // The rep's own words, and when they committed. Neither is a pricing input -- they change no
+  // number and normalizeStoredInput would strip them from option.input.
+  Object.assign(properties, autoRenewalProperties(input.autoRenewal));
+  Object.assign(properties, discountReasonProperties(parameters.discountReason));
+  properties.pricing_approval_timestamp = String(Date.now());
 
   // Persist the configuration, not just its totals.
   //
@@ -1292,6 +1359,8 @@ exports._test = Object.freeze({
   associatedIds,
   deleteOption,
   lockLiveCalculation,
+  autoRenewalProperties,
+  discountReasonProperties,
   paymentFrequencyProperties,
   paymentMethodProperties,
   syncDealLineItems,

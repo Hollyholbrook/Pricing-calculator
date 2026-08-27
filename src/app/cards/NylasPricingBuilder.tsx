@@ -629,6 +629,9 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
   // The configuration as it is stored on the Deal, for telling "this would update what is already
   // locked" from "this would produce something new". Empty when nothing has been locked yet.
   const [lockedInput, setLockedInput] = useState("");
+  // Not a pricing input: it changes no number, and normalizeStoredInput would strip it from
+  // option.input. It travels as its own parameter and lands on pricing_discount_reason.
+  const [discountReason, setDiscountReason] = useState("");
   const [dealName, setDealName] = useState("");
   const trimmedQuoteTitle = quoteTitle.trim();
   const quoteTitleTooLong = trimmedQuoteTitle.length > QUOTE_TITLE_MAX_LENGTH;
@@ -811,6 +814,7 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
         input: editing.input,
         quoteContent,
         paymentMethod,
+        discountReason,
       });
       // generateQuote is idempotent on the quote content hash, so a repeat lock reuses the
       // existing Quote rather than creating one. Saying "created" either way misreports it.
@@ -879,6 +883,8 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
       <OptionEditor
         option={editing}
         saving={saving}
+        discountReason={discountReason}
+        onDiscountReasonChange={setDiscountReason}
         matchesLocked={
           lockedInput !== "" && canonical(editing.input) === lockedInput
         }
@@ -902,6 +908,8 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
 const OptionEditor = ({
   option,
   saving,
+  discountReason,
+  onDiscountReasonChange,
   matchesLocked,
   quoteTemplates,
   templateId,
@@ -918,6 +926,8 @@ const OptionEditor = ({
 }: {
   option: QuoteOption;
   saving: boolean;
+  discountReason: string;
+  onDiscountReasonChange: (value: string) => void;
   matchesLocked: boolean;
   quoteTemplates: { id: string; name: string }[];
   templateId: string;
@@ -976,6 +986,19 @@ const OptionEditor = ({
   const committedProductCount = products.filter(
     ({ key }) => option.input.volumes[key] > 0,
   ).length;
+  // Any discount anywhere, from the rep's own entries rather than from the calculated result: the
+  // reason box has to appear as soon as they discount something, before a preview has returned.
+  const hasAnyDiscount =
+    Object.values(option.input.productDiscounts || {}).some(
+      (value) => value > 0,
+    ) ||
+    Object.values(option.input.addOnDiscounts || {}).some(
+      (value) => value > 0,
+    ) ||
+    (option.input.supportDiscount || 0) > 0 ||
+    (option.input.onboardingDiscount || 0) > 0 ||
+    (option.input.professionalServicesDiscount || 0) > 0 ||
+    (option.input.discretionaryDiscount || 0) > 0;
   const discountPreview = (
     listAmount: number | undefined,
     discount: number,
@@ -1474,6 +1497,23 @@ const OptionEditor = ({
                 </AutoGrid>
               </Flex>
             </Card>
+            {hasAnyDiscount && (
+              <Flex direction="column" gap="xs">
+                <TextArea
+                  label="Discount Reason"
+                  name="discount_reason"
+                  value={discountReason}
+                  rows={2}
+                  maxLength={4_000}
+                  placeholder="Why is this discount being given?"
+                  onChange={(value) => onDiscountReasonChange(String(value))}
+                />
+                <Text variant="microcopy">
+                  Recorded on the Deal for approval. Appears only because a
+                  discount has been entered.
+                </Text>
+              </Flex>
+            )}
           </>
         }
 

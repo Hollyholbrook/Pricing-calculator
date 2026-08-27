@@ -239,3 +239,11 @@ test('a rejection over one mirrored property does not lose the others', async ()
   assert.equal(final.payment_frequency, undefined);
   assert.equal(final.pricing_tcv, '94219', 'the pricing properties still save');
 });
+
+test('Auto-renewal writes Yes or No, and is never blank', () => {
+  assert.deepEqual(_test.autoRenewalProperties(true), { auto_renewal__c: 'Yes' });
+  assert.deepEqual(_test.autoRenewalProperties(false), { auto_renewal__c: 'No' });
+  // A boolean the card always holds a value for, so anything falsy is No rather than "unset".
+  // Blank would leave whatever was on the Deal before, which is worse than being explicit.
+  assert.deepEqual(_test.autoRenewalProperties(undefined), { auto_renewal__c: 'No' });
+});
