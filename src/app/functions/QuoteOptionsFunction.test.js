@@ -135,3 +135,54 @@ test('locking an option archives every existing Deal line item before creating r
   assert.equal(connect.committed_quantity, '2000');
   assert.equal(connect.quantity, '0');
 });
+
+// payment_method is the one Deal property whose name and option values came from outside the code,
+// and it rides in the same update as the pricing_* properties. A rejection over it must cost a
+// warning and an unset property, never a failed Lock in -- by which point the Deal's line items
+// have already been replaced.
+test('a rejected payment_method is dropped and the rest of the Deal update still saves', async () => {
+  const attempts = [];
+  const client = {
+    crm: {
+      deals: {
+        basicApi: {
+          update: async (_id, { properties }) => {
+            attempts.push(properties);
+            if (attempts.length === 1 && properties.payment_method != null) {
+              throw {
+                body: {
+                  message:
+                    'Property values were not valid: payment_method is not a valid option',
+                },
+              };
+            }
+            return { id: _id };
+          },
+        },
+      },
+    },
+  };
+
+  await _test.updateDealProperties(client, 'deal-1', {
+    pricing_arr: '1000',
+    payment_method: 'Credit Card',
+  });
+
+  assert.equal(attempts.length, 2, 'the update is retried once');
+  assert.equal(attempts[0].payment_method, 'Credit Card');
+  assert.equal(attempts[1].payment_method, undefined, 'the retry omits the rejected property');
+  assert.equal(attempts[1].pricing_arr, '1000', 'everything else still saves');
+});
+
+test('Payment Method maps the card keys to the portal values, and clears when unset', () => {
+  assert.deepEqual(_test.paymentMethodProperties('credit_card'), {
+    payment_method: 'Credit Card',
+  });
+  assert.deepEqual(_test.paymentMethodProperties('ach'), {
+    payment_method: 'ACH/Bank Transfer',
+  });
+  // "Not specified" is a real answer and must clear the property rather than leave a stale value.
+  assert.deepEqual(_test.paymentMethodProperties(''), { payment_method: '' });
+  // A choice the map does not know is dropped, not sent: a bad enumeration value fails the update.
+  assert.deepEqual(_test.paymentMethodProperties('paypal'), {});
+});

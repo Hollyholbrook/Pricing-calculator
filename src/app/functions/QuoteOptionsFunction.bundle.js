@@ -1676,10 +1676,10 @@ var SELECTED_OPTION_NAME_PROPERTY = "pricing_selected_option_name";
 var DEFAULT_QUOTE_TEMPLATE_ID = "567553820432";
 var configuredQuoteTemplateId = () => DEFAULT_QUOTE_TEMPLATE_ID || String(process.env.QUOTE_TEMPLATE_ID || "");
 var DEAL_PAYMENT_METHOD = Object.freeze({
-  property: "",
+  property: "payment_method",
   values: Object.freeze({
-    credit_card: "",
-    ach: ""
+    credit_card: "Credit Card",
+    ach: "ACH/Bank Transfer"
   })
 });
 var paymentMethodProperties = (paymentMethod) => {
@@ -1757,6 +1757,24 @@ var safeProviderDiagnostics = (error, operation) => {
     // cut "... : Quote Template should ha" mid-sentence.
     providerMessage: String(rawMessage || "").replace(/[\u0000-\u001f\u007f]+/g, " ").trim().slice(0, 400)
   };
+};
+var updateDealProperties = async (client, dealId, properties) => {
+  try {
+    return await client.crm.deals.basicApi.update(dealId, { properties });
+  } catch (error) {
+    const property = DEAL_PAYMENT_METHOD.property;
+    if (!property || properties[property] == null) throw error;
+    const message = String(
+      error?.body?.message || error?.response?.body?.message || error?.message || ""
+    );
+    if (!message.includes(property)) throw error;
+    const { [property]: rejected, ...rest } = properties;
+    console.warn(
+      `Nylas pricing: HubSpot rejected ${property}="${rejected}". Saving without it. Check the internal name and option values on the Deal property.`,
+      safeProviderDiagnostics(error, "update_deal_payment_method")
+    );
+    return client.crm.deals.basicApi.update(dealId, { properties: rest });
+  }
 };
 var assertDealAccess = (context, requestedDealId) => {
   const contextDealId = context?.crm?.objectId == null ? null : String(context.crm.objectId);
@@ -2055,7 +2073,7 @@ var lockLiveCalculation = async (client, dealId, state, parameters, portalId, se
   properties[SELECTED_OPTION_ID_PROPERTY] = "";
   properties[SELECTED_OPTION_NAME_PROPERTY] = "";
   Object.assign(properties, paymentMethodProperties(parameters.paymentMethod));
-  await client.crm.deals.basicApi.update(dealId, { properties });
+  await updateDealProperties(client, dealId, properties);
   const liveState = {
     ...state,
     document: { schemaVersion: "1.0", revision: 0, options: [liveOption] },
@@ -2594,5 +2612,7 @@ exports._test = Object.freeze({
   associatedIds,
   deleteOption,
   lockLiveCalculation,
-  syncDealLineItems
+  paymentMethodProperties,
+  syncDealLineItems,
+  updateDealProperties
 });

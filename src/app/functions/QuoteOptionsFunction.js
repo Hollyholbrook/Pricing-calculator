@@ -46,17 +46,20 @@ const configuredQuoteTemplateId = () =>
 // The Deal property behind the quote template's "Payment method" token, and the portal's internal
 // value for each of the card's two options.
 //
-// EMPTY UNTIL THE PORTAL'S NAMES ARE FILLED IN. While `property` is '', nothing is written, so
-// this is safe to deploy before the property exists. A wrong property name on a Deal update throws
-// and would take the whole lock with it, so it is not guessed.
+// The two values below came from the portal as the option LABELS. HubSpot often uses the label as
+// the internal value for a hand-created dropdown, but not always -- so the Deal update that
+// carries this property retries without it if HubSpot rejects it (see updateDealProperties). A
+// mismatch therefore costs a warning in the logs and an unset property, never a failed Lock in.
+// If that warning appears, read the real internal values off the property in Settings and correct
+// them here.
 //
 // This is the ONE non-pricing_* Deal property the app writes. Everything else it touches on a Deal
 // is namespaced pricing_*; see claude/quote-text-ownership.md for why that mattered.
 const DEAL_PAYMENT_METHOD = Object.freeze({
-  property: '',
+  property: 'payment_method',
   values: Object.freeze({
-    credit_card: '',
-    ach: '',
+    credit_card: 'Credit Card',
+    ach: 'ACH/Bank Transfer',
   }),
 });
 
@@ -162,6 +165,35 @@ const safeProviderDiagnostics = (error, operation) => {
       .trim()
       .slice(0, 400),
   };
+};
+
+// payment_method is the one Deal property here whose name and values came from outside the code.
+// Bundling it into the same update as the pricing_* properties keeps the write atomic, but it also
+// means a rejection over that one property would fail everything alongside it -- including, on Lock
+// in, the record of a calculation whose line items have already been replaced. So a rejection
+// naming it drops it and retries once.
+const updateDealProperties = async (client, dealId, properties) => {
+  try {
+    return await client.crm.deals.basicApi.update(dealId, { properties });
+  } catch (error) {
+    const property = DEAL_PAYMENT_METHOD.property;
+    if (!property || properties[property] == null) throw error;
+    // Any rejection that names the property, not just an unknown-property one. The likelier
+    // failure here is a valid property with an invalid enumeration value, and HubSpot words that
+    // differently -- "not a valid option", "propertyValue" -- so matching on /propert/i would miss
+    // exactly the case this guard exists for.
+    const message = String(
+      error?.body?.message || error?.response?.body?.message || error?.message || '',
+    );
+    if (!message.includes(property)) throw error;
+    const { [property]: rejected, ...rest } = properties;
+    console.warn(
+      `Nylas pricing: HubSpot rejected ${property}="${rejected}". Saving without it. ` +
+        'Check the internal name and option values on the Deal property.',
+      safeProviderDiagnostics(error, 'update_deal_payment_method'),
+    );
+    return client.crm.deals.basicApi.update(dealId, { properties: rest });
+  }
 };
 
 const assertDealAccess = (context, requestedDealId) => {
@@ -524,7 +556,8 @@ const lockLiveCalculation = async (
   properties[SELECTED_OPTION_ID_PROPERTY] = '';
   properties[SELECTED_OPTION_NAME_PROPERTY] = '';
   Object.assign(properties, paymentMethodProperties(parameters.paymentMethod));
-  await client.crm.deals.basicApi.update(dealId, { properties });
+
+  await updateDealProperties(client, dealId, properties);
 
   const liveState = {
     ...state,
@@ -1204,5 +1237,7 @@ exports._test = Object.freeze({
   associatedIds,
   deleteOption,
   lockLiveCalculation,
+  paymentMethodProperties,
   syncDealLineItems,
+  updateDealProperties,
 });
