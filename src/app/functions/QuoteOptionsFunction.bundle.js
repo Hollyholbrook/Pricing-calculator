@@ -1706,6 +1706,12 @@ var DEAL_CHOICE_PROPERTIES = [
 ];
 var UNVERIFIED_DEAL_PROPERTIES = [
   DEAL_CONTRACT_TERM_PROPERTY,
+  // Both of these mirror a property the app already writes under a different name --
+  // pricing_approval_reasons and pricing_latest_quote_id -- because the portal's list shows these
+  // names instead and the approval block reads one of each pair. Guarded, so the one the portal
+  // lacks is dropped rather than failing the commit.
+  "pricing_approval_notes",
+  "pricing_quote_id",
   "pricing_contract_type",
   "pricing_multi_year_discount_pct",
   "pricing_multi_product_discount_pct",
@@ -2043,6 +2049,12 @@ var buildSelectedProperties = (option, approvalStatus) => {
     pricing_approval_tier_required: result.approvalTierRequired,
     pricing_approval_status: approvalStatus,
     pricing_approval_reasons: result.approvalReasons.join("\n"),
+    // Written to BOTH names on purpose. The app has always written
+    // pricing_approval_reasons, but the portal's property list shows
+    // "Pricing: Approval Notes" / pricing_approval_notes and no
+    // pricing_approval_reasons -- and the approval block reads one of them. Rather than guess
+    // which, both carry the same text; the guard drops whichever the portal does not have.
+    pricing_approval_notes: result.approvalReasons.join("\n"),
     pricing_primary_product: "multi",
     pricing_ca_count: String(volumes.connect_ca || 0),
     contract_start_date: toHubSpotDate(input.startDate),
@@ -2484,14 +2496,13 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
     ]);
     const quoteUrl = finalized?.properties?.hs_quote_link || "";
     const generatedAt = (/* @__PURE__ */ new Date()).toISOString();
-    await client.crm.deals.basicApi.update(dealId, {
-      properties: {
-        pricing_latest_quote_id: String(quote.id),
-        pricing_latest_quote_url: quoteUrl,
-        pricing_quote_content_hash: hash,
-        pricing_quote_generation_status: "draft_created",
-        pricing_quote_generated_at: generatedAt
-      }
+    await updateDealProperties(client, dealId, {
+      pricing_latest_quote_id: String(quote.id),
+      pricing_quote_id: String(quote.id),
+      pricing_latest_quote_url: quoteUrl,
+      pricing_quote_content_hash: hash,
+      pricing_quote_generation_status: "draft_created",
+      pricing_quote_generated_at: generatedAt
     });
     return {
       quoteId: String(quote.id),
