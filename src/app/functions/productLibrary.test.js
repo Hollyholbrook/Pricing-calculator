@@ -179,11 +179,29 @@ test('the onboarding mismatch is reported as a price disagreement', () => {
 });
 
 test('a stale local product name is reported', () => {
+  // The local labels no longer reach HubSpot, but they are still used in logs, tests and this
+  // report -- and a stale one is how the "Enterprise Drawdown Fee" problem was noticed at all. So
+  // the drift check keeps watching them. CATALOG.enterprise was corrected to "Enterprise Drawdown
+  // Commitment" on 2026-08-27, which is why this fixture uses a renamed product rather than that
+  // one: a fixture that only passes while a label is wrong stops testing anything once it is right.
   const row = _test.compareProduct('enterprise', CATALOG.enterprise, {
+    id: CATALOG.enterprise.id,
+    properties: { name: 'Enterprise Drawdown Commitment (FY27)', price: '0' },
+  });
+  assert.ok(
+    row.disagreements.some(({ field }) => field === 'name'),
+    'a product renamed in HubSpot must show up as a name disagreement',
+  );
+
+  // And the corrected label must NOT be reported, or the report cries wolf on every run.
+  const current = _test.compareProduct('enterprise', CATALOG.enterprise, {
     id: CATALOG.enterprise.id,
     properties: { name: 'Enterprise Drawdown Commitment', price: '0' },
   });
-  assert.ok(row.disagreements.some(({ field }) => field === 'name'));
+  assert.deepEqual(
+    current.disagreements.filter(({ field }) => field === 'name'),
+    [],
+  );
 });
 
 test('support and professional services are not compared on unit price', () => {

@@ -786,7 +786,10 @@ const inBatches = async (values, action, batchSize = 10) => {
 // written, so managed line items cannot be told apart from ones a rep added by hand — which
 // matters for the open question of whether sync should preserve unmanaged items.
 const HUBSPOT_LINE_ITEM_PROPERTIES = new Set([
-  'name',
+  // 'name' deliberately omitted, as a second guard behind lineItemModel not building it. The
+  // product library owns the product's name; hs_product_id is all HubSpot needs to resolve it, and
+  // anything sent here would overwrite the library's name on the line item. This is the reason
+  // "Enterprise Drawdown Fee" kept reappearing after the product was renamed.
   'hs_product_id',
   'quantity',
   'price',

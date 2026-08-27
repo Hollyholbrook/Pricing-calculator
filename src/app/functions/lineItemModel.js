@@ -6,7 +6,13 @@ const CATALOG = Object.freeze({
   // the standalone Platform product inside that bundle (SKU ENT-FY26), so it is what the
   // subscription line is built from. The previous id, 47269087321, is not in the library export
   // at all and HubSpot rejected it as a bundle.
-  enterprise: { id: '46037350773', name: 'Enterprise Drawdown Fee', category: 'Platform' },
+  enterprise: {
+    id: '46037350773',
+    // Local label only -- nothing sends it. Corrected from 'Enterprise Drawdown Fee' against the
+    // 2026-08-27 product export, which is also where the SKU ENT-FY26 below comes from.
+    name: 'Enterprise Drawdown Commitment',
+    category: 'Platform',
+  },
   connect_ca: {
     id: '45820463620',
     name: 'Connect - Email + Calendar Connected Accounts (CA)',
@@ -271,8 +277,17 @@ const normalizeQuoteContent = (raw = {}, fallbackTitle = 'Nylas Enterprise Quote
   };
 };
 
+// `name` is deliberately NOT built. The product name belongs to the HubSpot product library, and
+// hs_product_id is all HubSpot needs to resolve it. Sending our own copy overwrote the library's
+// name on every line item, so any rename in HubSpot was silently reverted by the next Lock in --
+// which is how "Enterprise Drawdown Fee" kept coming back after the product had been renamed to
+// "Enterprise Drawdown Commitment" (confirmed against the 2026-08-27 product export).
+//
+// Same rule the description already follows: the library owns what a product IS, this app owns
+// what was SOLD -- quantities, rates, discounts, fees. The `name` still on each CATALOG entry
+// below is a LOCAL LABEL for logs, tests and the product-library drift check. It never leaves
+// this process.
 const baseManagedProperties = ({ option, key, component, product, source }) => ({
-  name: product.name,
   hs_product_id: product.id,
   product_category: product.category,
   nylas_pricing_managed: 'true',

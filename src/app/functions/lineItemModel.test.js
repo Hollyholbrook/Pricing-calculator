@@ -85,7 +85,9 @@ test('Deal line items reconcile to the approved calculation', () => {
     ],
   );
   assert.equal(recurringItems[0].properties.hs_product_id, '46037350773');
-  assert.equal(recurringItems[0].properties.name, 'Enterprise Drawdown Fee');
+  // No `name`: the product library owns it and hs_product_id is how HubSpot resolves it. Sending
+  // our own copy is what kept reverting the product's rename on every Lock in.
+  assert.equal(recurringItems[0].properties.name, undefined);
 
   // Positions are stamped in order, because HubSpot orders by hs_position_on_quote, not creation.
   assert.deepEqual(
@@ -149,7 +151,8 @@ test('Deal line items reconcile to the approved calculation', () => {
       selected.result.paymentsPerYear * 0.005,
     'annual total may differ from ARR only by the per-payment rounding',
   );
-  assert.equal(recurringItems[1].properties.name, 'Connect - Email + Calendar Connected Accounts (CA)');
+  assert.equal(recurringItems[1].properties.hs_product_id, '45820463620');
+  assert.equal(recurringItems[1].properties.name, undefined);
 });
 
 test('every bundle product appears even with no commitment or discount', () => {
@@ -215,7 +218,8 @@ test('every quote carries a support line, Basic at $0 included', () => {
   const items = buildDealLineItems({ id: 'o', input, result: calculateQuote(input) });
   const support = items.find(({ key }) => key === 'support:basic');
   assert.ok(support, 'Basic support must still produce a line item');
-  assert.equal(support.properties.name, 'Support Services: Basic');
+  assert.equal(support.properties.hs_product_id, '40270989858');
+  assert.equal(support.properties.name, undefined);
   assert.equal(Number(support.properties.price), 0);
   // "None" onboarding is a real selection meaning none was sold, so it produces no line.
   assert.equal(
@@ -239,12 +243,14 @@ test('onboarding packages map to their own products, not the next one up', () =>
     return items.find(({ key }) => key.startsWith('onboarding:'))?.properties;
   };
   // Each key previously resolved to the NEXT package's product, and quick_launch had no entry.
-  assert.equal(forPackage('quick_launch').name, 'QuickLaunch Onboarding');
+  // hs_product_id is the whole guard now: no `name` is sent, so a mis-mapped key would put the
+  // wrong package on the customer's quote with nothing in the payload to reveal it.
   assert.equal(forPackage('quick_launch').hs_product_id, '42724377715');
-  assert.equal(forPackage('quick_launch_plus').name, 'QuickLaunch+ Onboarding');
+  assert.equal(forPackage('quick_launch').name, undefined);
   assert.equal(forPackage('quick_launch_plus').hs_product_id, '42724501576');
-  assert.equal(forPackage('strategic').name, 'Strategic Onboarding');
+  assert.equal(forPackage('quick_launch_plus').name, undefined);
   assert.equal(forPackage('strategic').hs_product_id, '42724439648');
+  assert.equal(forPackage('strategic').name, undefined);
 });
 
 test('Quote can collapse only the subscription products, not other charges', () => {
@@ -336,7 +342,7 @@ test('Quote and Deal line items carry identical properties', () => {
     assert.deepEqual(
       sentToHubSpot(quoteItems[index]),
       sentToHubSpot(dealItem),
-      `line ${index} (${dealItem.properties.name}) must match on the Quote and the Deal`,
+      `line ${index} (${dealItem.properties.hs_product_id}) must match on the Quote and the Deal`,
     );
   }
 });
@@ -358,10 +364,75 @@ test('no line item carries an app-authored description', () => {
       assert.equal(
         item.properties.description,
         undefined,
-        `${surface} line ${item.properties.name} must leave description to the product library`,
+        `${surface} line ${item.properties.hs_product_id} must leave description to the product library`,
       );
     }
   }
+});
+
+// The same principle, widened, and the guard that stops this recurring.
+//
+// "Enterprise Drawdown Fee" was sent as the line item `name` long after the product had been
+// renamed to "Enterprise Drawdown Commitment", so every Lock in silently reverted the rename on
+// the customer's quote. It survived a full round of removal and reappeared when that work was
+// reverted, which is why it now has a test rather than only a comment.
+//
+// The rule: the product library owns what a product IS -- its name, its category, its description,
+// its SKU. This app owns what was SOLD -- quantities, rates, discounts, fees. hs_product_id is all
+// HubSpot needs to fill in the first set, and anything this app sends there overwrites the
+// library's own value.
+test('no line item overwrites a product-owned field', () => {
+  const selected = option();
+  const content = normalizeQuoteContent({ includeUncommittedRateSchedule: true });
+  // product_category is deliberately NOT in this list. It IS still built, but it is blocked one
+  // layer later by HUBSPOT_LINE_ITEM_PROPERTIES in QuoteOptionsFunction.js -- because it is not a
+  // HubSpot-defined Line Item property, and a portal that never created it rejects the whole
+  // create. That the allow-list excludes it is asserted separately below, so both layers are
+  // covered without pretending the builder omits it.
+  const productOwned = ['name', 'description', 'hs_sku', 'hs_url'];
+  for (const [surface, items] of [
+    ['deal', buildDealLineItems(selected)],
+    ['quote', buildQuoteLineItems(selected, content)],
+  ]) {
+    for (const item of items) {
+      assert.ok(
+        item.properties.hs_product_id,
+        `${surface} line must carry hs_product_id so HubSpot can resolve the product`,
+      );
+      for (const property of productOwned) {
+        assert.equal(
+          item.properties[property],
+          undefined,
+          `${surface} line ${item.properties.hs_product_id} leaks ${property}`,
+        );
+      }
+    }
+  }
+});
+
+// The second layer. `name` is dropped by the builder above; this asserts the allow-list would
+// refuse it even if some future change started building it again, and that product_category --
+// which IS built -- never reaches HubSpot.
+test('the HubSpot allow-list refuses product-owned fields', () => {
+  const source = require('node:fs').readFileSync(
+    require('node:path').join(__dirname, 'QuoteOptionsFunction.js'),
+    'utf8',
+  );
+  const block = source.match(
+    /const HUBSPOT_LINE_ITEM_PROPERTIES = new Set\(\[([\s\S]*?)^\]\);/m,
+  );
+  assert.ok(block, 'HUBSPOT_LINE_ITEM_PROPERTIES must be findable');
+  const allowed = new Set(
+    block[1]
+      .split('\n')
+      .filter((line) => !line.trim().startsWith('//'))
+      .flatMap((line) => [...line.matchAll(/'([^']+)'/g)].map(([, name]) => name)),
+  );
+  for (const property of ['name', 'product_category', 'hs_sku', 'hs_url']) {
+    assert.equal(allowed.has(property), false, `${property} must not be in the allow-list`);
+  }
+  // And the link itself must survive, or nothing resolves to a product at all.
+  assert.equal(allowed.has('hs_product_id'), true);
 });
 
 // The fee columns, carried on every line that holds money.

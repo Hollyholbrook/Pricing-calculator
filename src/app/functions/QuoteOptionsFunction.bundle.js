@@ -812,7 +812,13 @@ var require_lineItemModel = __commonJS({
       // the standalone Platform product inside that bundle (SKU ENT-FY26), so it is what the
       // subscription line is built from. The previous id, 47269087321, is not in the library export
       // at all and HubSpot rejected it as a bundle.
-      enterprise: { id: "46037350773", name: "Enterprise Drawdown Fee", category: "Platform" },
+      enterprise: {
+        id: "46037350773",
+        // Local label only -- nothing sends it. Corrected from 'Enterprise Drawdown Fee' against the
+        // 2026-08-27 product export, which is also where the SKU ENT-FY26 below comes from.
+        name: "Enterprise Drawdown Commitment",
+        category: "Platform"
+      },
       connect_ca: {
         id: "45820463620",
         name: "Connect - Email + Calendar Connected Accounts (CA)",
@@ -1033,7 +1039,6 @@ var require_lineItemModel = __commonJS({
       };
     };
     var baseManagedProperties = ({ option, key, component, product, source }) => ({
-      name: product.name,
       hs_product_id: product.id,
       product_category: product.category,
       nylas_pricing_managed: "true",
@@ -2477,7 +2482,10 @@ var inBatches = async (values, action, batchSize = 10) => {
   }
 };
 var HUBSPOT_LINE_ITEM_PROPERTIES = /* @__PURE__ */ new Set([
-  "name",
+  // 'name' deliberately omitted, as a second guard behind lineItemModel not building it. The
+  // product library owns the product's name; hs_product_id is all HubSpot needs to resolve it, and
+  // anything sent here would overwrite the library's name on the line item. This is the reason
+  // "Enterprise Drawdown Fee" kept reappearing after the product was renamed.
   "hs_product_id",
   "quantity",
   "price",
