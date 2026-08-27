@@ -66,7 +66,15 @@ test('workbook modifiers and fixed charges are exact', () => {
   );
   assert.deepEqual(
     rules.onboardingRules.map(({ key, oneTimeAmount }) => [key, oneTimeAmount]),
-    [['quick_launch', 0], ['quick_launch_plus', 5_000], ['strategic', 10_000]],
+    // 'none' has been in pricingRules since e828a2c ("optional onboarding") but was never added
+    // here, so this assertion has been failing on main ever since. None means no onboarding was
+    // sold, which is a real selection at $0 -- not a missing entry.
+    [
+      ['none', 0],
+      ['quick_launch', 0],
+      ['quick_launch_plus', 5_000],
+      ['strategic', 10_000],
+    ],
   );
   assert.deepEqual(
     rules.professionalServicesRules.map(({ itemCount, oneTimeAmount }) => [
