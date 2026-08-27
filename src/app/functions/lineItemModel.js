@@ -382,6 +382,9 @@ const buildMeteredLines = (option, source) => {
     .map((line) => {
       const product = CATALOG[line.productKey];
       if (!product) throw new Error('PRODUCT_MAPPING_REQUIRED');
+      // A graduated product publishes per-band rates; a flat one publishes none. Read off the
+      // calculation rather than re-listing which products are graduated, so the two cannot drift.
+      const isGraduated = line.listBandRates.length > 0;
       return {
         key: `metered:${line.productKey}`,
         properties: {
@@ -396,22 +399,53 @@ const buildMeteredLines = (option, source) => {
             // Monthly, whatever the payment schedule. These rates are per month, and the drawdown
             // fee is the only charge in the package that follows the deal's billing cadence.
             billingPeriodsPerYear: 12,
-            // Price is left to HubSpot unless the rep actually changed it.
+            // ALWAYS send this deal's rate. Never leave it to the product's default.
             //
-            // Sending a price overrides the product's own list price, and the code was sending
-            // the monthly rate multiplied up to the billing period -- so a $1.30/month product
-            // showed $15.60 on a line whose description read "$1.30 per CA per month". Omitting
-            // it lets HubSpot hydrate the product's default, which is the number the product
-            // library already holds and the one the customer should see.
+            // The price used to be omitted unless the rep had discounted the product, on the
+            // reasoning that HubSpot would then hydrate "the number the product library already
+            // holds and the one the customer should see". That was wrong, and Shane Tjin caught it
+            // on a live quote: the library holds ONE FLAT LIST PRICE per product, which is not
+            // this deal's rate. Our rates are blended across the volume bands and adjusted for the
+            // contract term and payment schedule, so they differ from the flat price on every
+            // single line. On his quote Calendar-Only printed $1.20 where the agreed rate was
+            // $0.96 -- 25% over -- and Email + Calendar printed $1.60 where it was $1.76.
             //
-            // When a discount WAS entered the rate genuinely differs from the default, so both
-            // the list rate and the discount are sent -- as monthly rates, the same basis the
-            // product is priced on. Quantity is 0, so this moves no money; it makes the agreed
-            // rate and the concession visible on the rate schedule.
-            ...(line.discretionaryDiscount > 0
+            // This is the same ownership rule the rest of the file follows, applied correctly: the
+            // product library owns what a product IS (its name, its description), and this app
+            // owns what was SOLD -- and the rate is what was sold.
+            //
+            // The original complaint behind the omission was real but separate: the code used to
+            // send the monthly rate multiplied up to the billing period, so a $1.30/month product
+            // showed $15.60. billingUnitRate is the MONTHLY rate, which is the basis the product
+            // is priced on, so that does not recur here.
+            //
+            // Undiscounted, list and net are the same number and `discount` is omitted. Discounted,
+            // `price` carries the list rate and `discount` the concession -- Holly's model: "The
+            // unit price should always be the same, then we can add a unit discount, and then I
+            // will show the net price."
+            //
+            // EXCEPT for a graduated product, where a single price is the wrong shape entirely.
+            //
+            // Agent Email is priced across four tiers, and the product carries those tiers in
+            // HubSpot -- the quote renders them as "View tiered rates". Sending one blended figure
+            // would collapse all four into a flat rate and throw that away, which is a worse
+            // misrepresentation than the flat-price bug this block fixes. So a graduated line
+            // still leaves the price alone and lets the product's own tiers show.
+            //
+            // That leaves a known gap, tracked separately: a DISCOUNTED graduated line cannot
+            // express its concession this way, because the discounted per-tier rates need
+            // hs_tier_prices, which is Revenue-Hub gated and not yet confirmed in this portal.
+            // Until then a discounted Agent Email line shows list tiers rather than agreed ones.
+            //
+            // Zero is not sent either: a rate that blends to $0.00 would replace a real price
+            // with a flat "$0.00".
+            ...(!isGraduated && line.billingUnitRate > 0
               ? {
                   price: line.billingUnitRate,
-                  listPrice: line.billingUnitRate / (1 - line.discretionaryDiscount),
+                  listPrice:
+                    line.discretionaryDiscount !== 0
+                      ? line.billingUnitRate / (1 - line.discretionaryDiscount)
+                      : undefined,
                 }
               : {}),
             source,

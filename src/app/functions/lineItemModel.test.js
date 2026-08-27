@@ -101,13 +101,17 @@ test('Deal line items reconcile to the approved calculation', () => {
     assert.equal(Number(item.properties.quantity), 0, `${item.key} quantity`);
     assert.notEqual(item.properties.price, 'NaN', `${item.key} price is never the string NaN`);
   }
-  // This fixture carries a 10% discretionary discount, which normalizeInput spreads to every
-  // product, so every rate schedule line here sends its agreed rate. The
-  // no-discount-means-no-price case is covered by the all-products test below.
-  for (const item of items.filter(({ key }) => key.startsWith('metered:'))) {
+  // Every rate schedule line states this deal's rate, discounted or not -- leaving it to the
+  // product's flat default is what put $1.20 on a quote whose agreed rate was $0.96.
+  //
+  // Agent Email is excluded: it is graduated, its tiers live on the product, and one blended
+  // figure would collapse four rates into one.
+  for (const item of items.filter(
+    ({ key }) => key.startsWith('metered:') && key !== 'metered:agent_email_thousands',
+  )) {
     assert.ok(
       Number(item.properties.price) > 0,
-      `${item.key} sends the agreed rate when discounted`,
+      `${item.key} must carry this deal's rate, not the product default`,
     );
   }
 
@@ -180,13 +184,38 @@ test('every bundle product appears even with no commitment or discount', () => {
       'agent_email_thousands',
     ],
   );
-  // An uncommitted product still states the rate it would draw down at.
+  // An uncommitted product still states the rate it would draw down at -- and it states OUR rate.
+  //
+  // This assertion used to require the OPPOSITE: that price was left undefined so HubSpot would
+  // hydrate "the product default". That is what put the wrong rate on live quotes. The product
+  // library holds one flat price per product; our rates are blended across the volume bands and
+  // adjusted for term and payment schedule, so they differ on every line. Shane Tjin found
+  // Calendar-Only quoted at $1.20 against an agreed $0.96.
+  //
+  // So the test that was enforcing the bug now asserts the fix. This fixture is 12-month Annual In
+  // Advance, where the term discount and payment premium are both zero, so storage is its $0.20
+  // base rate unchanged -- which is exactly why it needs stating: even when our rate happens to
+  // equal the product's, it must be OURS that is sent.
   const uncommitted = metered.find(({ key }) => key === 'metered:agent_storage_gb');
   assert.equal(Number(uncommitted.properties.quantity), 0);
   assert.equal(
     uncommitted.properties.price,
+    '0.2',
+    'an undiscounted line still carries this deal rate, not the product default',
+  );
+  assert.equal(
+    uncommitted.properties.discount,
     undefined,
-    'price is left to the product default when nothing was discounted',
+    'and no discount, because none was given',
+  );
+
+  // Agent Email is the one exception: it is graduated, and the product carries its four tiers.
+  // One blended figure would collapse them, so its price is still left alone.
+  const graduated = metered.find(({ key }) => key === 'metered:agent_email_thousands');
+  assert.equal(
+    graduated.properties.price,
+    undefined,
+    'a graduated product keeps its tiers rather than being flattened to one rate',
   );
   assert.equal(uncommitted.properties.description, undefined);
   // The committed volume rides on committed_quantity, not in prose, and not in quantity -- these
@@ -510,4 +539,91 @@ test('the Contract Summary row labels match the workbook section VI table', () =
     'Subscription Add-ons',
     'Subscription Support',
   ]);
+});
+
+// Reported by Shane Tjin from a live quote, 2026-08-27: "the Calendar-only price is completely
+// wrong", and Notetaker showing the list rate rather than the proposed one.
+//
+// Every UNDISCOUNTED metered line used to omit `price` so HubSpot would hydrate "the product
+// default". The product library holds ONE FLAT PRICE per product; our rates are blended across the
+// volume bands and adjusted for the contract term and payment schedule, so they differ from that
+// flat price on essentially every line. The quote therefore showed the library's numbers, not the
+// deal's -- and the error ran in both directions, so nothing about the totals looked odd.
+//
+// His configuration: 24-month term, Quarterly In Advance (x1.035), Calendar-Only 5,000,
+// Notetaker 1,000 at 10%, Agent Email 400.
+test("every metered line carries this deal's rate, not the product library's flat price", () => {
+  const input = {
+    termMonths: 24,
+    paymentFrequency: 'quarterly_in_advance',
+    volumes: {
+      connect_ca: 0,
+      calendar_ca: 5_000,
+      notetaker_bot_hours: 1_000,
+      agent_accounts: 0,
+      agent_email_thousands: 400,
+      agent_storage_gb: 0,
+      agent_bandwidth_gb: 0,
+    },
+    productDiscounts: { notetaker_bot_hours: 0.1 },
+    supportLevel: 'premium',
+    onboardingPackage: 'strategic',
+    professionalServices: [],
+    addOns: [],
+  };
+  const result = calculateQuote(input);
+  const items = buildDealLineItems({ id: 'o', input, result });
+  const priceOf = (key) => items.find((item) => item.key === `metered:${key}`).properties;
+
+  // The figure that started this. The library's flat Calendar-Only price is $1.20; the agreed rate
+  // at 5,000 accounts on this term is $0.96. Quoting $1.20 overstates it by 25%.
+  // Sent rounded to the cent, because it is a price on an invoice line.
+  assert.equal(
+    priceOf('calendar_ca').price,
+    '0.96',
+    'Calendar-Only quotes at $0.96, not the library $1.20',
+  );
+
+  // It ran the other way too: Email + Calendar's library price is $1.60 against an agreed $1.76,
+  // so the same defect also UNDER-quoted. Uncommitted, and still stating its rate.
+  assert.equal(
+    Math.round(Number(priceOf('connect_ca').price) * 100) / 100,
+    1.76,
+    'Email + Calendar quotes at $1.76, not the library $1.60',
+  );
+
+  // Discounted lines keep Holly's model: `price` is the LIST rate and `discount` the concession,
+  // so HubSpot's net is the proposed rate. Shane expected $0.56 per bot hour.
+  const notetaker = priceOf('notetaker_bot_hours');
+  assert.ok(Number(notetaker.discount) > 0, 'the concession is stated separately');
+  assert.equal(
+    Math.round((Number(notetaker.price) - Number(notetaker.discount)) * 100) / 100,
+    0.56,
+    'Notetaker nets to the proposed $0.56',
+  );
+  assert.equal(
+    Math.round(Number(notetaker.price) * 100) / 100,
+    0.62,
+    'and its list rate stays visible at $0.62',
+  );
+
+  // The exception, and the reason this is not a blanket "always send a price": Agent Email is
+  // graduated and the product carries its four tiers, which the quote renders as "View tiered
+  // rates". One blended figure would collapse them, which is a worse misstatement than the bug
+  // being fixed here.
+  assert.equal(
+    priceOf('agent_email_thousands').price,
+    undefined,
+    'a graduated product keeps its tiers',
+  );
+
+  // Every rate sent is this deal's rate, to the cent.
+  for (const key of ['connect_ca', 'calendar_ca', 'agent_accounts', 'agent_bandwidth_gb']) {
+    const line = result.lines.find(({ productKey }) => productKey === key);
+    assert.equal(
+      Math.round(Number(priceOf(key).price) * 100) / 100,
+      Math.round(line.billingUnitRate * 100) / 100,
+      `${key} price must equal the calculated rate`,
+    );
+  }
 });
