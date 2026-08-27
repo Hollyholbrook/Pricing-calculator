@@ -97,6 +97,37 @@ const paymentMethodProperties = (paymentMethod) =>
 const paymentFrequencyProperties = (paymentFrequency) =>
   choiceProperty(DEAL_PAYMENT_FREQUENCY, paymentFrequency);
 
+// The seller shown on the quote should be whoever clicked Lock in, not the Deal's owner.
+//
+// EMPTY UNTIL THE PORTAL'S PROPERTY NAMES ARE FILLED IN. HubSpot's Quotes API reference does not
+// document the sender properties at all -- it says to read GET crm/properties/2026-03/quotes for
+// them -- and a wrong property name fails the quote create, so they are not guessed.
+//
+// Fill each with the internal name from Settings > Properties > object: Quote. While a slot is '',
+// that field is not sent and the quote keeps HubSpot's own behaviour of inheriting the seller from
+// the associated Deal's owner.
+const QUOTE_SELLER_PROPERTIES = Object.freeze({
+  firstName: '',
+  lastName: '',
+  email: '',
+});
+
+const sellerProperties = (actingUser) => {
+  if (!actingUser || typeof actingUser !== 'object') return {};
+  const parts = {
+    firstName: String(actingUser.firstName || '').slice(0, 100),
+    lastName: String(actingUser.lastName || '').slice(0, 100),
+    email: String(actingUser.email || '').slice(0, 254),
+  };
+  const properties = {};
+  for (const [slot, name] of Object.entries(QUOTE_SELLER_PROPERTIES)) {
+    // Only non-empty values: sending '' would blank whatever the quote inherited, which is worse
+    // than leaving the inherited seller in place.
+    if (name && parts[slot]) properties[name] = parts[slot];
+  }
+  return properties;
+};
+
 const MAX_OPTIONS = 10;
 const MAX_PAYLOAD_LENGTH = 60_000;
 
@@ -986,6 +1017,9 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
         // it the quote defaults to the legacy model and HubSpot rejects the CPQ template it is
         // associated with.
         hs_template_type: 'CPQ_QUOTE',
+        // Empty until QUOTE_SELLER_PROPERTIES is filled in; the quote then keeps HubSpot's own
+        // behaviour of inheriting the seller from the Deal's owner.
+        ...sellerProperties(parameters.actingUser),
       },
       associations: [],
     });

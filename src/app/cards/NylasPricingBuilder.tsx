@@ -791,6 +791,15 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
         input: editing.input,
         quoteContent,
         paymentMethod,
+        // Who is actually clicking. context.user is the signed-in HubSpot user, which is not the
+        // same as the Deal's owner -- the point of sending it is that the seller on the quote
+        // should be the person who generated it, not whoever owns the record.
+        actingUser: {
+          id: String(context.user?.id || ""),
+          email: context.user?.email || "",
+          firstName: context.user?.firstName || "",
+          lastName: context.user?.lastName || "",
+        },
       });
       // generateQuote is idempotent on the quote content hash, so a repeat lock reuses the
       // existing Quote rather than creating one. Saying "created" either way misreports it.
