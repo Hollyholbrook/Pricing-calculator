@@ -802,360 +802,6 @@ var require_calculator = __commonJS({
   }
 });
 
-// appSettings.js
-var require_appSettings = __commonJS({
-  "appSettings.js"(exports2, module2) {
-    var crypto2 = require("node:crypto");
-    var pricingRules = require_pricingRules();
-    var CONFIGURATION_KEY = "default";
-    var OBJECT_NAME = "nylas_pricing_configuration";
-    var MAX_PIPELINES = 30;
-    var CALCULATION_METHODS = Object.freeze(["excel_compatible", "rounded_unit_rate"]);
-    var LEGACY_PRODUCT_BAND_RATES = Object.freeze({
-      agent_email_thousands: [0.5]
-    });
-    var defaultPricingPolicy = () => ({
-      calculationMethod: "excel_compatible",
-      minimumCommittedArr: 25e3,
-      redliningMinimumArr: 5e4,
-      salesDirectorDiscountMax: 0.1,
-      headSalesDiscountMax: 0.3,
-      termDiscounts: { "12": 0, "24": 0.025, "36": 0.05 },
-      paymentPremiums: {
-        annual_in_advance: 0,
-        semi_annual_in_advance: 0.04,
-        quarterly_in_advance: 0.06,
-        monthly_in_advance: 0.08
-      },
-      support: {
-        basic: { percent: 0, cap: 0 },
-        full: { percent: 0.1, cap: 1e4 },
-        premium: { percent: 0.2, cap: 2e4 }
-      },
-      onboardingAmounts: {
-        quick_launch: 0,
-        quick_launch_plus: 5e3,
-        strategic: 1e4
-      },
-      professionalServicesAmounts: [0, 2e3, 3800, 5500, 7200, 8800],
-      addOnAnnualAmounts: {
-        enterprise_accelerator: 2400,
-        privacy_filter: 6e3,
-        verified_oauth: 5e3
-      },
-      productBandRates: Object.fromEntries(
-        pricingRules.products.map(({ key, bands }) => [key, bands.map((band) => band[2])])
-      )
-    });
-    var defaultSettings = () => ({
-      schemaVersion: "1.0",
-      version: 0,
-      allowNewBusiness: true,
-      allowRenewals: false,
-      newBusinessPipelineIds: [],
-      renewalPipelineIds: [],
-      pricingPolicy: defaultPricingPolicy()
-    });
-    var requireNumber = (value, min, max, field) => {
-      if (typeof value !== "number" || !Number.isFinite(value) || value < min || value > max) {
-        throw new Error(`INVALID_SETTINGS:${field}`);
-      }
-      return Math.round((value + Number.EPSILON) * 1e6) / 1e6;
-    };
-    var normalizePricingPolicy = (incoming) => {
-      const defaults = defaultPricingPolicy();
-      const value = incoming && typeof incoming === "object" && !Array.isArray(incoming) ? incoming : defaults;
-      if (value.calculationMethod != null && !CALCULATION_METHODS.includes(value.calculationMethod)) {
-        throw new Error("INVALID_SETTINGS:calculationMethod");
-      }
-      const policy = {
-        calculationMethod: CALCULATION_METHODS.includes(value.calculationMethod) ? value.calculationMethod : defaults.calculationMethod,
-        minimumCommittedArr: requireNumber(
-          value.minimumCommittedArr ?? defaults.minimumCommittedArr,
-          0,
-          1e9,
-          "minimumCommittedArr"
-        ),
-        redliningMinimumArr: requireNumber(
-          value.redliningMinimumArr ?? defaults.redliningMinimumArr,
-          0,
-          1e9,
-          "redliningMinimumArr"
-        ),
-        salesDirectorDiscountMax: requireNumber(
-          value.salesDirectorDiscountMax ?? defaults.salesDirectorDiscountMax,
-          0,
-          1,
-          "salesDirectorDiscountMax"
-        ),
-        headSalesDiscountMax: requireNumber(
-          value.headSalesDiscountMax ?? defaults.headSalesDiscountMax,
-          0,
-          1,
-          "headSalesDiscountMax"
-        ),
-        termDiscounts: {},
-        paymentPremiums: {},
-        support: {},
-        onboardingAmounts: {},
-        professionalServicesAmounts: [],
-        addOnAnnualAmounts: {},
-        productBandRates: {}
-      };
-      if (policy.salesDirectorDiscountMax > policy.headSalesDiscountMax) {
-        throw new Error("INVALID_SETTINGS:discountThresholds");
-      }
-      for (const key of ["12", "24", "36"]) {
-        policy.termDiscounts[key] = requireNumber(
-          value.termDiscounts?.[key] ?? defaults.termDiscounts[key],
-          0,
-          1,
-          `termDiscounts.${key}`
-        );
-      }
-      for (const key of Object.keys(defaults.paymentPremiums)) {
-        policy.paymentPremiums[key] = requireNumber(
-          value.paymentPremiums?.[key] ?? defaults.paymentPremiums[key],
-          0,
-          1,
-          `paymentPremiums.${key}`
-        );
-      }
-      for (const key of Object.keys(defaults.support)) {
-        policy.support[key] = {
-          percent: requireNumber(
-            value.support?.[key]?.percent ?? defaults.support[key].percent,
-            0,
-            1,
-            `support.${key}.percent`
-          ),
-          cap: requireNumber(
-            value.support?.[key]?.cap ?? defaults.support[key].cap,
-            0,
-            1e9,
-            `support.${key}.cap`
-          )
-        };
-      }
-      for (const key of Object.keys(defaults.onboardingAmounts)) {
-        policy.onboardingAmounts[key] = requireNumber(
-          value.onboardingAmounts?.[key] ?? defaults.onboardingAmounts[key],
-          0,
-          1e9,
-          `onboardingAmounts.${key}`
-        );
-      }
-      if (value.professionalServicesAmounts != null && (!Array.isArray(value.professionalServicesAmounts) || value.professionalServicesAmounts.length !== 6)) {
-        throw new Error("INVALID_SETTINGS:professionalServicesAmounts");
-      }
-      policy.professionalServicesAmounts = defaults.professionalServicesAmounts.map(
-        (amount, index) => requireNumber(
-          value.professionalServicesAmounts?.[index] ?? amount,
-          0,
-          1e9,
-          `professionalServicesAmounts.${index}`
-        )
-      );
-      for (const key of Object.keys(defaults.addOnAnnualAmounts)) {
-        policy.addOnAnnualAmounts[key] = requireNumber(
-          value.addOnAnnualAmounts?.[key] ?? defaults.addOnAnnualAmounts[key],
-          0,
-          1e9,
-          `addOnAnnualAmounts.${key}`
-        );
-      }
-      for (const product of pricingRules.products) {
-        const incomingRates = value.productBandRates?.[product.key];
-        const defaultRates = defaults.productBandRates[product.key];
-        if (incomingRates != null && (!Array.isArray(incomingRates) || incomingRates.length > product.bands.length)) {
-          throw new Error(`INVALID_SETTINGS:productBandRates.${product.key}`);
-        }
-        const legacyDefaults = LEGACY_PRODUCT_BAND_RATES[product.key];
-        const isUnmodifiedLegacyDefault = Array.isArray(incomingRates) && Array.isArray(legacyDefaults) && incomingRates.length === legacyDefaults.length && incomingRates.every((rate, index) => rate === legacyDefaults[index]);
-        policy.productBandRates[product.key] = defaultRates.map(
-          (rate, index) => requireNumber(
-            isUnmodifiedLegacyDefault ? rate : incomingRates?.[index] ?? rate,
-            0,
-            1e6,
-            `productBandRates.${product.key}.${index}`
-          )
-        );
-      }
-      return policy;
-    };
-    var accountIdFromContext2 = (context) => String(
-      context?.accountId || context?.portal?.id || context?.portalId || context?.hubId || context?.hubspot?.portalId || ""
-    );
-    var userIdFromContext2 = (context) => String(context?.userId || context?.user?.id || context?.user?.userId || "");
-    var objectTypeForAccount = (accountId) => {
-      if (!/^\d{1,20}$/.test(accountId)) throw new Error("SETTINGS_CONFIGURATION_REQUIRED");
-      return `p${accountId}_${OBJECT_NAME}`;
-    };
-    var normalizePipelineIds = (value, field) => {
-      if (!Array.isArray(value) || value.length > MAX_PIPELINES) {
-        throw new Error(`INVALID_SETTINGS:${field}`);
-      }
-      return [...new Set(value.map(String))].map((id) => {
-        if (!/^[a-zA-Z0-9_-]{1,100}$/.test(id)) throw new Error(`INVALID_SETTINGS:${field}`);
-        return id;
-      });
-    };
-    var normalizeSettings = (value, currentVersion = 0) => {
-      if (!value || typeof value !== "object" || Array.isArray(value)) {
-        throw new Error("INVALID_SETTINGS:settings");
-      }
-      if (typeof value.allowNewBusiness !== "boolean" || typeof value.allowRenewals !== "boolean") {
-        throw new Error("INVALID_SETTINGS:allowedDealTypes");
-      }
-      if (!value.allowNewBusiness && !value.allowRenewals) {
-        throw new Error("INVALID_SETTINGS:allowedDealTypes");
-      }
-      return {
-        schemaVersion: "1.0",
-        version: currentVersion,
-        allowNewBusiness: value.allowNewBusiness,
-        allowRenewals: value.allowRenewals,
-        newBusinessPipelineIds: normalizePipelineIds(
-          value.newBusinessPipelineIds || [],
-          "newBusinessPipelineIds"
-        ),
-        renewalPipelineIds: normalizePipelineIds(
-          value.renewalPipelineIds || [],
-          "renewalPipelineIds"
-        ),
-        pricingPolicy: normalizePricingPolicy(value.pricingPolicy)
-      };
-    };
-    var request = async (accessToken, path, options = {}) => {
-      if (typeof accessToken !== "string" || accessToken.length < 20) {
-        throw new Error("SETTINGS_CONFIGURATION_REQUIRED");
-      }
-      const response2 = await fetch(`https://api.hubapi.com${path}`, {
-        method: options.method || "GET",
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          ...options.body ? { "Content-Type": "application/json" } : {}
-        },
-        ...options.body ? { body: JSON.stringify(options.body) } : {}
-      });
-      const text = await response2.text();
-      let body = {};
-      if (text) {
-        try {
-          body = JSON.parse(text);
-        } catch {
-          body = {};
-        }
-      }
-      if (!response2.ok) {
-        const error = new Error(`HUBSPOT_SETTINGS_API:${response2.status}`);
-        error.statusCode = response2.status;
-        throw error;
-      }
-      return body;
-    };
-    var readSettings2 = async (accessToken, accountId) => {
-      const objectType = objectTypeForAccount(accountId);
-      let result;
-      try {
-        result = await request(accessToken, `/crm/v3/objects/${encodeURIComponent(objectType)}/search`, {
-          method: "POST",
-          body: {
-            filterGroups: [
-              { filters: [{ propertyName: "configuration_key", operator: "EQ", value: CONFIGURATION_KEY }] }
-            ],
-            properties: ["configuration_key", "configuration_json"],
-            limit: 1
-          }
-        });
-      } catch (error) {
-        if (error.statusCode === 400 || error.statusCode === 404) {
-          return { recordId: null, settings: defaultSettings(), configured: false };
-        }
-        throw error;
-      }
-      const record = result.results?.[0];
-      if (!record) return { recordId: null, settings: defaultSettings(), configured: true };
-      try {
-        const parsed = JSON.parse(record.properties?.configuration_json || "{}");
-        const version = Number.isInteger(parsed.version) && parsed.version >= 0 ? parsed.version : 0;
-        return {
-          recordId: String(record.id),
-          settings: normalizeSettings(parsed, version),
-          configured: true
-        };
-      } catch {
-        throw new Error("SETTINGS_CONFIGURATION_REQUIRED");
-      }
-    };
-    var saveSettings2 = async (accessToken, accountId, userId, incoming, expectedVersion) => {
-      const current = await readSettings2(accessToken, accountId);
-      if (!current.configured) throw new Error("SETTINGS_CONFIGURATION_REQUIRED");
-      if (!Number.isInteger(expectedVersion) || expectedVersion !== current.settings.version) {
-        throw new Error("SETTINGS_CONFLICT");
-      }
-      const settings = normalizeSettings(incoming, current.settings.version + 1);
-      const properties = {
-        configuration_key: CONFIGURATION_KEY,
-        configuration_json: JSON.stringify(settings),
-        updated_by_user_id: String(userId).slice(0, 30),
-        updated_at: (/* @__PURE__ */ new Date()).toISOString()
-      };
-      const objectType = objectTypeForAccount(accountId);
-      if (current.recordId) {
-        await request(
-          accessToken,
-          `/crm/v3/objects/${encodeURIComponent(objectType)}/${encodeURIComponent(current.recordId)}`,
-          { method: "PATCH", body: { properties } }
-        );
-      } else {
-        await request(accessToken, `/crm/v3/objects/${encodeURIComponent(objectType)}`, {
-          method: "POST",
-          body: { properties }
-        });
-      }
-      return settings;
-    };
-    var readDealPipelines2 = async (accessToken) => {
-      const result = await request(accessToken, "/crm/v3/pipelines/deals");
-      return (result.results || []).filter(({ id, label }) => id && label).slice(0, MAX_PIPELINES).map(({ id, label }) => ({ id: String(id), label: String(label).slice(0, 120) }));
-    };
-    var isSettingsAdmin2 = (context) => {
-      const actual = userIdFromContext2(context);
-      const allowed = String(process.env.SETTINGS_ADMIN_USER_IDS || "").split(",").map((value) => value.trim()).filter(Boolean);
-      return Boolean(actual) && allowed.some((expected) => {
-        if (expected.length !== actual.length) return false;
-        return crypto2.timingSafeEqual(Buffer.from(expected), Buffer.from(actual));
-      });
-    };
-    var dealCategory = (settings, dealType, pipelineId) => {
-      if (settings.renewalPipelineIds.includes(pipelineId)) return "renewal";
-      if (settings.newBusinessPipelineIds.includes(pipelineId)) return "new_business";
-      const normalized = String(dealType || "").toLowerCase().replace(/[^a-z]/g, "");
-      if (!normalized) return "new_business";
-      if (normalized === "newbusiness") return "new_business";
-      if (normalized === "renewal") return "renewal";
-      return "unsupported";
-    };
-    var isDealAllowed2 = (settings, dealType, pipelineId) => {
-      const category = dealCategory(settings, dealType, pipelineId);
-      return category === "new_business" && settings.allowNewBusiness || category === "renewal" && settings.allowRenewals;
-    };
-    module2.exports = {
-      accountIdFromContext: accountIdFromContext2,
-      defaultPricingPolicy,
-      defaultSettings,
-      isDealAllowed: isDealAllowed2,
-      isSettingsAdmin: isSettingsAdmin2,
-      normalizeSettings,
-      readDealPipelines: readDealPipelines2,
-      readSettings: readSettings2,
-      saveSettings: saveSettings2,
-      userIdFromContext: userIdFromContext2
-    };
-  }
-});
-
 // lineItemModel.js
 var require_lineItemModel = __commonJS({
   "lineItemModel.js"(exports2, module2) {
@@ -1651,10 +1297,630 @@ var require_lineItemModel = __commonJS({
   }
 });
 
+// productLibrary.js
+var require_productLibrary = __commonJS({
+  "productLibrary.js"(exports2, module2) {
+    var rules = require_pricingRules();
+    var { CATALOG } = require_lineItemModel();
+    var TIER_PROPERTIES = ["hs_pricing_model", "hs_tier_ranges", "hs_tier_prices"];
+    var PRODUCT_PROPERTIES = ["name", "price", "hs_sku", "recurringbillingfrequency", ...TIER_PROPERTIES];
+    var sameMoney = (left, right) => {
+      if (left == null || right == null) return left == null && right == null;
+      return Math.abs(Number(left) - Number(right)) <= 5e-3;
+    };
+    var parseJsonProperty = (raw, label) => {
+      if (raw == null || raw === "") return { value: null, error: null };
+      try {
+        const value = JSON.parse(raw);
+        if (!Array.isArray(value)) {
+          return { value: null, error: `${label} is not a JSON array` };
+        }
+        return { value, error: null };
+      } catch {
+        return { value: null, error: `${label} is not valid JSON` };
+      }
+    };
+    var bandsFromTiers = (ranges, prices) => {
+      const priceByIndex = /* @__PURE__ */ new Map();
+      for (const entry of prices) {
+        if (entry?.currency && entry.currency !== rules.currency) continue;
+        if (Number.isInteger(entry?.index)) priceByIndex.set(entry.index, Number(entry.price));
+      }
+      return ranges.map((range, index) => [
+        Number(range?.start ?? 0),
+        range?.end == null ? null : Number(range.end) + 1,
+        priceByIndex.has(index) ? priceByIndex.get(index) : null
+      ]);
+    };
+    var UNIT_DIVISOR = { agent_email_thousands: 1e3 };
+    var scaleBands = (bands, key) => {
+      const divisor = UNIT_DIVISOR[key];
+      if (!divisor) return bands;
+      return bands.map(([lower, upper, rate]) => [
+        lower / divisor,
+        upper == null ? null : upper / divisor,
+        rate
+      ]);
+    };
+    var localExpectation = (key) => {
+      const product = rules.products.find((entry) => entry.key === key);
+      if (product) {
+        return {
+          kind: "metered",
+          bands: product.bands.map(([lower, upper, rate]) => [lower, upper, rate]),
+          pricingModel: product.pricingModel === "graduated_adjusted_bands" ? "graduated" : "flat",
+          unitOfMeasure: product.unitOfMeasure
+        };
+      }
+      const onboarding = rules.onboardingRules.find((entry) => entry.key === key);
+      if (onboarding) return { kind: "one_time", amount: onboarding.oneTimeAmount };
+      const addOn = rules.addOnRules.find((entry) => entry.key === key);
+      if (addOn) return { kind: "recurring_annual", amount: addOn.annualAmount };
+      if (key === "enterprise") {
+        return { kind: "formula", note: "platform ARR divided across the payments in a year" };
+      }
+      if (rules.supportRules.some((entry) => entry.key === key)) {
+        return { kind: "formula", note: "percentage of platform ARR with an annual cap" };
+      }
+      if (rules.professionalServiceOptions.some((entry) => entry.key === key)) {
+        return { kind: "formula", note: "priced by how many services were selected, not per item" };
+      }
+      return { kind: "unpriced" };
+    };
+    var compareProduct = (key, catalogEntry, hubspot2) => {
+      const row = {
+        key,
+        productId: catalogEntry.id,
+        localName: catalogEntry.name,
+        found: Boolean(hubspot2),
+        disagreements: [],
+        notes: []
+      };
+      if (!hubspot2) {
+        row.disagreements.push({
+          field: "product",
+          local: catalogEntry.id,
+          hubspot: null,
+          detail: "no product with this id \u2014 line items built from it will fail"
+        });
+        return row;
+      }
+      const properties = hubspot2.properties || {};
+      row.hubspotName = properties.name ?? null;
+      row.hubspotPrice = properties.price == null ? null : Number(properties.price);
+      row.sku = properties.hs_sku ?? null;
+      row.hubspotPricingModel = properties.hs_pricing_model || "flat";
+      row.tiersAvailable = Object.prototype.hasOwnProperty.call(properties, "hs_tier_ranges");
+      if (row.hubspotName && row.hubspotName !== catalogEntry.name) {
+        row.disagreements.push({
+          field: "name",
+          local: catalogEntry.name,
+          hubspot: row.hubspotName,
+          detail: "local label is stale; HubSpot owns the name"
+        });
+      }
+      const expectation = localExpectation(key);
+      row.localKind = expectation.kind;
+      if (expectation.kind === "formula") {
+        row.notes.push(`priced by rule, not by unit price: ${expectation.note}`);
+        return row;
+      }
+      if (expectation.kind === "one_time" || expectation.kind === "recurring_annual") {
+        if (!sameMoney(expectation.amount, row.hubspotPrice)) {
+          row.disagreements.push({
+            field: "price",
+            local: expectation.amount,
+            hubspot: row.hubspotPrice,
+            detail: "fixed amount differs"
+          });
+        }
+        return row;
+      }
+      if (expectation.kind !== "metered") return row;
+      row.localPricingModel = expectation.pricingModel;
+      if (row.hubspotPricingModel !== expectation.pricingModel) {
+        row.disagreements.push({
+          field: "hs_pricing_model",
+          local: expectation.pricingModel,
+          hubspot: row.hubspotPricingModel,
+          detail: "graduated bills each tier separately; volume bills every unit at the landed tier"
+        });
+      }
+      if (!row.tiersAvailable) {
+        row.notes.push(
+          "hs_tier_ranges absent \u2014 either this portal has no tiered pricing (Revenue Hub) or the property was not requested"
+        );
+        if (expectation.bands.length === 1 && !sameMoney(expectation.bands[0][2], row.hubspotPrice)) {
+          row.disagreements.push({
+            field: "price",
+            local: expectation.bands[0][2],
+            hubspot: row.hubspotPrice,
+            detail: "single-rate product, unit price differs"
+          });
+        }
+        return row;
+      }
+      const ranges = parseJsonProperty(properties.hs_tier_ranges, "hs_tier_ranges");
+      const prices = parseJsonProperty(properties.hs_tier_prices, "hs_tier_prices");
+      if (ranges.error) row.notes.push(ranges.error);
+      if (prices.error) row.notes.push(prices.error);
+      if (!ranges.value || !prices.value) return row;
+      const hubspotBands = scaleBands(bandsFromTiers(ranges.value, prices.value), key);
+      row.hubspotBands = hubspotBands;
+      row.localBands = expectation.bands;
+      if (hubspotBands.length !== expectation.bands.length) {
+        row.disagreements.push({
+          field: "tier count",
+          local: expectation.bands.length,
+          hubspot: hubspotBands.length,
+          detail: "different number of tiers \u2014 compare the tables directly"
+        });
+        return row;
+      }
+      expectation.bands.forEach(([lower, upper, rate], index) => {
+        const [hsLower, hsUpper, hsRate] = hubspotBands[index];
+        if (lower !== hsLower || upper !== hsUpper) {
+          row.disagreements.push({
+            field: `tier ${index + 1} range`,
+            local: `${lower}\u2013${upper == null ? "\u221E" : upper}`,
+            hubspot: `${hsLower}\u2013${hsUpper == null ? "\u221E" : hsUpper}`,
+            detail: "boundaries differ (HubSpot end is inclusive; these are exclusive uppers)"
+          });
+        }
+        if (!sameMoney(rate, hsRate)) {
+          row.disagreements.push({
+            field: `tier ${index + 1} rate`,
+            local: rate,
+            hubspot: hsRate,
+            detail: "rate differs"
+          });
+        }
+      });
+      return row;
+    };
+    var readProducts = async (client, ids) => {
+      const inputs = ids.map((id) => ({ id }));
+      const attempts = [];
+      const record = (source, results2, error) => {
+        attempts.push({
+          source,
+          ok: !error,
+          count: results2 ? results2.length : 0,
+          tierPropertyReturned: Boolean(
+            results2?.some(
+              (entry) => Object.prototype.hasOwnProperty.call(entry.properties || {}, "hs_tier_ranges")
+            )
+          ),
+          error: error ? String(error?.message || error) : null
+        });
+      };
+      let results = null;
+      try {
+        const response2 = await client.crm.products.batchApi.read({
+          inputs,
+          properties: PRODUCT_PROPERTIES,
+          propertiesWithHistory: []
+        });
+        results = response2?.results || [];
+        record("crm/v3 batch read", results, null);
+      } catch (error) {
+        record("crm/v3 batch read", null, error);
+      }
+      if (!results?.length || !attempts[0].tierPropertyReturned) {
+        try {
+          const response2 = await client.apiRequest({
+            method: "POST",
+            path: "/crm/objects/2026-03/products/batch/read",
+            body: { inputs, properties: PRODUCT_PROPERTIES, propertiesWithHistory: [] }
+          });
+          const body = typeof response2?.json === "function" ? await response2.json() : response2?.body;
+          const dated = body?.results || [];
+          record("crm/objects/2026-03 batch read", dated, null);
+          if (dated.length && (!results?.length || attempts[1].tierPropertyReturned)) {
+            results = dated;
+          }
+        } catch (error) {
+          record("crm/objects/2026-03 batch read", null, error);
+        }
+      }
+      return { results: results || [], attempts };
+    };
+    var inspectProductLibrary2 = async (client) => {
+      const entries = Object.entries(CATALOG);
+      const { results, attempts } = await readProducts(
+        client,
+        entries.map(([, entry]) => entry.id)
+      );
+      const byId = new Map(results.map((entry) => [String(entry.id), entry]));
+      const rows = entries.map(([key, entry]) => compareProduct(key, entry, byId.get(String(entry.id))));
+      const disagreeing = rows.filter((row) => row.disagreements.length > 0);
+      return {
+        checkedAt: (/* @__PURE__ */ new Date()).toISOString(),
+        priceListVersion: rules.priceListVersion,
+        reads: attempts,
+        // The headline: whether this portal can express tiered pricing over the API at all. Sourcing
+        // the rate card from HubSpot is impossible for graduated products if this is false.
+        tieredPricingAvailable: rows.some((row) => row.tiersAvailable),
+        productCount: rows.length,
+        missingCount: rows.filter((row) => !row.found).length,
+        disagreementCount: disagreeing.reduce((sum, row) => sum + row.disagreements.length, 0),
+        rows
+      };
+    };
+    module2.exports = {
+      inspectProductLibrary: inspectProductLibrary2,
+      _test: {
+        bandsFromTiers,
+        scaleBands,
+        compareProduct,
+        localExpectation,
+        parseJsonProperty,
+        sameMoney,
+        PRODUCT_PROPERTIES
+      }
+    };
+  }
+});
+
+// appSettings.js
+var require_appSettings = __commonJS({
+  "appSettings.js"(exports2, module2) {
+    var crypto2 = require("node:crypto");
+    var pricingRules = require_pricingRules();
+    var CONFIGURATION_KEY = "default";
+    var OBJECT_NAME = "nylas_pricing_configuration";
+    var MAX_PIPELINES = 30;
+    var CALCULATION_METHODS = Object.freeze(["excel_compatible", "rounded_unit_rate"]);
+    var LEGACY_PRODUCT_BAND_RATES = Object.freeze({
+      agent_email_thousands: [0.5]
+    });
+    var defaultPricingPolicy = () => ({
+      calculationMethod: "excel_compatible",
+      minimumCommittedArr: 25e3,
+      redliningMinimumArr: 5e4,
+      salesDirectorDiscountMax: 0.1,
+      headSalesDiscountMax: 0.3,
+      termDiscounts: { "12": 0, "24": 0.025, "36": 0.05 },
+      paymentPremiums: {
+        annual_in_advance: 0,
+        semi_annual_in_advance: 0.04,
+        quarterly_in_advance: 0.06,
+        monthly_in_advance: 0.08
+      },
+      support: {
+        basic: { percent: 0, cap: 0 },
+        full: { percent: 0.1, cap: 1e4 },
+        premium: { percent: 0.2, cap: 2e4 }
+      },
+      onboardingAmounts: {
+        quick_launch: 0,
+        quick_launch_plus: 5e3,
+        strategic: 1e4
+      },
+      professionalServicesAmounts: [0, 2e3, 3800, 5500, 7200, 8800],
+      addOnAnnualAmounts: {
+        enterprise_accelerator: 2400,
+        privacy_filter: 6e3,
+        verified_oauth: 5e3
+      },
+      productBandRates: Object.fromEntries(
+        pricingRules.products.map(({ key, bands }) => [key, bands.map((band) => band[2])])
+      )
+    });
+    var defaultSettings = () => ({
+      schemaVersion: "1.0",
+      version: 0,
+      allowNewBusiness: true,
+      allowRenewals: false,
+      newBusinessPipelineIds: [],
+      renewalPipelineIds: [],
+      pricingPolicy: defaultPricingPolicy()
+    });
+    var requireNumber = (value, min, max, field) => {
+      if (typeof value !== "number" || !Number.isFinite(value) || value < min || value > max) {
+        throw new Error(`INVALID_SETTINGS:${field}`);
+      }
+      return Math.round((value + Number.EPSILON) * 1e6) / 1e6;
+    };
+    var normalizePricingPolicy = (incoming) => {
+      const defaults = defaultPricingPolicy();
+      const value = incoming && typeof incoming === "object" && !Array.isArray(incoming) ? incoming : defaults;
+      if (value.calculationMethod != null && !CALCULATION_METHODS.includes(value.calculationMethod)) {
+        throw new Error("INVALID_SETTINGS:calculationMethod");
+      }
+      const policy = {
+        calculationMethod: CALCULATION_METHODS.includes(value.calculationMethod) ? value.calculationMethod : defaults.calculationMethod,
+        minimumCommittedArr: requireNumber(
+          value.minimumCommittedArr ?? defaults.minimumCommittedArr,
+          0,
+          1e9,
+          "minimumCommittedArr"
+        ),
+        redliningMinimumArr: requireNumber(
+          value.redliningMinimumArr ?? defaults.redliningMinimumArr,
+          0,
+          1e9,
+          "redliningMinimumArr"
+        ),
+        salesDirectorDiscountMax: requireNumber(
+          value.salesDirectorDiscountMax ?? defaults.salesDirectorDiscountMax,
+          0,
+          1,
+          "salesDirectorDiscountMax"
+        ),
+        headSalesDiscountMax: requireNumber(
+          value.headSalesDiscountMax ?? defaults.headSalesDiscountMax,
+          0,
+          1,
+          "headSalesDiscountMax"
+        ),
+        termDiscounts: {},
+        paymentPremiums: {},
+        support: {},
+        onboardingAmounts: {},
+        professionalServicesAmounts: [],
+        addOnAnnualAmounts: {},
+        productBandRates: {}
+      };
+      if (policy.salesDirectorDiscountMax > policy.headSalesDiscountMax) {
+        throw new Error("INVALID_SETTINGS:discountThresholds");
+      }
+      for (const key of ["12", "24", "36"]) {
+        policy.termDiscounts[key] = requireNumber(
+          value.termDiscounts?.[key] ?? defaults.termDiscounts[key],
+          0,
+          1,
+          `termDiscounts.${key}`
+        );
+      }
+      for (const key of Object.keys(defaults.paymentPremiums)) {
+        policy.paymentPremiums[key] = requireNumber(
+          value.paymentPremiums?.[key] ?? defaults.paymentPremiums[key],
+          0,
+          1,
+          `paymentPremiums.${key}`
+        );
+      }
+      for (const key of Object.keys(defaults.support)) {
+        policy.support[key] = {
+          percent: requireNumber(
+            value.support?.[key]?.percent ?? defaults.support[key].percent,
+            0,
+            1,
+            `support.${key}.percent`
+          ),
+          cap: requireNumber(
+            value.support?.[key]?.cap ?? defaults.support[key].cap,
+            0,
+            1e9,
+            `support.${key}.cap`
+          )
+        };
+      }
+      for (const key of Object.keys(defaults.onboardingAmounts)) {
+        policy.onboardingAmounts[key] = requireNumber(
+          value.onboardingAmounts?.[key] ?? defaults.onboardingAmounts[key],
+          0,
+          1e9,
+          `onboardingAmounts.${key}`
+        );
+      }
+      if (value.professionalServicesAmounts != null && (!Array.isArray(value.professionalServicesAmounts) || value.professionalServicesAmounts.length !== 6)) {
+        throw new Error("INVALID_SETTINGS:professionalServicesAmounts");
+      }
+      policy.professionalServicesAmounts = defaults.professionalServicesAmounts.map(
+        (amount, index) => requireNumber(
+          value.professionalServicesAmounts?.[index] ?? amount,
+          0,
+          1e9,
+          `professionalServicesAmounts.${index}`
+        )
+      );
+      for (const key of Object.keys(defaults.addOnAnnualAmounts)) {
+        policy.addOnAnnualAmounts[key] = requireNumber(
+          value.addOnAnnualAmounts?.[key] ?? defaults.addOnAnnualAmounts[key],
+          0,
+          1e9,
+          `addOnAnnualAmounts.${key}`
+        );
+      }
+      for (const product of pricingRules.products) {
+        const incomingRates = value.productBandRates?.[product.key];
+        const defaultRates = defaults.productBandRates[product.key];
+        if (incomingRates != null && (!Array.isArray(incomingRates) || incomingRates.length > product.bands.length)) {
+          throw new Error(`INVALID_SETTINGS:productBandRates.${product.key}`);
+        }
+        const legacyDefaults = LEGACY_PRODUCT_BAND_RATES[product.key];
+        const isUnmodifiedLegacyDefault = Array.isArray(incomingRates) && Array.isArray(legacyDefaults) && incomingRates.length === legacyDefaults.length && incomingRates.every((rate, index) => rate === legacyDefaults[index]);
+        policy.productBandRates[product.key] = defaultRates.map(
+          (rate, index) => requireNumber(
+            isUnmodifiedLegacyDefault ? rate : incomingRates?.[index] ?? rate,
+            0,
+            1e6,
+            `productBandRates.${product.key}.${index}`
+          )
+        );
+      }
+      return policy;
+    };
+    var accountIdFromContext2 = (context) => String(
+      context?.accountId || context?.portal?.id || context?.portalId || context?.hubId || context?.hubspot?.portalId || ""
+    );
+    var userIdFromContext2 = (context) => String(context?.userId || context?.user?.id || context?.user?.userId || "");
+    var objectTypeForAccount = (accountId) => {
+      if (!/^\d{1,20}$/.test(accountId)) throw new Error("SETTINGS_CONFIGURATION_REQUIRED");
+      return `p${accountId}_${OBJECT_NAME}`;
+    };
+    var normalizePipelineIds = (value, field) => {
+      if (!Array.isArray(value) || value.length > MAX_PIPELINES) {
+        throw new Error(`INVALID_SETTINGS:${field}`);
+      }
+      return [...new Set(value.map(String))].map((id) => {
+        if (!/^[a-zA-Z0-9_-]{1,100}$/.test(id)) throw new Error(`INVALID_SETTINGS:${field}`);
+        return id;
+      });
+    };
+    var normalizeSettings = (value, currentVersion = 0) => {
+      if (!value || typeof value !== "object" || Array.isArray(value)) {
+        throw new Error("INVALID_SETTINGS:settings");
+      }
+      if (typeof value.allowNewBusiness !== "boolean" || typeof value.allowRenewals !== "boolean") {
+        throw new Error("INVALID_SETTINGS:allowedDealTypes");
+      }
+      if (!value.allowNewBusiness && !value.allowRenewals) {
+        throw new Error("INVALID_SETTINGS:allowedDealTypes");
+      }
+      return {
+        schemaVersion: "1.0",
+        version: currentVersion,
+        allowNewBusiness: value.allowNewBusiness,
+        allowRenewals: value.allowRenewals,
+        newBusinessPipelineIds: normalizePipelineIds(
+          value.newBusinessPipelineIds || [],
+          "newBusinessPipelineIds"
+        ),
+        renewalPipelineIds: normalizePipelineIds(
+          value.renewalPipelineIds || [],
+          "renewalPipelineIds"
+        ),
+        pricingPolicy: normalizePricingPolicy(value.pricingPolicy)
+      };
+    };
+    var request = async (accessToken, path, options = {}) => {
+      if (typeof accessToken !== "string" || accessToken.length < 20) {
+        throw new Error("SETTINGS_CONFIGURATION_REQUIRED");
+      }
+      const response2 = await fetch(`https://api.hubapi.com${path}`, {
+        method: options.method || "GET",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          ...options.body ? { "Content-Type": "application/json" } : {}
+        },
+        ...options.body ? { body: JSON.stringify(options.body) } : {}
+      });
+      const text = await response2.text();
+      let body = {};
+      if (text) {
+        try {
+          body = JSON.parse(text);
+        } catch {
+          body = {};
+        }
+      }
+      if (!response2.ok) {
+        const error = new Error(`HUBSPOT_SETTINGS_API:${response2.status}`);
+        error.statusCode = response2.status;
+        throw error;
+      }
+      return body;
+    };
+    var readSettings2 = async (accessToken, accountId) => {
+      const objectType = objectTypeForAccount(accountId);
+      let result;
+      try {
+        result = await request(accessToken, `/crm/v3/objects/${encodeURIComponent(objectType)}/search`, {
+          method: "POST",
+          body: {
+            filterGroups: [
+              { filters: [{ propertyName: "configuration_key", operator: "EQ", value: CONFIGURATION_KEY }] }
+            ],
+            properties: ["configuration_key", "configuration_json"],
+            limit: 1
+          }
+        });
+      } catch (error) {
+        if (error.statusCode === 400 || error.statusCode === 404) {
+          return { recordId: null, settings: defaultSettings(), configured: false };
+        }
+        throw error;
+      }
+      const record = result.results?.[0];
+      if (!record) return { recordId: null, settings: defaultSettings(), configured: true };
+      try {
+        const parsed = JSON.parse(record.properties?.configuration_json || "{}");
+        const version = Number.isInteger(parsed.version) && parsed.version >= 0 ? parsed.version : 0;
+        return {
+          recordId: String(record.id),
+          settings: normalizeSettings(parsed, version),
+          configured: true
+        };
+      } catch {
+        throw new Error("SETTINGS_CONFIGURATION_REQUIRED");
+      }
+    };
+    var saveSettings2 = async (accessToken, accountId, userId, incoming, expectedVersion) => {
+      const current = await readSettings2(accessToken, accountId);
+      if (!current.configured) throw new Error("SETTINGS_CONFIGURATION_REQUIRED");
+      if (!Number.isInteger(expectedVersion) || expectedVersion !== current.settings.version) {
+        throw new Error("SETTINGS_CONFLICT");
+      }
+      const settings = normalizeSettings(incoming, current.settings.version + 1);
+      const properties = {
+        configuration_key: CONFIGURATION_KEY,
+        configuration_json: JSON.stringify(settings),
+        updated_by_user_id: String(userId).slice(0, 30),
+        updated_at: (/* @__PURE__ */ new Date()).toISOString()
+      };
+      const objectType = objectTypeForAccount(accountId);
+      if (current.recordId) {
+        await request(
+          accessToken,
+          `/crm/v3/objects/${encodeURIComponent(objectType)}/${encodeURIComponent(current.recordId)}`,
+          { method: "PATCH", body: { properties } }
+        );
+      } else {
+        await request(accessToken, `/crm/v3/objects/${encodeURIComponent(objectType)}`, {
+          method: "POST",
+          body: { properties }
+        });
+      }
+      return settings;
+    };
+    var readDealPipelines2 = async (accessToken) => {
+      const result = await request(accessToken, "/crm/v3/pipelines/deals");
+      return (result.results || []).filter(({ id, label }) => id && label).slice(0, MAX_PIPELINES).map(({ id, label }) => ({ id: String(id), label: String(label).slice(0, 120) }));
+    };
+    var isSettingsAdmin2 = (context) => {
+      const actual = userIdFromContext2(context);
+      const allowed = String(process.env.SETTINGS_ADMIN_USER_IDS || "").split(",").map((value) => value.trim()).filter(Boolean);
+      return Boolean(actual) && allowed.some((expected) => {
+        if (expected.length !== actual.length) return false;
+        return crypto2.timingSafeEqual(Buffer.from(expected), Buffer.from(actual));
+      });
+    };
+    var dealCategory = (settings, dealType, pipelineId) => {
+      if (settings.renewalPipelineIds.includes(pipelineId)) return "renewal";
+      if (settings.newBusinessPipelineIds.includes(pipelineId)) return "new_business";
+      const normalized = String(dealType || "").toLowerCase().replace(/[^a-z]/g, "");
+      if (!normalized) return "new_business";
+      if (normalized === "newbusiness") return "new_business";
+      if (normalized === "renewal") return "renewal";
+      return "unsupported";
+    };
+    var isDealAllowed2 = (settings, dealType, pipelineId) => {
+      const category = dealCategory(settings, dealType, pipelineId);
+      return category === "new_business" && settings.allowNewBusiness || category === "renewal" && settings.allowRenewals;
+    };
+    module2.exports = {
+      accountIdFromContext: accountIdFromContext2,
+      defaultPricingPolicy,
+      defaultSettings,
+      isDealAllowed: isDealAllowed2,
+      isSettingsAdmin: isSettingsAdmin2,
+      normalizeSettings,
+      readDealPipelines: readDealPipelines2,
+      readSettings: readSettings2,
+      saveSettings: saveSettings2,
+      userIdFromContext: userIdFromContext2
+    };
+  }
+});
+
 // QuoteOptionsFunction.js
 var crypto = require("node:crypto");
 var hubspot = require("@hubspot/api-client");
 var { QuoteValidationError, calculateQuote, normalizeStoredInput } = require_calculator();
+var { inspectProductLibrary } = require_productLibrary();
 var {
   accountIdFromContext,
   isDealAllowed,
@@ -2591,6 +2857,12 @@ exports.main = async (context) => {
         // The card shows this as the Quote title placeholder, so a rep who leaves the field
         // blank can see the name the quote will actually get rather than being surprised by it.
         dealName: state.dealName
+      });
+    }
+    if (action === "inspect_products") {
+      return response(200, {
+        success: true,
+        productLibrary: await inspectProductLibrary(client)
       });
     }
     if (action === "preview") {

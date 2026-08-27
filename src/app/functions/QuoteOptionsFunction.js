@@ -2,6 +2,7 @@ const crypto = require('node:crypto');
 const hubspot = require('@hubspot/api-client');
 
 const { QuoteValidationError, calculateQuote, normalizeStoredInput } = require('./calculator');
+const { inspectProductLibrary } = require('./productLibrary');
 const {
   accountIdFromContext,
   isDealAllowed,
@@ -1301,6 +1302,15 @@ exports.main = async (context) => {
         // The card shows this as the Quote title placeholder, so a rep who leaves the field
         // blank can see the name the quote will actually get rather than being surprised by it.
         dealName: state.dealName,
+      });
+    }
+    // Read-only diagnostic. Compares every catalogued product against pricingRules.js and reports
+    // where HubSpot and the code disagree -- and, crucially, whether this portal exposes tiered
+    // pricing over the API at all. Changes no pricing and writes nothing.
+    if (action === 'inspect_products') {
+      return response(200, {
+        success: true,
+        productLibrary: await inspectProductLibrary(client),
       });
     }
     if (action === 'preview') {

@@ -164,6 +164,41 @@ interface OptionDocument {
   options: QuoteOption[];
 }
 
+interface ProductDisagreement {
+  field: string;
+  local: string | number | null;
+  hubspot: string | number | null;
+  detail: string;
+}
+
+interface ProductRow {
+  key: string;
+  productId: string;
+  localName: string;
+  hubspotName?: string | null;
+  found: boolean;
+  tiersAvailable?: boolean;
+  hubspotPricingModel?: string;
+  disagreements: ProductDisagreement[];
+  notes: string[];
+}
+
+interface ProductLibraryReport {
+  checkedAt: string;
+  tieredPricingAvailable: boolean;
+  productCount: number;
+  missingCount: number;
+  disagreementCount: number;
+  reads: {
+    source: string;
+    ok: boolean;
+    count: number;
+    tierPropertyReturned: boolean;
+    error: string | null;
+  }[];
+  rows: ProductRow[];
+}
+
 interface ServerlessBody {
   success: boolean;
   error?: string;
@@ -193,6 +228,7 @@ interface ServerlessBody {
   templateId?: string;
   templateName?: string;
   previewResult?: QuoteResult;
+  productLibrary?: ProductLibraryReport;
   quoteTemplates?: { id: string; name: string }[];
   defaultQuoteTemplateId?: string;
   dealName?: string;
@@ -666,6 +702,12 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
   });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  // The product-library comparison. Fetched on demand rather than on load: it reads 22 products
+  // from HubSpot, which is far too much work to do on every card render for a report nobody has
+  // asked to see yet.
+  const [productReport, setProductReport] =
+    useState<ProductLibraryReport | null>(null);
+  const [checkingProducts, setCheckingProducts] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [unsupportedDeal, setUnsupportedDeal] = useState(false);
 
@@ -802,6 +844,23 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
     });
   };
 
+  const inspectProducts = async () => {
+    setCheckingProducts(true);
+    setError(null);
+    try {
+      const body = await runAction({ action: "inspect_products" });
+      setProductReport(body.productLibrary || null);
+    } catch (inspectError) {
+      setError(
+        inspectError instanceof Error
+          ? inspectError.message
+          : "Unable to read the HubSpot product library.",
+      );
+    } finally {
+      setCheckingProducts(false);
+    }
+  };
+
   const previewQuote = async (input: QuoteInput) => {
     const body = await runAction({ action: "preview", input });
     if (!body.previewResult) {
@@ -911,8 +970,173 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
         onPreview={previewQuote}
         onLock={lockAndCreateQuote}
       />
+
+      {/* Product library check.
+          On 2026-08-27 two sources of truth disagreed and it was found by eye, mid-quote: the
+          HubSpot product said the first 50,000 emails were free, pricingRules.js and the workbook
+          said $1.00 per thousand, and separately onboarding differed by one step across all three
+          packages. This makes that comparison mechanical.
+          Read-only. It changes no pricing and writes nothing. */}
+      <Divider />
+      <Heading>Product library check:</Heading>
+      <Text variant="microcopy">
+        Compares every product this app builds line items from against the rates
+        in the calculator. Reads from HubSpot only — nothing is written.
+      </Text>
+      <Flex direction="row" gap="sm" align="center">
+        <LoadingButton
+          onClick={() => void inspectProducts()}
+          loading={checkingProducts}
+          disabled={checkingProducts}
+        >
+          {productReport ? "Check again" : "Check product library"}
+        </LoadingButton>
+        {productReport && (
+          <Text variant="microcopy">
+            Checked {productReport.productCount} products
+          </Text>
+        )}
+      </Flex>
+
+      {productReport && (
+        <Flex direction="column" gap="xs">
+          {/* The headline finding, and the one that decides whether the rate card can be sourced
+              from HubSpot at all: tier ranges are Revenue Hub gated and absent from HubSpot's
+              default property table, so a portal may simply not expose them. */}
+          {productReport.tieredPricingAvailable ? (
+            <Alert
+              title="Tiered pricing is readable from this portal"
+              variant="success"
+            >
+              Graduated tier ranges and prices came back over the API, so the
+              calculator’s rate card could be sourced from the product library.
+            </Alert>
+          ) : (
+            <Alert
+              title="Tiered pricing is not readable from this portal"
+              variant="warning"
+            >
+              No product returned{" "}
+              <Text format={{ fontWeight: "bold" }} inline>
+                hs_tier_ranges
+              </Text>
+              . HubSpot gates tiered pricing on a Revenue Hub subscription, so
+              graduated rates cannot be read from the product library here —
+              only single unit prices and names.
+            </Alert>
+          )}
+
+          {productReport.missingCount > 0 && (
+            <Alert title="Products this app cannot find" variant="error">
+              {productReport.missingCount} of {productReport.productCount}{" "}
+              product IDs returned nothing. Every line item built from those IDs
+              will fail.
+            </Alert>
+          )}
+
+          {productReport.disagreementCount === 0 ? (
+            <Alert title="No disagreements" variant="success">
+              Every product HubSpot returned matches the calculator.
+            </Alert>
+          ) : (
+            <>
+              <Text>
+                <Text format={{ fontWeight: "bold" }} inline>
+                  {productReport.disagreementCount}
+                </Text>{" "}
+                disagreement
+                {productReport.disagreementCount === 1 ? "" : "s"} between
+                HubSpot and the calculator:
+              </Text>
+              <Table density="compact" bordered>
+                <TableHead>
+                  <TableRow>
+                    <TableHeader width={240}>Product</TableHeader>
+                    <TableHeader width={150}>Field</TableHeader>
+                    <TableHeader width={130} align="right">
+                      Calculator
+                    </TableHeader>
+                    <TableHeader width={130} align="right">
+                      HubSpot
+                    </TableHeader>
+                    <TableHeader width="max">What it means</TableHeader>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {productReport.rows.flatMap((row) =>
+                    row.disagreements.map((item) => (
+                      <TableRow key={`${row.key}-${item.field}`}>
+                        <TableCell>
+                          <Flex direction="column" gap="flush">
+                            <Text>{row.hubspotName || row.localName}</Text>
+                            <Text variant="microcopy">{row.key}</Text>
+                          </Flex>
+                        </TableCell>
+                        <TableCell>
+                          <Text variant="microcopy">{item.field}</Text>
+                        </TableCell>
+                        <TableCell align="right">
+                          <Text>{formatReportValue(item.local)}</Text>
+                        </TableCell>
+                        <TableCell align="right">
+                          <Text>{formatReportValue(item.hubspot)}</Text>
+                        </TableCell>
+                        <TableCell>
+                          <Text variant="microcopy">{item.detail}</Text>
+                        </TableCell>
+                      </TableRow>
+                    )),
+                  )}
+                </TableBody>
+              </Table>
+            </>
+          )}
+
+          {/* Notes are the "why not compared" and "malformed data" cases. They are not
+              disagreements, but hiding them would make the report look more conclusive than it is:
+              a product priced by rule was never checked against a unit price at all. */}
+          {productReport.rows.some((row) => row.notes.length > 0) && (
+            <Flex direction="column" gap="flush">
+              <Text variant="microcopy">Not compared on unit price:</Text>
+              {productReport.rows
+                .filter((row) => row.notes.length > 0)
+                .map((row) => (
+                  <Text key={row.key} variant="microcopy">
+                    {row.hubspotName || row.localName} — {row.notes.join("; ")}
+                  </Text>
+                ))}
+            </Flex>
+          )}
+
+          {/* Which API answered. The typed client is pinned to /crm/v3, where tiered pricing is
+              undocumented; the dated 2026-03 path is where it is documented. Both are tried, and
+              saying which one produced the tier data is the difference between "this portal cannot
+              do it" and "we asked the wrong endpoint". */}
+          <Flex direction="column" gap="flush">
+            {productReport.reads.map((read) => (
+              <Text key={read.source} variant="microcopy">
+                {read.source}: {read.ok ? `${read.count} products` : "failed"}
+                {read.ok && read.tierPropertyReturned ? ", with tier data" : ""}
+                {read.error ? ` — ${read.error}` : ""}
+              </Text>
+            ))}
+          </Flex>
+        </Flex>
+      )}
     </Flex>
   );
+};
+
+// Money to 2dp, everything else verbatim. A tier boundary is a count and must not be dressed up
+// as a currency, and a null is "not set" rather than zero.
+const formatReportValue = (value: string | number | null) => {
+  if (value == null) return "—";
+  if (typeof value === "number") {
+    return Number.isInteger(value) && Math.abs(value) >= 1000
+      ? value.toLocaleString()
+      : value.toFixed(2);
+  }
+  return value;
 };
 
 const OptionEditor = ({
