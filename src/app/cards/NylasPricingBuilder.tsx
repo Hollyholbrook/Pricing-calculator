@@ -285,6 +285,15 @@ const paymentOptions = [
   { value: "monthly_in_advance", label: "Monthly in Advance" },
 ];
 
+// The card's own stable keys, NOT HubSpot's. The Deal property's internal values are mapped
+// server-side, so the picker does not have to know how the portal encodes them and a renamed
+// option value needs no card change.
+const paymentMethodOptions = [
+  { value: "", label: "Not specified" },
+  { value: "credit_card", label: "Credit card" },
+  { value: "ach", label: "Bank transfer / ACH" },
+];
+
 const supportOptions = [
   { value: "basic", label: "Basic" },
   { value: "full", label: "Full" },
@@ -579,6 +588,9 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
   >([]);
   const [templateId, setTemplateId] = useState("");
   const [quoteTitle, setQuoteTitle] = useState("");
+  // Not part of the pricing input: it changes no number, and normalizeStoredInput would strip it
+  // from option.input anyway. It travels as its own parameter and lands on the Deal.
+  const [paymentMethod, setPaymentMethod] = useState("");
   const [dealName, setDealName] = useState("");
   const trimmedQuoteTitle = quoteTitle.trim();
   const quoteTitleTooLong = trimmedQuoteTitle.length > QUOTE_TITLE_MAX_LENGTH;
@@ -728,9 +740,14 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
         action: "lock_live",
         input: editing.input,
         quoteContent,
+        paymentMethod,
       });
       // generateQuote is idempotent on the quote content hash, so a repeat lock reuses the
       // existing Quote rather than creating one. Saying "created" either way misreports it.
+      // Refresh the record so the rest of the page catches up without a reload. Lock in rewrites
+      // the Deal's line items and creates a Quote, and until this ran the Line items and Quotes
+      // cards beside this one kept showing the pre-lock state.
+      actions.refreshObjectProperties();
       actions.addAlert({
         title: body.reused
           ? "Pricing locked in — existing draft Quote reused"
@@ -789,6 +806,8 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
         quoteTemplates={quoteTemplates}
         templateId={templateId}
         onTemplateChange={setTemplateId}
+        paymentMethod={paymentMethod}
+        onPaymentMethodChange={setPaymentMethod}
         quoteTitle={quoteTitle}
         quoteTitlePlaceholder={fallbackQuoteTitle}
         quoteTitleTooLong={quoteTitleTooLong}
@@ -807,6 +826,8 @@ const OptionEditor = ({
   quoteTemplates,
   templateId,
   onTemplateChange,
+  paymentMethod,
+  onPaymentMethodChange,
   quoteTitle,
   quoteTitlePlaceholder,
   quoteTitleTooLong,
@@ -820,6 +841,8 @@ const OptionEditor = ({
   quoteTemplates: { id: string; name: string }[];
   templateId: string;
   onTemplateChange: (value: string) => void;
+  paymentMethod: string;
+  onPaymentMethodChange: (value: string) => void;
   quoteTitle: string;
   quoteTitlePlaceholder: string;
   quoteTitleTooLong: boolean;
@@ -1139,6 +1162,13 @@ const OptionEditor = ({
                   onChange={(value) => onTemplateChange(String(value))}
                 />
               )}
+              <Select
+                label="Payment Method"
+                name="payment_method"
+                value={paymentMethod}
+                options={paymentMethodOptions}
+                onChange={(value) => onPaymentMethodChange(String(value))}
+              />
               {/* onChange, not onInput: onInput fires per keystroke and would re-render the whole
                   card on every character. onChange commits on blur, which is what state wants. */}
               <Input

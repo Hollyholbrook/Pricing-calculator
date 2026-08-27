@@ -43,6 +43,36 @@ const DEFAULT_QUOTE_TEMPLATE_ID = '567553820432';
 const configuredQuoteTemplateId = () =>
   DEFAULT_QUOTE_TEMPLATE_ID || String(process.env.QUOTE_TEMPLATE_ID || '');
 
+// The Deal property behind the quote template's "Payment method" token, and the portal's internal
+// value for each of the card's two options.
+//
+// EMPTY UNTIL THE PORTAL'S NAMES ARE FILLED IN. While `property` is '', nothing is written, so
+// this is safe to deploy before the property exists. A wrong property name on a Deal update throws
+// and would take the whole lock with it, so it is not guessed.
+//
+// This is the ONE non-pricing_* Deal property the app writes. Everything else it touches on a Deal
+// is namespaced pricing_*; see claude/quote-text-ownership.md for why that mattered.
+const DEAL_PAYMENT_METHOD = Object.freeze({
+  property: '',
+  values: Object.freeze({
+    credit_card: '',
+    ach: '',
+  }),
+});
+
+// '' is a real answer meaning "not specified", and must clear the property rather than be ignored.
+const paymentMethodProperties = (paymentMethod) => {
+  if (!DEAL_PAYMENT_METHOD.property) return {};
+  if (paymentMethod === '' || paymentMethod == null) {
+    return { [DEAL_PAYMENT_METHOD.property]: '' };
+  }
+  const value = DEAL_PAYMENT_METHOD.values[String(paymentMethod)];
+  // An unrecognised choice is dropped rather than sent: the card is the only caller, so this can
+  // only mean the card and this map have drifted, and a bad enumeration value fails the update.
+  if (!value) return {};
+  return { [DEAL_PAYMENT_METHOD.property]: value };
+};
+
 const MAX_OPTIONS = 10;
 const MAX_PAYLOAD_LENGTH = 60_000;
 
@@ -493,6 +523,7 @@ const lockLiveCalculation = async (
   const properties = buildSelectedProperties(liveOption, 'draft');
   properties[SELECTED_OPTION_ID_PROPERTY] = '';
   properties[SELECTED_OPTION_NAME_PROPERTY] = '';
+  Object.assign(properties, paymentMethodProperties(parameters.paymentMethod));
   await client.crm.deals.basicApi.update(dealId, { properties });
 
   const liveState = {

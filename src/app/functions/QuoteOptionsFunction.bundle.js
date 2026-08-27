@@ -1675,6 +1675,22 @@ var SELECTED_OPTION_ID_PROPERTY = "pricing_selected_option_id";
 var SELECTED_OPTION_NAME_PROPERTY = "pricing_selected_option_name";
 var DEFAULT_QUOTE_TEMPLATE_ID = "567553820432";
 var configuredQuoteTemplateId = () => DEFAULT_QUOTE_TEMPLATE_ID || String(process.env.QUOTE_TEMPLATE_ID || "");
+var DEAL_PAYMENT_METHOD = Object.freeze({
+  property: "",
+  values: Object.freeze({
+    credit_card: "",
+    ach: ""
+  })
+});
+var paymentMethodProperties = (paymentMethod) => {
+  if (!DEAL_PAYMENT_METHOD.property) return {};
+  if (paymentMethod === "" || paymentMethod == null) {
+    return { [DEAL_PAYMENT_METHOD.property]: "" };
+  }
+  const value = DEAL_PAYMENT_METHOD.values[String(paymentMethod)];
+  if (!value) return {};
+  return { [DEAL_PAYMENT_METHOD.property]: value };
+};
 var MAX_OPTIONS = 10;
 var MAX_PAYLOAD_LENGTH = 6e4;
 var SAFE_ERRORS = Object.freeze({
@@ -2038,6 +2054,7 @@ var lockLiveCalculation = async (client, dealId, state, parameters, portalId, se
   const properties = buildSelectedProperties(liveOption, "draft");
   properties[SELECTED_OPTION_ID_PROPERTY] = "";
   properties[SELECTED_OPTION_NAME_PROPERTY] = "";
+  Object.assign(properties, paymentMethodProperties(parameters.paymentMethod));
   await client.crm.deals.basicApi.update(dealId, { properties });
   const liveState = {
     ...state,
