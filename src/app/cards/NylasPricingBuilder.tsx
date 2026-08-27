@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import {
   Alert,
   AutoGrid,
@@ -1209,12 +1209,28 @@ const OptionEditor = ({
     { input: QuoteInput; result: QuoteResult } | undefined
   >(option.result ? { input: option.input, result: option.result } : undefined);
   const [previewError, setPreviewError] = useState<string | undefined>();
+  // onPreview is recreated on every render of the parent, so depending on it re-ran this effect
+  // constantly -- each run cancelling the in-flight request and starting a fresh 350ms timer. With
+  // the parent re-rendering while a preview was resolving, requests raced and whichever landed last
+  // won, which is how a figure from a configuration two selections ago ended up on screen.
+  //
+  // Held in a ref so only the INPUT drives a request. The effect now runs when the rep changes
+  // something, and not because the parent happened to re-render.
+  const onPreviewRef = useRef(onPreview);
+  // Assigned in an effect, not during render: mutating a ref while rendering is a lint error and
+  // an actual hazard under concurrent rendering.
+  useEffect(() => {
+    onPreviewRef.current = onPreview;
+  }, [onPreview]);
   useEffect(() => {
     let cancelled = false;
     const requestedInput = option.input;
     const timeout = setTimeout(() => {
-      void onPreview(requestedInput)
+      void onPreviewRef
+        .current(requestedInput)
         .then((result) => {
+          // Belt and braces alongside `cancelled`: only ever apply a result to the input that
+          // asked for it.
           if (cancelled) return;
           setPreview({ input: requestedInput, result });
           setPreviewError(undefined);
@@ -1232,7 +1248,7 @@ const OptionEditor = ({
       cancelled = true;
       clearTimeout(timeout);
     };
-  }, [onPreview, option.input]);
+  }, [option.input]);
 
   const previewResult = preview?.result;
   const pricingIsCurrent = preview?.input === option.input && !previewError;
@@ -1265,6 +1281,19 @@ const OptionEditor = ({
           Complete the pricing inputs to preview this amount.
         </Text>
       );
+    }
+    // A figure that belongs to a DIFFERENT configuration is worse than no figure.
+    //
+    // previewResult is whatever preview last returned, and it is rendered whether or not it
+    // matches what is on screen now. Selecting Quick Launch Plus showed "$5,000" -- the amount for
+    // Quick Launch, which had been selected a moment earlier -- and then "$15,000", from Strategic
+    // before that. The correct $10,000 never appeared, and nothing on the line said the number was
+    // stale. A rep reading that would quote the wrong onboarding fee.
+    //
+    // The Contract Summary already shows "Updating pricing..." while a preview is in flight, but it
+    // sits at the top of the card, nowhere near these inline amounts.
+    if (!pricingIsCurrent) {
+      return <Text variant="microcopy">Updating…</Text>;
     }
     return (
       <Text variant="microcopy">
