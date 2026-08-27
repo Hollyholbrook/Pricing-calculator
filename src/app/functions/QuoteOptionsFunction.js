@@ -284,11 +284,11 @@ const assertRevision = (document, expectedRevision) => {
 };
 
 const writeDocument = async (client, dealId, document, additionalProperties = {}) => {
-  await client.crm.deals.basicApi.update(dealId, {
-    properties: {
-      [OPTION_PROPERTY]: serializeDocument(document),
-      ...additionalProperties,
-    },
+  // Through updateDealProperties, not the API directly: additionalProperties can now carry
+  // payment_method, and that write must stay unable to fail the whole save.
+  await updateDealProperties(client, dealId, {
+    [OPTION_PROPERTY]: serializeDocument(document),
+    ...additionalProperties,
   });
 };
 
@@ -553,15 +553,33 @@ const lockLiveCalculation = async (
     result,
   };
   const properties = buildSelectedProperties(liveOption, 'draft');
-  properties[SELECTED_OPTION_ID_PROPERTY] = '';
-  properties[SELECTED_OPTION_NAME_PROPERTY] = '';
+  // The live option IS the selection now that it is persisted. Blanking these left the Deal
+  // claiming nothing was selected while its line items and Quote said otherwise, and gave the card
+  // nothing to identify on reload.
+  properties[SELECTED_OPTION_ID_PROPERTY] = liveOption.id;
+  properties[SELECTED_OPTION_NAME_PROPERTY] = liveOption.name;
   Object.assign(properties, paymentMethodProperties(parameters.paymentMethod));
 
-  await updateDealProperties(client, dealId, properties);
+  // Persist the configuration, not just its totals.
+  //
+  // Lock in used to write the pricing_* summary properties and the line items and then forget the
+  // inputs that produced them, so a page reload left the rep with an empty calculator and no way
+  // to reopen, adjust or regenerate. That is also what made refreshing the page after Lock in
+  // destructive, and so blocked reloading the record to pick up the new line items and Quote.
+  //
+  // The document holds exactly one live option, replacing any previous one: this is a single live
+  // calculation per Deal, not a history. Revision advances so the optimistic-concurrency check on
+  // other actions still sees a change.
+  const document = {
+    schemaVersion: '1.0',
+    revision: (state.document?.revision || 0) + 1,
+    options: [liveOption],
+  };
+  await writeDocument(client, dealId, document, properties);
 
   const liveState = {
     ...state,
-    document: { schemaVersion: '1.0', revision: 0, options: [liveOption] },
+    document,
     selectedOptionId: liveOption.id,
     selectedOptionName: liveOption.name,
     selectedStateHash: result.stateHash,

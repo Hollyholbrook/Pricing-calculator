@@ -153,6 +153,9 @@ interface QuoteOption {
   result?: QuoteResult;
   createdAt?: string;
   updatedAt?: string;
+  // Card-only: marks that the saved configuration has already been restored, so a later
+  // response cannot overwrite edits made since the load. Never sent to the server.
+  restoredFromDeal?: boolean;
 }
 
 interface OptionDocument {
@@ -625,6 +628,29 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
 
   const updateFromBody = (body: ServerlessBody) => {
     if (body.dealName) setDealName(body.dealName);
+    // Restore the last locked configuration, once, on the initial load.
+    //
+    // Lock in persists the live option, so a reload can bring the rep back to what they had rather
+    // than an empty calculator -- which is what makes reloading the record after Lock in safe, and
+    // is the only reason the neighbouring Line items and Quotes cards can be refreshed at all.
+    //
+    // Guarded by a flag rather than by "is editing empty": a later response must never overwrite
+    // edits the rep has made since the load.
+    const saved = body.optionSet?.options?.[0];
+    if (saved?.input) {
+      setEditing((current) =>
+        current.restoredFromDeal
+          ? current
+          : {
+              ...saved,
+              status: "draft",
+              // The stored result belongs to the stored input. Dropping it forces a fresh preview,
+              // so the figures on screen cannot be stale relative to current pricing rules.
+              result: undefined,
+              restoredFromDeal: true,
+            },
+      );
+    }
     if (body.quoteTemplates) {
       setQuoteTemplates(body.quoteTemplates);
       // Preselect the configured default when it is one of the usable templates, so the picker
@@ -744,9 +770,13 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
       });
       // generateQuote is idempotent on the quote content hash, so a repeat lock reuses the
       // existing Quote rather than creating one. Saying "created" either way misreports it.
-      // Refresh the record so the rest of the page catches up without a reload. Lock in rewrites
-      // the Deal's line items and creates a Quote, and until this ran the Line items and Quotes
-      // cards beside this one kept showing the pre-lock state.
+      // refreshObjectProperties is documented as "Refresh CRM record properties on the page" --
+      // property values only. It updates the Deal's own fields but cannot touch the Line items and
+      // Quotes cards beside this one, which is what actually needs to change after a lock. No SDK
+      // action refreshes a sibling card; reloadPage is the only thing that does.
+      //
+      // Reloading is safe now only because Lock in persists the configuration and the card
+      // restores it above. Before that, a reload left the rep with an empty calculator.
       actions.refreshObjectProperties();
       actions.addAlert({
         title: body.reused
@@ -755,6 +785,8 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
         message: `${body.lineItemCount || 0} calculated line items replaced the Deal line items. The draft Quote is on the Deal's Quotes card.`,
         type: "success",
       });
+      // After the alert, so the rep sees the confirmation before the page goes.
+      actions.reloadPage();
     } catch (lockError) {
       setError(
         lockError instanceof Error

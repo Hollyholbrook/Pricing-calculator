@@ -1844,11 +1844,9 @@ var assertRevision = (document, expectedRevision) => {
   }
 };
 var writeDocument = async (client, dealId, document, additionalProperties = {}) => {
-  await client.crm.deals.basicApi.update(dealId, {
-    properties: {
-      [OPTION_PROPERTY]: serializeDocument(document),
-      ...additionalProperties
-    }
+  await updateDealProperties(client, dealId, {
+    [OPTION_PROPERTY]: serializeDocument(document),
+    ...additionalProperties
   });
 };
 var calculateAndSaveOption = async (client, dealId, state, parameters, settings) => {
@@ -2070,13 +2068,18 @@ var lockLiveCalculation = async (client, dealId, state, parameters, portalId, se
     result
   };
   const properties = buildSelectedProperties(liveOption, "draft");
-  properties[SELECTED_OPTION_ID_PROPERTY] = "";
-  properties[SELECTED_OPTION_NAME_PROPERTY] = "";
+  properties[SELECTED_OPTION_ID_PROPERTY] = liveOption.id;
+  properties[SELECTED_OPTION_NAME_PROPERTY] = liveOption.name;
   Object.assign(properties, paymentMethodProperties(parameters.paymentMethod));
-  await updateDealProperties(client, dealId, properties);
+  const document = {
+    schemaVersion: "1.0",
+    revision: (state.document?.revision || 0) + 1,
+    options: [liveOption]
+  };
+  await writeDocument(client, dealId, document, properties);
   const liveState = {
     ...state,
-    document: { schemaVersion: "1.0", revision: 0, options: [liveOption] },
+    document,
     selectedOptionId: liveOption.id,
     selectedOptionName: liveOption.name,
     selectedStateHash: result.stateHash
