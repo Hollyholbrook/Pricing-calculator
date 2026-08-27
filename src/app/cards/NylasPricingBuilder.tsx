@@ -402,6 +402,25 @@ const firstDayOfFollowingMonth = () => {
   return `${nextMonth.getFullYear()}-${String(nextMonth.getMonth() + 1).padStart(2, "0")}-01`;
 };
 
+const todayIso = () => {
+  const today = new Date();
+  return `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(
+    today.getDate(),
+  ).padStart(2, "0")}`;
+};
+
+// A restored start date is kept only if it is still usable. A configuration locked weeks ago
+// restores the date it was locked with, and nothing else would move it -- so the calculator would
+// sit on a start date in the past and quote against it. Anything absent or already gone reverts to
+// the standing default, the first of next month.
+//
+// ISO dates compare correctly as strings, so no parsing is needed.
+const usableStartDate = (saved?: string | null) => {
+  if (!saved || !/^\d{4}-\d{2}-\d{2}$/.test(saved))
+    return firstDayOfFollowingMonth();
+  return saved >= todayIso() ? saved : firstDayOfFollowingMonth();
+};
+
 const emptyInput = (): QuoteInput => ({
   startDate: firstDayOfFollowingMonth(),
   termMonths: 12,
@@ -644,8 +663,13 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
           : {
               ...saved,
               status: "draft",
+              input: {
+                ...saved.input,
+                startDate: usableStartDate(saved.input.startDate),
+              },
               // The stored result belongs to the stored input. Dropping it forces a fresh preview,
-              // so the figures on screen cannot be stale relative to current pricing rules.
+              // so the figures on screen cannot be stale relative to current pricing rules --
+              // and the start date above may have moved, which changes the contract dates.
               result: undefined,
               restoredFromDeal: true,
             },

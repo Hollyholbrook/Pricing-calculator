@@ -186,3 +186,56 @@ test('Payment Method maps the card keys to the portal values, and clears when un
   // A choice the map does not know is dropped, not sent: a bad enumeration value fails the update.
   assert.deepEqual(_test.paymentMethodProperties('paypal'), {});
 });
+
+test('Payment Schedule maps the calculator keys to the portal values', () => {
+  assert.deepEqual(_test.paymentFrequencyProperties('annual_in_advance'), {
+    payment_frequency: 'Annual In Advance',
+  });
+  assert.deepEqual(_test.paymentFrequencyProperties('semi_annual_in_advance'), {
+    payment_frequency: 'Semi-Annual In Advance',
+  });
+  assert.deepEqual(_test.paymentFrequencyProperties('quarterly_in_advance'), {
+    payment_frequency: 'Quarterly In Advance',
+  });
+  assert.deepEqual(_test.paymentFrequencyProperties('monthly_in_advance'), {
+    payment_frequency: 'Monthly In Advance',
+  });
+  // Every schedule the card offers must be mapped: an unmapped one is dropped silently, so a
+  // missing entry would leave the Deal quietly disagreeing with the pricing.
+  assert.deepEqual(_test.paymentFrequencyProperties('fortnightly'), {});
+});
+
+test('a rejection over one mirrored property does not lose the others', async () => {
+  const attempts = [];
+  const client = {
+    crm: {
+      deals: {
+        basicApi: {
+          update: async (_id, { properties }) => {
+            attempts.push(properties);
+            // Both mirrored properties are wrong in this portal, one at a time.
+            if (properties.payment_method != null) {
+              throw { body: { message: 'payment_method is not a valid option' } };
+            }
+            if (properties.payment_frequency != null) {
+              throw { body: { message: 'payment_frequency is not a valid option' } };
+            }
+            return { id: _id };
+          },
+        },
+      },
+    },
+  };
+
+  await _test.updateDealProperties(client, 'deal-1', {
+    pricing_tcv: '94219',
+    payment_method: 'Credit Card',
+    payment_frequency: 'Annual In Advance',
+  });
+
+  assert.equal(attempts.length, 3, 'one attempt per rejected property, then the survivor');
+  const final = attempts[attempts.length - 1];
+  assert.equal(final.payment_method, undefined);
+  assert.equal(final.payment_frequency, undefined);
+  assert.equal(final.pricing_tcv, '94219', 'the pricing properties still save');
+});

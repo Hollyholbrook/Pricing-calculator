@@ -53,8 +53,9 @@ const configuredQuoteTemplateId = () =>
 // If that warning appears, read the real internal values off the property in Settings and correct
 // them here.
 //
-// This is the ONE non-pricing_* Deal property the app writes. Everything else it touches on a Deal
-// is namespaced pricing_*; see claude/quote-text-ownership.md for why that mattered.
+// payment_method and payment_frequency are the ONLY non-pricing_* Deal properties the app writes.
+// Everything else it touches on a Deal is namespaced pricing_*; see
+// claude/quote-text-ownership.md for why that mattered.
 const DEAL_PAYMENT_METHOD = Object.freeze({
   property: 'payment_method',
   values: Object.freeze({
@@ -63,18 +64,38 @@ const DEAL_PAYMENT_METHOD = Object.freeze({
   }),
 });
 
+// The payment schedule the rep chose, mirrored onto the Deal. Unlike payment_method this needs no
+// new control: the choice is already in the calculation input, so the Deal simply records it.
+const DEAL_PAYMENT_FREQUENCY = Object.freeze({
+  property: 'payment_frequency',
+  values: Object.freeze({
+    annual_in_advance: 'Annual In Advance',
+    semi_annual_in_advance: 'Semi-Annual In Advance',
+    quarterly_in_advance: 'Quarterly In Advance',
+    monthly_in_advance: 'Monthly In Advance',
+  }),
+});
+
+// Every Deal enumeration the app mirrors from the calculator. Listed once so the retry guard below
+// covers all of them: these are the only properties here whose names and values came from outside
+// the code, and any one of them can be wrong.
+const DEAL_CHOICE_PROPERTIES = [DEAL_PAYMENT_METHOD, DEAL_PAYMENT_FREQUENCY];
+
 // '' is a real answer meaning "not specified", and must clear the property rather than be ignored.
-const paymentMethodProperties = (paymentMethod) => {
-  if (!DEAL_PAYMENT_METHOD.property) return {};
-  if (paymentMethod === '' || paymentMethod == null) {
-    return { [DEAL_PAYMENT_METHOD.property]: '' };
-  }
-  const value = DEAL_PAYMENT_METHOD.values[String(paymentMethod)];
-  // An unrecognised choice is dropped rather than sent: the card is the only caller, so this can
-  // only mean the card and this map have drifted, and a bad enumeration value fails the update.
-  if (!value) return {};
-  return { [DEAL_PAYMENT_METHOD.property]: value };
+// An unrecognised choice is dropped instead: the card is the only caller, so that can only mean the
+// card and this map have drifted, and a bad enumeration value fails the whole update.
+const choiceProperty = ({ property, values }, choice) => {
+  if (!property) return {};
+  if (choice === '' || choice == null) return { [property]: '' };
+  const value = values[String(choice)];
+  return value ? { [property]: value } : {};
 };
+
+const paymentMethodProperties = (paymentMethod) =>
+  choiceProperty(DEAL_PAYMENT_METHOD, paymentMethod);
+
+const paymentFrequencyProperties = (paymentFrequency) =>
+  choiceProperty(DEAL_PAYMENT_FREQUENCY, paymentFrequency);
 
 const MAX_OPTIONS = 10;
 const MAX_PAYLOAD_LENGTH = 60_000;
@@ -176,23 +197,26 @@ const updateDealProperties = async (client, dealId, properties) => {
   try {
     return await client.crm.deals.basicApi.update(dealId, { properties });
   } catch (error) {
-    const property = DEAL_PAYMENT_METHOD.property;
-    if (!property || properties[property] == null) throw error;
-    // Any rejection that names the property, not just an unknown-property one. The likelier
-    // failure here is a valid property with an invalid enumeration value, and HubSpot words that
-    // differently -- "not a valid option", "propertyValue" -- so matching on /propert/i would miss
-    // exactly the case this guard exists for.
+    // Any rejection that NAMES one of the mirrored properties, not just an unknown-property one.
+    // The likelier failure is a valid property with an invalid enumeration value, and HubSpot words
+    // that differently -- "not a valid option", "propertyValue" -- so matching on /propert/i would
+    // miss exactly the case this guard exists for.
     const message = String(
       error?.body?.message || error?.response?.body?.message || error?.message || '',
     );
-    if (!message.includes(property)) throw error;
-    const { [property]: rejected, ...rest } = properties;
-    console.warn(
-      `Nylas pricing: HubSpot rejected ${property}="${rejected}". Saving without it. ` +
-        'Check the internal name and option values on the Deal property.',
-      safeProviderDiagnostics(error, 'update_deal_payment_method'),
+    const rejectedProperty = DEAL_CHOICE_PROPERTIES.map(({ property }) => property).find(
+      (property) =>
+        property && properties[property] != null && message.includes(property),
     );
-    return client.crm.deals.basicApi.update(dealId, { properties: rest });
+    if (!rejectedProperty) throw error;
+    const { [rejectedProperty]: rejected, ...rest } = properties;
+    console.warn(
+      `Nylas pricing: HubSpot rejected ${rejectedProperty}="${rejected}". Saving without it. ` +
+        'Check the internal name and option values on that Deal property.',
+      safeProviderDiagnostics(error, `update_deal_${rejectedProperty}`),
+    );
+    // Recursive, so a portal where more than one of these is wrong still saves the rest.
+    return updateDealProperties(client, dealId, rest);
   }
 };
 
@@ -559,6 +583,9 @@ const lockLiveCalculation = async (
   properties[SELECTED_OPTION_ID_PROPERTY] = liveOption.id;
   properties[SELECTED_OPTION_NAME_PROPERTY] = liveOption.name;
   Object.assign(properties, paymentMethodProperties(parameters.paymentMethod));
+  // From the normalized input, not the raw parameters: that is the value the calculation actually
+  // used, so the Deal cannot disagree with the pricing.
+  Object.assign(properties, paymentFrequencyProperties(input.paymentFrequency));
 
   // Persist the configuration, not just its totals.
   //
@@ -1255,6 +1282,7 @@ exports._test = Object.freeze({
   associatedIds,
   deleteOption,
   lockLiveCalculation,
+  paymentFrequencyProperties,
   paymentMethodProperties,
   syncDealLineItems,
   updateDealProperties,

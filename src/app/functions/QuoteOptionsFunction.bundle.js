@@ -1682,15 +1682,24 @@ var DEAL_PAYMENT_METHOD = Object.freeze({
     ach: "ACH/Bank Transfer"
   })
 });
-var paymentMethodProperties = (paymentMethod) => {
-  if (!DEAL_PAYMENT_METHOD.property) return {};
-  if (paymentMethod === "" || paymentMethod == null) {
-    return { [DEAL_PAYMENT_METHOD.property]: "" };
-  }
-  const value = DEAL_PAYMENT_METHOD.values[String(paymentMethod)];
-  if (!value) return {};
-  return { [DEAL_PAYMENT_METHOD.property]: value };
+var DEAL_PAYMENT_FREQUENCY = Object.freeze({
+  property: "payment_frequency",
+  values: Object.freeze({
+    annual_in_advance: "Annual In Advance",
+    semi_annual_in_advance: "Semi-Annual In Advance",
+    quarterly_in_advance: "Quarterly In Advance",
+    monthly_in_advance: "Monthly In Advance"
+  })
+});
+var DEAL_CHOICE_PROPERTIES = [DEAL_PAYMENT_METHOD, DEAL_PAYMENT_FREQUENCY];
+var choiceProperty = ({ property, values }, choice) => {
+  if (!property) return {};
+  if (choice === "" || choice == null) return { [property]: "" };
+  const value = values[String(choice)];
+  return value ? { [property]: value } : {};
 };
+var paymentMethodProperties = (paymentMethod) => choiceProperty(DEAL_PAYMENT_METHOD, paymentMethod);
+var paymentFrequencyProperties = (paymentFrequency) => choiceProperty(DEAL_PAYMENT_FREQUENCY, paymentFrequency);
 var MAX_OPTIONS = 10;
 var MAX_PAYLOAD_LENGTH = 6e4;
 var SAFE_ERRORS = Object.freeze({
@@ -1762,18 +1771,19 @@ var updateDealProperties = async (client, dealId, properties) => {
   try {
     return await client.crm.deals.basicApi.update(dealId, { properties });
   } catch (error) {
-    const property = DEAL_PAYMENT_METHOD.property;
-    if (!property || properties[property] == null) throw error;
     const message = String(
       error?.body?.message || error?.response?.body?.message || error?.message || ""
     );
-    if (!message.includes(property)) throw error;
-    const { [property]: rejected, ...rest } = properties;
-    console.warn(
-      `Nylas pricing: HubSpot rejected ${property}="${rejected}". Saving without it. Check the internal name and option values on the Deal property.`,
-      safeProviderDiagnostics(error, "update_deal_payment_method")
+    const rejectedProperty = DEAL_CHOICE_PROPERTIES.map(({ property }) => property).find(
+      (property) => property && properties[property] != null && message.includes(property)
     );
-    return client.crm.deals.basicApi.update(dealId, { properties: rest });
+    if (!rejectedProperty) throw error;
+    const { [rejectedProperty]: rejected, ...rest } = properties;
+    console.warn(
+      `Nylas pricing: HubSpot rejected ${rejectedProperty}="${rejected}". Saving without it. Check the internal name and option values on that Deal property.`,
+      safeProviderDiagnostics(error, `update_deal_${rejectedProperty}`)
+    );
+    return updateDealProperties(client, dealId, rest);
   }
 };
 var assertDealAccess = (context, requestedDealId) => {
@@ -2071,6 +2081,7 @@ var lockLiveCalculation = async (client, dealId, state, parameters, portalId, se
   properties[SELECTED_OPTION_ID_PROPERTY] = liveOption.id;
   properties[SELECTED_OPTION_NAME_PROPERTY] = liveOption.name;
   Object.assign(properties, paymentMethodProperties(parameters.paymentMethod));
+  Object.assign(properties, paymentFrequencyProperties(input.paymentFrequency));
   const document = {
     schemaVersion: "1.0",
     revision: (state.document?.revision || 0) + 1,
@@ -2615,6 +2626,7 @@ exports._test = Object.freeze({
   associatedIds,
   deleteOption,
   lockLiveCalculation,
+  paymentFrequencyProperties,
   paymentMethodProperties,
   syncDealLineItems,
   updateDealProperties
