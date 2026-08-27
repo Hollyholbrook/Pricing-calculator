@@ -415,6 +415,19 @@ const todayIso = () => {
 // the standing default, the first of next month.
 //
 // ISO dates compare correctly as strings, so no parsing is needed.
+// Key order is not guaranteed to match between a value parsed from the Deal and one rebuilt in the
+// card, so compare canonically rather than by JSON.stringify alone.
+const canonical = (value: unknown): string =>
+  JSON.stringify(value, (_key, inner) =>
+    inner && typeof inner === "object" && !Array.isArray(inner)
+      ? Object.fromEntries(
+          Object.entries(inner as Record<string, unknown>).sort(
+            ([left], [right]) => left.localeCompare(right),
+          ),
+        )
+      : inner,
+  );
+
 const usableStartDate = (saved?: string | null) => {
   if (!saved || !/^\d{4}-\d{2}-\d{2}$/.test(saved))
     return firstDayOfFollowingMonth();
@@ -613,6 +626,9 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
   // Not part of the pricing input: it changes no number, and normalizeStoredInput would strip it
   // from option.input anyway. It travels as its own parameter and lands on the Deal.
   const [paymentMethod, setPaymentMethod] = useState("");
+  // The configuration as it is stored on the Deal, for telling "this would update what is already
+  // locked" from "this would produce something new". Empty when nothing has been locked yet.
+  const [lockedInput, setLockedInput] = useState("");
   const [dealName, setDealName] = useState("");
   const trimmedQuoteTitle = quoteTitle.trim();
   const quoteTitleTooLong = trimmedQuoteTitle.length > QUOTE_TITLE_MAX_LENGTH;
@@ -657,6 +673,10 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
     // edits the rep has made since the load.
     const saved = body.optionSet?.options?.[0];
     if (saved?.input) {
+      // Snapshot what is STORED, before usableStartDate below possibly moves the start date. A
+      // bumped date is a real change -- it moves the contract dates and produces a new quote --
+      // so it must read as changed rather than as an update in place.
+      setLockedInput(canonical(saved.input));
       setEditing((current) =>
         current.restoredFromDeal
           ? current
@@ -791,15 +811,6 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
         input: editing.input,
         quoteContent,
         paymentMethod,
-        // Who is actually clicking. context.user is the signed-in HubSpot user, which is not the
-        // same as the Deal's owner -- the point of sending it is that the seller on the quote
-        // should be the person who generated it, not whoever owns the record.
-        actingUser: {
-          id: String(context.user?.id || ""),
-          email: context.user?.email || "",
-          firstName: context.user?.firstName || "",
-          lastName: context.user?.lastName || "",
-        },
       });
       // generateQuote is idempotent on the quote content hash, so a repeat lock reuses the
       // existing Quote rather than creating one. Saying "created" either way misreports it.
@@ -868,6 +879,9 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
       <OptionEditor
         option={editing}
         saving={saving}
+        matchesLocked={
+          lockedInput !== "" && canonical(editing.input) === lockedInput
+        }
         quoteTemplates={quoteTemplates}
         templateId={templateId}
         onTemplateChange={setTemplateId}
@@ -888,6 +902,7 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
 const OptionEditor = ({
   option,
   saving,
+  matchesLocked,
   quoteTemplates,
   templateId,
   onTemplateChange,
@@ -903,6 +918,7 @@ const OptionEditor = ({
 }: {
   option: QuoteOption;
   saving: boolean;
+  matchesLocked: boolean;
   quoteTemplates: { id: string; name: string }[];
   templateId: string;
   onTemplateChange: (value: string) => void;
@@ -1550,7 +1566,11 @@ const OptionEditor = ({
             quoteTitleTooLong
           }
         >
-          Lock in &amp; create quote
+          {/* The same action either way -- line items are replaced and generateQuote is
+              idempotent on the content hash, so an unchanged configuration reuses the existing
+              Quote rather than making another. The label says which of those is about to
+              happen, because "create quote" on a deal that already has one is a lie. */}
+          {matchesLocked ? "Update existing config" : "Lock in & create quote"}
         </LoadingButton>
       </Flex>
     </Flex>

@@ -1700,24 +1700,6 @@ var choiceProperty = ({ property, values }, choice) => {
 };
 var paymentMethodProperties = (paymentMethod) => choiceProperty(DEAL_PAYMENT_METHOD, paymentMethod);
 var paymentFrequencyProperties = (paymentFrequency) => choiceProperty(DEAL_PAYMENT_FREQUENCY, paymentFrequency);
-var QUOTE_SELLER_PROPERTIES = Object.freeze({
-  firstName: "",
-  lastName: "",
-  email: ""
-});
-var sellerProperties = (actingUser) => {
-  if (!actingUser || typeof actingUser !== "object") return {};
-  const parts = {
-    firstName: String(actingUser.firstName || "").slice(0, 100),
-    lastName: String(actingUser.lastName || "").slice(0, 100),
-    email: String(actingUser.email || "").slice(0, 254)
-  };
-  const properties = {};
-  for (const [slot, name] of Object.entries(QUOTE_SELLER_PROPERTIES)) {
-    if (name && parts[slot]) properties[name] = parts[slot];
-  }
-  return properties;
-};
 var MAX_OPTIONS = 10;
 var MAX_PAYLOAD_LENGTH = 6e4;
 var SAFE_ERRORS = Object.freeze({
@@ -2392,10 +2374,7 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
         // cpq_template, and a quote must declare CPQ_QUOTE to be compatible with them. Without
         // it the quote defaults to the legacy model and HubSpot rejects the CPQ template it is
         // associated with.
-        hs_template_type: "CPQ_QUOTE",
-        // Empty until QUOTE_SELLER_PROPERTIES is filled in; the quote then keeps HubSpot's own
-        // behaviour of inheriting the seller from the Deal's owner.
-        ...sellerProperties(parameters.actingUser)
+        hs_template_type: "CPQ_QUOTE"
       },
       associations: []
     });
