@@ -14,6 +14,11 @@ const baseInput = {
   addOns: [],
 };
 
+// Two entries in this file are no longer workbook transcriptions and are called out where they
+// appear: Agent Email's bands (from the HubSpot product library) and the onboarding amounts (from
+// Holly, 2026-08-27). Everything else here is still the workbook, verbatim, and is the only guard
+// against silent rate drift -- do not regenerate these expectations from the code.
+
 test('rate card is an exact transcription of the workbook', () => {
   assert.deepEqual(
     Object.fromEntries(rules.products.map(({ key, bands }) => [key, bands])),
@@ -37,8 +42,11 @@ test('rate card is an exact transcription of the workbook', () => {
         [5_000, 10_000, 0.35], [10_000, null, 0.3],
       ],
       agent_accounts: [[0, null, 0.2]],
+      // NOT the workbook: the HubSpot product library "Agent Accounts - Per 1,000 Emails Sent"
+      // supersedes it for this product. Tier 1 is free and tier 2 is $0.70; the workbook said
+      // $1.00 and $0.75. Boundaries are unchanged.
       agent_email_thousands: [
-        [0, 50, 1], [50, 100, 0.75], [100, 500, 0.35], [500, null, 0.25],
+        [0, 50, 0], [50, 100, 0.7], [100, 500, 0.35], [500, null, 0.25],
       ],
       agent_storage_gb: [[0, null, 0.2]],
       agent_bandwidth_gb: [[0, null, 0.5]],
@@ -64,9 +72,11 @@ test('workbook modifiers and fixed charges are exact', () => {
     ]),
     [['basic', 0, 0], ['full', 0.1, 10_000], ['premium', 0.2, 20_000]],
   );
+  // NOT the workbook: Holly corrected these on 2026-08-27, moving each package up one step. The
+  // workbook had Quick Launch at $0, $5,000 and $10,000.
   assert.deepEqual(
     rules.onboardingRules.map(({ key, oneTimeAmount }) => [key, oneTimeAmount]),
-    [['quick_launch', 0], ['quick_launch_plus', 5_000], ['strategic', 10_000]],
+    [['none', 0], ['quick_launch', 5_000], ['quick_launch_plus', 10_000], ['strategic', 15_000]],
   );
   assert.deepEqual(
     rules.professionalServicesRules.map(({ itemCount, oneTimeAmount }) => [
@@ -86,7 +96,10 @@ test('every product uses workbook quantity times monthly rate times 12', () => {
     calendar_ca: 500,
     notetaker_bot_hours: 1_000,
     agent_accounts: 1_000,
-    agent_email_thousands: 50,
+    // 100 rather than the workbook's 50: the first 50,000 emails a month are free under the
+    // product-library tiers, so at 50 this line would be $0 and would prove nothing about
+    // quantity x rate x 12. At 100 it is 50 free plus 50 at $0.70.
+    agent_email_thousands: 100,
     agent_storage_gb: 1_000,
     agent_bandwidth_gb: 1_000,
   };
@@ -95,7 +108,7 @@ test('every product uses workbook quantity times monthly rate times 12', () => {
     calendar_ca: 7_800,
     notetaker_bot_hours: 7_200,
     agent_accounts: 2_400,
-    agent_email_thousands: 600,
+    agent_email_thousands: 420,
     agent_storage_gb: 2_400,
     agent_bandwidth_gb: 6_000,
   };
@@ -105,7 +118,7 @@ test('every product uses workbook quantity times monthly rate times 12', () => {
     assert.equal(line.annualCommitment, expectedAnnual[line.productKey], line.productKey);
     assert.equal(line.annualCommitment, line.proposedMrr * 12, line.productKey);
   }
-  assert.equal(result.proposedPlatformArr, 36_600);
+  assert.equal(result.proposedPlatformArr, 36_420);
 });
 
 test('every product exposes its workbook base price before quantities are entered', () => {
@@ -115,7 +128,9 @@ test('every product exposes its workbook base price before quantities are entere
     calendar_ca: 1.3,
     notetaker_bot_hours: 0.6,
     agent_accounts: 0.2,
-    agent_email_thousands: 1,
+    // $0, not the workbook's $1.00 -- the product library's first tier is free, so the card's
+    // "starting at" figure for Agent Email is legitimately zero.
+    agent_email_thousands: 0,
     agent_storage_gb: 0.2,
     agent_bandwidth_gb: 0.5,
   };
@@ -143,8 +158,8 @@ test('support, recurring add-ons, onboarding, professional services, ARR, and TC
   assert.equal(result.supportAnnual, 1_980);
   assert.equal(result.annualAddOns, 8_400);
   assert.equal(result.professionalServicesAmount, 3_800);
-  assert.equal(result.onboardingAmount, 5_000);
+  assert.equal(result.onboardingAmount, 10_000);
   assert.equal(result.committedArr, 30_180);
-  assert.equal(result.oneTime, 8_800);
-  assert.equal(result.tcv, 38_980);
+  assert.equal(result.oneTime, 13_800);
+  assert.equal(result.tcv, 43_980);
 });

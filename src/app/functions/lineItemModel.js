@@ -6,7 +6,13 @@ const CATALOG = Object.freeze({
   // the standalone Platform product inside that bundle (SKU ENT-FY26), so it is what the
   // subscription line is built from. The previous id, 47269087321, is not in the library export
   // at all and HubSpot rejected it as a bundle.
-  enterprise: { id: '46037350773', name: 'Enterprise Drawdown Fee', category: 'Platform' },
+  // `name` and `category` here are LOCAL LABELS ONLY -- used in logs and tests. Neither is sent to
+  // HubSpot (see baseManagedProperties), so if one drifts from the library the quote is unaffected.
+  enterprise: {
+    id: '46037350773',
+    name: 'Enterprise Drawdown Commitment',
+    category: 'Platform',
+  },
   connect_ca: {
     id: '45820463620',
     name: 'Connect - Email + Calendar Connected Accounts (CA)',
@@ -271,10 +277,14 @@ const normalizeQuoteContent = (raw = {}, fallbackTitle = 'Nylas Enterprise Quote
   };
 };
 
+// `name` and `product_category` are deliberately NOT sent. They belong to the product in the
+// HubSpot library, and hs_product_id is enough for HubSpot to fill both in itself. Sending our own
+// copies overwrote the library's naming on every line item -- "Enterprise Drawdown Fee" was one
+// that had drifted from the real product name. Same rule as the description: the product library
+// owns the product's identity, this app owns quantities, rates and fees. The `name` still in
+// LINE_ITEM_PRODUCTS below is a local label for logs and tests only; it never reaches HubSpot.
 const baseManagedProperties = ({ option, key, component, product, source }) => ({
-  name: product.name,
   hs_product_id: product.id,
-  product_category: product.category,
   nylas_pricing_managed: 'true',
   nylas_line_item_key: key,
   nylas_pricing_component: component,
@@ -393,7 +403,16 @@ const buildMeteredLines = (option, source) => {
             // the list rate and the discount are sent -- as monthly rates, the same basis the
             // product is priced on. Quantity is 0, so this moves no money; it makes the agreed
             // rate and the concession visible on the rate schedule.
-            ...(line.discretionaryDiscount > 0
+            // !== 0, not > 0. A NEGATIVE discount is an uplift for a grandfathered account, and
+            // with > 0 the rate simply was not sent -- the line fell back to the product default
+            // and the uplift was silently lost. priceProperties sends the net price alone when
+            // there is no positive gap to state, since HubSpot has no negative discount.
+            //
+            // The rate must also be a real rate. Agent Email's first tier is free, so a line with
+            // no committed volume blends to $0.00 -- and sending 0 replaced the library's
+            // graduated tiers with a flat "$0.00 per 1,000 emails" on the rate schedule. There is
+            // no agreed rate to state in that case, so the library's own tiers stand.
+            ...(line.discretionaryDiscount !== 0 && line.billingUnitRate > 0
               ? {
                   price: line.billingUnitRate,
                   listPrice: line.billingUnitRate / (1 - line.discretionaryDiscount),

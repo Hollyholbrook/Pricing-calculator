@@ -7,8 +7,12 @@
       "input": {
         "termMonths": 12,
         "paymentFrequency": "annual_in_advance",
-        "volumes": { "connect_ca": 500 },
-        "productDiscounts": { "connect_ca": 0 },
+        "volumes": {
+          "connect_ca": 500
+        },
+        "productDiscounts": {
+          "connect_ca": 0
+        },
         "supportLevel": "basic",
         "onboardingPackage": "quick_launch",
         "professionalServices": [],
@@ -26,8 +30,12 @@
       "input": {
         "termMonths": 12,
         "paymentFrequency": "annual_in_advance",
-        "volumes": { "connect_ca": 1100 },
-        "productDiscounts": { "connect_ca": 0.2 },
+        "volumes": {
+          "connect_ca": 1100
+        },
+        "productDiscounts": {
+          "connect_ca": 0.2
+        },
         "supportLevel": "basic",
         "onboardingPackage": "quick_launch",
         "professionalServices": [],
@@ -45,8 +53,12 @@
       "input": {
         "termMonths": 12,
         "paymentFrequency": "annual_in_advance",
-        "volumes": { "agent_email_thousands": 10 },
-        "productDiscounts": { "agent_email_thousands": 0.1 },
+        "volumes": {
+          "agent_email_thousands": 60
+        },
+        "productDiscounts": {
+          "agent_email_thousands": 0.1
+        },
         "supportLevel": "basic",
         "onboardingPackage": "quick_launch",
         "professionalServices": [],
@@ -54,19 +66,29 @@
       },
       "expected": {
         "productKey": "agent_email_thousands",
-        "proposedUnitRate": 0.9,
-        "proposedMrr": 9,
-        "annualCommitment": 108,
-        "proposedBandRates": [0.9, 0.68, 0.32, 0.23]
-      }
+        "proposedUnitRate": 0.11,
+        "proposedMrr": 6.3,
+        "annualCommitment": 75.6,
+        "proposedBandRates": [
+          0,
+          0.63,
+          0.32,
+          0.23
+        ]
+      },
+      "note": "Agent Email list rates come from the HubSpot product library, not this workbook (Holly, 2026-08-27). Regression guard only for this product."
     },
     {
       "name": "Agent Email crosses graduated tiers",
       "input": {
         "termMonths": 12,
         "paymentFrequency": "quarterly_in_advance",
-        "volumes": { "agent_email_thousands": 120 },
-        "productDiscounts": { "agent_email_thousands": 0.05 },
+        "volumes": {
+          "agent_email_thousands": 120
+        },
+        "productDiscounts": {
+          "agent_email_thousands": 0.05
+        },
         "supportLevel": "basic",
         "onboardingPackage": "quick_launch",
         "professionalServices": [],
@@ -74,19 +96,29 @@
       },
       "expected": {
         "productKey": "agent_email_thousands",
-        "proposedUnitRate": 0.8,
-        "proposedMrr": 95.5,
-        "annualCommitment": 1146,
-        "proposedBandRates": [1.01, 0.76, 0.35, 0.25]
-      }
+        "proposedUnitRate": 0.35,
+        "proposedMrr": 42,
+        "annualCommitment": 504,
+        "proposedBandRates": [
+          0,
+          0.7,
+          0.35,
+          0.25
+        ]
+      },
+      "note": "Agent Email list rates come from the HubSpot product library, not this workbook (Holly, 2026-08-27). Regression guard only for this product."
     },
     {
       "name": "Agent Email above final tier",
       "input": {
         "termMonths": 12,
         "paymentFrequency": "monthly_in_advance",
-        "volumes": { "agent_email_thousands": 600 },
-        "productDiscounts": { "agent_email_thousands": 0 },
+        "volumes": {
+          "agent_email_thousands": 600
+        },
+        "productDiscounts": {
+          "agent_email_thousands": 0
+        },
         "supportLevel": "basic",
         "onboardingPackage": "quick_launch",
         "professionalServices": [],
@@ -94,11 +126,17 @@
       },
       "expected": {
         "productKey": "agent_email_thousands",
-        "proposedUnitRate": 0.46,
-        "proposedMrr": 273.5,
-        "annualCommitment": 3282,
-        "proposedBandRates": [1.08, 0.81, 0.38, 0.27]
-      }
+        "proposedUnitRate": 0.36,
+        "proposedMrr": 217,
+        "annualCommitment": 2604,
+        "proposedBandRates": [
+          0,
+          0.76,
+          0.38,
+          0.27
+        ]
+      },
+      "note": "Agent Email list rates come from the HubSpot product library, not this workbook (Holly, 2026-08-27). Regression guard only for this product."
     }
   ]
 }

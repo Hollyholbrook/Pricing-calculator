@@ -35,8 +35,21 @@ const requireInteger = (value, min, max, field) => {
   return value;
 };
 
+// Negative percentages are allowed: a negative discount is an UPLIFT, which the CS team needs to
+// grandfather accounts whose existing rate sits above current list.
+//
+// The floor is -1, a 100% uplift (double list). That bound is a guess at a sane maximum rather than
+// a stated rule -- widen MIN_DISCOUNT if a real case needs more. It exists so a typo like -50
+// (meaning -50%) is rejected instead of quietly pricing at 51x list.
+const MIN_DISCOUNT = -1;
+
 const requirePercent = (value, field) => {
-  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > 1) {
+  if (
+    typeof value !== 'number' ||
+    !Number.isFinite(value) ||
+    value < MIN_DISCOUNT ||
+    value > 1
+  ) {
     throw new QuoteValidationError('INVALID_PERCENTAGE', field);
   }
   return value;

@@ -85,7 +85,9 @@ test('Deal line items reconcile to the approved calculation', () => {
     ],
   );
   assert.equal(recurringItems[0].properties.hs_product_id, '46037350773');
-  assert.equal(recurringItems[0].properties.name, 'Enterprise Drawdown Fee');
+  // No `name`: the product library owns the product's name, and hs_product_id is how HubSpot
+  // resolves it. Sending our own copy overwrote the library's naming on the line item.
+  assert.equal(recurringItems[0].properties.name, undefined);
 
   // Positions are stamped in order, because HubSpot orders by hs_position_on_quote, not creation.
   assert.deepEqual(
@@ -100,13 +102,29 @@ test('Deal line items reconcile to the approved calculation', () => {
     assert.notEqual(item.properties.price, 'NaN', `${item.key} price is never the string NaN`);
   }
   // This fixture carries a 10% discretionary discount, which normalizeInput spreads to every
-  // product, so every rate schedule line here sends its agreed rate. The
+  // product, so every rate schedule line with a real rate sends its agreed rate. The
   // no-discount-means-no-price case is covered by the all-products test below.
+  //
+  // Agent Email is the exception, and deliberately so: its first tier is free and this fixture
+  // commits no email volume, so it blends to $0.00. Sending 0 would replace the product library's
+  // graduated tiers with a flat "$0.00 per 1,000 emails" on the customer-facing rate schedule, so
+  // the price is omitted and the library's tiers stand.
   for (const item of items.filter(({ key }) => key.startsWith('metered:'))) {
-    assert.ok(
-      Number(item.properties.price) > 0,
-      `${item.key} sends the agreed rate when discounted`,
+    const rate = selected.result.lines.find(
+      ({ productKey }) => `metered:${productKey}` === item.key,
     );
+    if (rate.billingUnitRate > 0) {
+      assert.ok(
+        Number(item.properties.price) > 0,
+        `${item.key} sends the agreed rate when discounted`,
+      );
+    } else {
+      assert.equal(
+        item.properties.price,
+        undefined,
+        `${item.key} blends to $0, so the product library's own rates must stand`,
+      );
+    }
   }
 
   // Everything outside the bundle keeps a real quantity: drawdown, support, add-ons, one-times.
@@ -149,7 +167,8 @@ test('Deal line items reconcile to the approved calculation', () => {
       selected.result.paymentsPerYear * 0.005,
     'annual total may differ from ARR only by the per-payment rounding',
   );
-  assert.equal(recurringItems[1].properties.name, 'Connect - Email + Calendar Connected Accounts (CA)');
+  assert.equal(recurringItems[1].properties.hs_product_id, '45820463620');
+  assert.equal(recurringItems[1].properties.name, undefined);
 });
 
 test('every bundle product appears even with no commitment or discount', () => {
@@ -215,7 +234,8 @@ test('every quote carries a support line, Basic at $0 included', () => {
   const items = buildDealLineItems({ id: 'o', input, result: calculateQuote(input) });
   const support = items.find(({ key }) => key === 'support:basic');
   assert.ok(support, 'Basic support must still produce a line item');
-  assert.equal(support.properties.name, 'Support Services: Basic');
+  assert.equal(support.properties.hs_product_id, '40270989858');
+  assert.equal(support.properties.name, undefined);
   assert.equal(Number(support.properties.price), 0);
   // "None" onboarding is a real selection meaning none was sold, so it produces no line.
   assert.equal(
@@ -239,12 +259,15 @@ test('onboarding packages map to their own products, not the next one up', () =>
     return items.find(({ key }) => key.startsWith('onboarding:'))?.properties;
   };
   // Each key previously resolved to the NEXT package's product, and quick_launch had no entry.
-  assert.equal(forPackage('quick_launch').name, 'QuickLaunch Onboarding');
+  // hs_product_id is the whole guard now: no `name` is sent, so a mis-mapped key would show the
+  // wrong package on the quote with nothing in the payload to reveal it. The price is asserted
+  // alongside it because a wrong id would also bill the wrong amount.
   assert.equal(forPackage('quick_launch').hs_product_id, '42724377715');
-  assert.equal(forPackage('quick_launch_plus').name, 'QuickLaunch+ Onboarding');
+  assert.equal(Number(forPackage('quick_launch').price), 5_000);
   assert.equal(forPackage('quick_launch_plus').hs_product_id, '42724501576');
-  assert.equal(forPackage('strategic').name, 'Strategic Onboarding');
+  assert.equal(Number(forPackage('quick_launch_plus').price), 10_000);
   assert.equal(forPackage('strategic').hs_product_id, '42724439648');
+  assert.equal(Number(forPackage('strategic').price), 15_000);
 });
 
 test('Quote can collapse only the subscription products, not other charges', () => {
@@ -336,7 +359,7 @@ test('Quote and Deal line items carry identical properties', () => {
     assert.deepEqual(
       sentToHubSpot(quoteItems[index]),
       sentToHubSpot(dealItem),
-      `line ${index} (${dealItem.properties.name}) must match on the Quote and the Deal`,
+      `line ${index} (${dealItem.properties.hs_product_id}) must match on the Quote and the Deal`,
     );
   }
 });
@@ -358,8 +381,37 @@ test('no line item carries an app-authored description', () => {
       assert.equal(
         item.properties.description,
         undefined,
-        `${surface} line ${item.properties.name} must leave description to the product library`,
+        `${surface} line ${item.properties.hs_product_id} must leave description to the product library`,
       );
+    }
+  }
+});
+
+// Same principle, widened. The product library owns what a product IS -- its name, its category,
+// its description. This app owns what was SOLD -- quantities, rates, discounts, fees. Each of
+// these has been sent at some point and each overwrote the library's own value on the line item;
+// "Enterprise Drawdown Fee" was a name that had drifted out of date exactly that way.
+// hs_product_id is the only thing HubSpot needs in order to fill all of them in correctly.
+test('no line item overwrites a product-owned field', () => {
+  const selected = option();
+  const content = normalizeQuoteContent({ includeUncommittedRateSchedule: true });
+  const productOwned = ['name', 'description', 'product_category', 'hs_sku', 'hs_url'];
+  for (const [surface, items] of [
+    ['deal', buildDealLineItems(selected)],
+    ['quote', buildQuoteLineItems(selected, content)],
+  ]) {
+    for (const item of items) {
+      assert.ok(
+        item.properties.hs_product_id,
+        `${surface} line must carry hs_product_id so HubSpot can resolve the product`,
+      );
+      for (const property of productOwned) {
+        assert.equal(
+          item.properties[property],
+          undefined,
+          `${surface} line ${item.properties.hs_product_id} leaks ${property}`,
+        );
+      }
     }
   }
 });

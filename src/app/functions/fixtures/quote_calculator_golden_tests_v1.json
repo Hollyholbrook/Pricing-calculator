@@ -16,7 +16,9 @@
       },
       "supportLevel": "full",
       "onboardingPackage": "quick_launch_plus",
-      "addOns": ["enterprise_accelerator"],
+      "addOns": [
+        "enterprise_accelerator"
+      ],
       "professionalServices": [
         "google_verification_review",
         "architecture_workflow_review"
@@ -30,30 +32,89 @@
       "supportDiscount": 0,
       "onboardingDiscount": 0,
       "professionalServicesDiscount": 0,
-      "addOnDiscounts": { "enterprise_accelerator": 0 },
+      "addOnDiscounts": {
+        "enterprise_accelerator": 0
+      },
       "autoRenewal": true,
       "redliningRequested": false
     },
     "expected": {
       "termDiscount": 0.025,
       "paymentPremium": 0.06,
-      "listPlatformArr": 90326.4,
-      "proposedPlatformArr": 81417.6,
-      "supportAnnual": 8141.76,
+      "listPlatformArr": 89666.4,
+      "proposedPlatformArr": 80799.6,
+      "supportAnnual": 8079.96,
       "annualAddOns": 2480.4,
-      "committedArr": 92039.76,
-      "oneTime": 8800,
-      "tcv": 192879.52,
+      "committedArr": 91359.96,
+      "oneTime": 13800,
+      "tcv": 196519.92,
       "approvalStatus": "WITHIN_GUARDRAILS",
       "lines": [
-        { "productKey": "connect_ca", "volume": 2800, "baseBlendedRate": 1.496, "listUnitRate": 1.55, "proposedUnitRate": 1.4, "listMrr": 4340, "proposedMrr": 3920 },
-        { "productKey": "calendar_ca", "volume": 2800, "baseBlendedRate": 1.032, "listUnitRate": 1.07, "proposedUnitRate": 0.96, "listMrr": 2996, "proposedMrr": 2688 },
-        { "productKey": "notetaker_bot_hours", "volume": 150, "baseBlendedRate": 0.6, "listUnitRate": 0.62, "proposedUnitRate": 0.56, "listMrr": 93, "proposedMrr": 84 },
-        { "productKey": "agent_accounts", "volume": 0, "baseBlendedRate": 0, "listUnitRate": 0, "proposedUnitRate": 0, "listMrr": 0, "proposedMrr": 0 },
-        { "productKey": "agent_email_thousands", "volume": 120, "baseBlendedRate": 0.788, "listUnitRate": 0.82, "proposedUnitRate": 0.77, "listMrr": 98.2, "proposedMrr": 92.8 },
-        { "productKey": "agent_storage_gb", "volume": 0, "baseBlendedRate": 0, "listUnitRate": 0, "proposedUnitRate": 0, "listMrr": 0, "proposedMrr": 0 },
-        { "productKey": "agent_bandwidth_gb", "volume": 0, "baseBlendedRate": 0, "listUnitRate": 0, "proposedUnitRate": 0, "listMrr": 0, "proposedMrr": 0 }
+        {
+          "productKey": "connect_ca",
+          "volume": 2800,
+          "baseBlendedRate": 1.496,
+          "listUnitRate": 1.55,
+          "proposedUnitRate": 1.4,
+          "listMrr": 4340,
+          "proposedMrr": 3920
+        },
+        {
+          "productKey": "calendar_ca",
+          "volume": 2800,
+          "baseBlendedRate": 1.032,
+          "listUnitRate": 1.07,
+          "proposedUnitRate": 0.96,
+          "listMrr": 2996,
+          "proposedMrr": 2688
+        },
+        {
+          "productKey": "notetaker_bot_hours",
+          "volume": 150,
+          "baseBlendedRate": 0.6,
+          "listUnitRate": 0.62,
+          "proposedUnitRate": 0.56,
+          "listMrr": 93,
+          "proposedMrr": 84
+        },
+        {
+          "productKey": "agent_accounts",
+          "volume": 0,
+          "baseBlendedRate": 0,
+          "listUnitRate": 0,
+          "proposedUnitRate": 0,
+          "listMrr": 0,
+          "proposedMrr": 0
+        },
+        {
+          "productKey": "agent_email_thousands",
+          "volume": 120,
+          "baseBlendedRate": 0.35,
+          "listUnitRate": 0.36,
+          "proposedUnitRate": 0.34,
+          "listMrr": 43.2,
+          "proposedMrr": 41.3
+        },
+        {
+          "productKey": "agent_storage_gb",
+          "volume": 0,
+          "baseBlendedRate": 0,
+          "listUnitRate": 0,
+          "proposedUnitRate": 0,
+          "listMrr": 0,
+          "proposedMrr": 0
+        },
+        {
+          "productKey": "agent_bandwidth_gb",
+          "volume": 0,
+          "baseBlendedRate": 0,
+          "listUnitRate": 0,
+          "proposedUnitRate": 0,
+          "listMrr": 0,
+          "proposedMrr": 0
+        }
       ]
-    }
+    },
+    "note": "Transcribed from the One-Subscription Pricing Workbook, then re-baselined 2026-08-27 for two deliberate overrides: Agent Email list rates now come from the HubSpot product library (line index 4), and onboarding is 5/10/15K per Holly. The remaining six product lines are unchanged workbook figures."
   }
 ]

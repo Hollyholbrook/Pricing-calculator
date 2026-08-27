@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 
 const { calculateQuote } = require('./calculator');
+const { CATALOG } = require('./lineItemModel');
 const { defaultSettings } = require('./appSettings');
 const { _test } = require('./QuoteOptionsFunction');
 
@@ -45,6 +46,10 @@ test('deleting the customer-selected option clears its Deal line items and selec
   assert.equal(updates[0].properties.pricing_selected_option_id, '');
 });
 
+// Reverse of CATALOG, for readable assertions only. Nothing in the payload carries a name.
+const labelForProductId = (id) =>
+  Object.values(CATALOG).find((product) => product.id === id)?.name || `product:${id}`;
+
 test('locking an option archives every existing Deal line item before creating replacements', async () => {
   const settings = defaultSettings();
   const input = {
@@ -83,7 +88,9 @@ test('locking an option archives every existing Deal line item before creating r
             // exists in portals where it was provisioned, so it is filtered out of the payload;
             // sending it made every create fail with a 400 in portals that lack it.
             createdProperties.push(properties);
-            events.push(`create:${properties.name}`);
+            // Line items carry no `name` -- the product library owns it and hs_product_id is how
+            // HubSpot resolves it. The label is looked up locally so this list stays readable.
+            events.push(`create:${labelForProductId(properties.hs_product_id)}`);
             return { id: 'new-1' };
           },
         },
@@ -99,7 +106,7 @@ test('locking an option archives every existing Deal line item before creating r
   assert.deepEqual(events, [
     'archive:old-unmanaged',
     'archive:old-managed',
-    'create:Enterprise Drawdown Fee',
+    'create:Enterprise Drawdown Commitment',
     'create:Connect - Email + Calendar Connected Accounts (CA)',
     'create:Connect - Calendar-Only Connected Accounts (CA)',
     'create:Notetaker - Bot Hours',
@@ -130,7 +137,7 @@ test('locking an option archives every existing Deal line item before creating r
   // committed_quantity is custom, so the allow-list is the one place that can silently swallow it.
   // Connect is the only committed product in this fixture, at 2,000 CA per month.
   const connect = createdProperties.find(
-    ({ name }) => name === 'Connect - Email + Calendar Connected Accounts (CA)',
+    ({ hs_product_id: id }) => id === CATALOG.connect_ca.id,
   );
   assert.equal(connect.committed_quantity, '2000');
   assert.equal(connect.quantity, '0');

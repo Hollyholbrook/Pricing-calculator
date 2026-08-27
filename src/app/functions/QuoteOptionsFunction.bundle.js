@@ -80,9 +80,17 @@ var require_pricingRules = __commonJS({
           name: "Agent Email",
           unitOfMeasure: "1,000 emails",
           pricingModel: "graduated_adjusted_bands",
+          // From the HubSpot product library, which supersedes the workbook for this product --
+          // Holly's decision, 2026-08-27, after the two were found to disagree. The product
+          // "Agent Accounts - Per 1,000 Emails Sent" lists tiers 0-49,999 at $0.00, 50,000-99,999
+          // at $0.70, 100,000-499,999 at $0.35, 500,000+ at $0.25.
+          //
+          // Boundaries are unchanged: HubSpot states them in emails, these are in thousands of
+          // emails, and 50,000 emails is 50 of these units. Only tiers 1 and 2 moved -- $1.00 to
+          // $0.00, making the first 50,000 emails a month free, and $0.75 to $0.70.
           bands: [
-            [0, 50, 1],
-            [50, 100, 0.75],
+            [0, 50, 0],
+            [50, 100, 0.7],
             [100, 500, 0.35],
             [500, null, 0.25]
           ]
@@ -159,11 +167,13 @@ var require_pricingRules = __commonJS({
           annualCap: 2e4
         }
       ],
+      // Corrected 2026-08-27 on Holly's instruction: each package moved up one step. Quick Launch was
+      // $0, which was the figure that kept showing "$0" in the card and looked like a bug.
       onboardingRules: [
         { key: "none", package: "None", oneTimeAmount: 0 },
-        { key: "quick_launch", package: "Quick Launch", oneTimeAmount: 0 },
-        { key: "quick_launch_plus", package: "Quick Launch +", oneTimeAmount: 5e3 },
-        { key: "strategic", package: "Strategic Onboarding", oneTimeAmount: 1e4 }
+        { key: "quick_launch", package: "Quick Launch", oneTimeAmount: 5e3 },
+        { key: "quick_launch_plus", package: "Quick Launch +", oneTimeAmount: 1e4 },
+        { key: "strategic", package: "Strategic Onboarding", oneTimeAmount: 15e3 }
       ],
       professionalServicesRules: [
         { itemCount: 0, oneTimeAmount: 0 },
@@ -239,8 +249,9 @@ var require_calculator = __commonJS({
       }
       return value;
     };
+    var MIN_DISCOUNT = -1;
     var requirePercent = (value, field) => {
-      if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 1) {
+      if (typeof value !== "number" || !Number.isFinite(value) || value < MIN_DISCOUNT || value > 1) {
         throw new QuoteValidationError2("INVALID_PERCENTAGE", field);
       }
       return value;
@@ -1166,7 +1177,13 @@ var require_lineItemModel = __commonJS({
       // the standalone Platform product inside that bundle (SKU ENT-FY26), so it is what the
       // subscription line is built from. The previous id, 47269087321, is not in the library export
       // at all and HubSpot rejected it as a bundle.
-      enterprise: { id: "46037350773", name: "Enterprise Drawdown Fee", category: "Platform" },
+      // `name` and `category` here are LOCAL LABELS ONLY -- used in logs and tests. Neither is sent to
+      // HubSpot (see baseManagedProperties), so if one drifts from the library the quote is unaffected.
+      enterprise: {
+        id: "46037350773",
+        name: "Enterprise Drawdown Commitment",
+        category: "Platform"
+      },
       connect_ca: {
         id: "45820463620",
         name: "Connect - Email + Calendar Connected Accounts (CA)",
@@ -1387,9 +1404,7 @@ var require_lineItemModel = __commonJS({
       };
     };
     var baseManagedProperties = ({ option, key, component, product, source }) => ({
-      name: product.name,
       hs_product_id: product.id,
-      product_category: product.category,
       nylas_pricing_managed: "true",
       nylas_line_item_key: key,
       nylas_pricing_component: component,
@@ -1477,7 +1492,16 @@ var require_lineItemModel = __commonJS({
               // the list rate and the discount are sent -- as monthly rates, the same basis the
               // product is priced on. Quantity is 0, so this moves no money; it makes the agreed
               // rate and the concession visible on the rate schedule.
-              ...line.discretionaryDiscount > 0 ? {
+              // !== 0, not > 0. A NEGATIVE discount is an uplift for a grandfathered account, and
+              // with > 0 the rate simply was not sent -- the line fell back to the product default
+              // and the uplift was silently lost. priceProperties sends the net price alone when
+              // there is no positive gap to state, since HubSpot has no negative discount.
+              //
+              // The rate must also be a real rate. Agent Email's first tier is free, so a line with
+              // no committed volume blends to $0.00 -- and sending 0 replaced the library's
+              // graduated tiers with a flat "$0.00 per 1,000 emails" on the rate schedule. There is
+              // no agreed rate to state in that case, so the library's own tiers stand.
+              ...line.discretionaryDiscount !== 0 && line.billingUnitRate > 0 ? {
                 price: line.billingUnitRate,
                 listPrice: line.billingUnitRate / (1 - line.discretionaryDiscount)
               } : {},
@@ -2211,7 +2235,9 @@ var inBatches = async (values, action, batchSize = 10) => {
   }
 };
 var HUBSPOT_LINE_ITEM_PROPERTIES = /* @__PURE__ */ new Set([
-  "name",
+  // 'name' deliberately omitted, as a second guard behind lineItemModel not building it. The
+  // product library owns the product's name; hs_product_id is enough for HubSpot to fill it in,
+  // and anything sent here would overwrite the library's naming on the line item.
   "hs_product_id",
   "quantity",
   "price",

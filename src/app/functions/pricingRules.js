@@ -72,9 +72,17 @@ module.exports = Object.freeze({
       name: 'Agent Email',
       unitOfMeasure: '1,000 emails',
       pricingModel: 'graduated_adjusted_bands',
+      // From the HubSpot product library, which supersedes the workbook for this product --
+      // Holly's decision, 2026-08-27, after the two were found to disagree. The product
+      // "Agent Accounts - Per 1,000 Emails Sent" lists tiers 0-49,999 at $0.00, 50,000-99,999
+      // at $0.70, 100,000-499,999 at $0.35, 500,000+ at $0.25.
+      //
+      // Boundaries are unchanged: HubSpot states them in emails, these are in thousands of
+      // emails, and 50,000 emails is 50 of these units. Only tiers 1 and 2 moved -- $1.00 to
+      // $0.00, making the first 50,000 emails a month free, and $0.75 to $0.70.
       bands: [
-        [0, 50, 1],
-        [50, 100, 0.75],
+        [0, 50, 0],
+        [50, 100, 0.7],
         [100, 500, 0.35],
         [500, null, 0.25],
       ],
@@ -151,11 +159,13 @@ module.exports = Object.freeze({
       annualCap: 20_000,
     },
   ],
+  // Corrected 2026-08-27 on Holly's instruction: each package moved up one step. Quick Launch was
+  // $0, which was the figure that kept showing "$0" in the card and looked like a bug.
   onboardingRules: [
     { key: 'none', package: 'None', oneTimeAmount: 0 },
-    { key: 'quick_launch', package: 'Quick Launch', oneTimeAmount: 0 },
-    { key: 'quick_launch_plus', package: 'Quick Launch +', oneTimeAmount: 5_000 },
-    { key: 'strategic', package: 'Strategic Onboarding', oneTimeAmount: 10_000 },
+    { key: 'quick_launch', package: 'Quick Launch', oneTimeAmount: 5_000 },
+    { key: 'quick_launch_plus', package: 'Quick Launch +', oneTimeAmount: 10_000 },
+    { key: 'strategic', package: 'Strategic Onboarding', oneTimeAmount: 15_000 },
   ],
   professionalServicesRules: [
     { itemCount: 0, oneTimeAmount: 0 },

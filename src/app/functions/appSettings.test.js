@@ -44,12 +44,12 @@ test('legacy Agent Email rates migrate while preserving custom settings', () => 
   legacy.pricingPolicy.productBandRates.agent_email_thousands = [0.5];
   assert.deepEqual(
     normalizeSettings(legacy).pricingPolicy.productBandRates.agent_email_thousands,
-    [1, 0.75, 0.35, 0.25],
+    [0, 0.7, 0.35, 0.25],
   );
 
   legacy.pricingPolicy.productBandRates.agent_email_thousands = [0.6];
   assert.deepEqual(
     normalizeSettings(legacy).pricingPolicy.productBandRates.agent_email_thousands,
-    [0.6, 0.75, 0.35, 0.25],
+    [0.6, 0.7, 0.35, 0.25],
   );
 });

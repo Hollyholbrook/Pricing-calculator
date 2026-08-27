@@ -360,6 +360,11 @@ const VOLUME_COLUMN_WIDTH = 180;
 // four-decimal rates that no longer exist now that prices round to cents.
 const LIST_RATE_COLUMN_WIDTH = 240;
 const DISCOUNT_COLUMN_WIDTH = 110;
+
+// Discounts may be NEGATIVE: a negative discount is an uplift, which CS needs for grandfathering
+// accounts whose existing rate is above current list. min={0} on the inputs was silently clamping
+// those to zero. Mirrors MIN_DISCOUNT in the calculator, which rejects anything beyond -100%.
+const MIN_DISCOUNT_PERCENT = -100;
 const PROPOSED_RATE_COLUMN_WIDTH = 200;
 
 // The quote template to fall back on by NAME, when the configured default id is not among the
@@ -1141,6 +1146,8 @@ const OptionEditor = ({
                     label=""
                     name={product.key}
                     value={option.input.volumes[product.key]}
+                    // A committed volume, not a discount: zero is the floor. The negative floor
+                    // belongs only to the discount inputs.
                     min={0}
                     max={1_000_000_000}
                     precision={0}
@@ -1160,7 +1167,7 @@ const OptionEditor = ({
                     value={
                       (option.input.productDiscounts?.[product.key] || 0) * 100
                     }
-                    min={0}
+                    min={MIN_DISCOUNT_PERCENT}
                     max={100}
                     precision={0}
                     formatStyle="percentage"
@@ -1366,7 +1373,7 @@ const OptionEditor = ({
                   label="Support Discount"
                   name="support_discount"
                   value={(option.input.supportDiscount || 0) * 100}
-                  min={0}
+                  min={MIN_DISCOUNT_PERCENT}
                   max={100}
                   precision={2}
                   formatStyle="percentage"
@@ -1395,7 +1402,7 @@ const OptionEditor = ({
                   label="Onboarding Discount"
                   name="onboarding_discount"
                   value={(option.input.onboardingDiscount || 0) * 100}
-                  min={0}
+                  min={MIN_DISCOUNT_PERCENT}
                   max={100}
                   precision={2}
                   formatStyle="percentage"
@@ -1444,7 +1451,7 @@ const OptionEditor = ({
                               (option.input.addOnDiscounts?.[String(value)] ||
                                 0) * 100
                             }
-                            min={0}
+                            min={MIN_DISCOUNT_PERCENT}
                             max={100}
                             precision={2}
                             formatStyle="percentage"
@@ -1484,7 +1491,7 @@ const OptionEditor = ({
                       value={
                         (option.input.professionalServicesDiscount || 0) * 100
                       }
-                      min={0}
+                      min={MIN_DISCOUNT_PERCENT}
                       max={100}
                       precision={2}
                       formatStyle="percentage"
