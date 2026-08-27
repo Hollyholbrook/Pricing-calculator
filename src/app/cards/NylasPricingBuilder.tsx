@@ -345,6 +345,12 @@ const LIST_RATE_COLUMN_WIDTH = 240;
 const DISCOUNT_COLUMN_WIDTH = 110;
 const PROPOSED_RATE_COLUMN_WIDTH = 200;
 
+// The quote template to fall back on by NAME, when the configured default id is not among the
+// portal's templates -- a wrong id, a template recreated, or a portal that never had it. Matches
+// the "1 sub" template regardless of the rest of its name, so "testing (1 sub)" and a renamed
+// production version both hit. Only a fallback: a matching id always wins.
+const DEFAULT_TEMPLATE_NAME_MATCH = /1\s*sub/i;
+
 // Mirrors the server-side limit in normalizeQuoteContent. Checked here too so an over-long title
 // is caught in the field, rather than after Save and Lock as a generic INVALID_QUOTE_CONTENT.
 const QUOTE_TITLE_MAX_LENGTH = 160;
@@ -611,12 +617,20 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
       setQuoteTemplates(body.quoteTemplates);
       // Preselect the configured default when it is one of the usable templates, so the picker
       // shows what would happen anyway rather than silently differing from it.
+      //
+      // Falling straight through to templates[0] was too blunt: sorted by name, that is whichever
+      // template happens to sort first, and the card would sit on it with no sign that the
+      // configured default had not been found. So the id is tried first, then the name, and only
+      // then the first in the list.
       const preferred = body.defaultQuoteTemplateId || "";
+      const templates = body.quoteTemplates || [];
       setTemplateId((current) => {
         if (current) return current;
-        return body.quoteTemplates?.some(({ id }) => id === preferred)
-          ? preferred
-          : body.quoteTemplates?.[0]?.id || "";
+        if (templates.some(({ id }) => id === preferred)) return preferred;
+        const byName = templates.find(({ name }) =>
+          DEFAULT_TEMPLATE_NAME_MATCH.test(name),
+        );
+        return byName?.id || templates[0]?.id || "";
       });
     }
   };
