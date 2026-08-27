@@ -346,9 +346,9 @@ const DISCOUNT_COLUMN_WIDTH = 110;
 const PROPOSED_RATE_COLUMN_WIDTH = 200;
 
 // The quote template to fall back on by NAME, when the configured default id is not among the
-// portal's templates -- a wrong id, a template recreated, or a portal that never had it. Matches
-// the "1 sub" template regardless of the rest of its name, so "testing (1 sub)" and a renamed
-// production version both hit. Only a fallback: a matching id always wins.
+// portal's templates -- a wrong id, a template recreated, or a portal that never had it. The
+// template is called "(TESTING) 1 sub" today, so this matches on the "1 sub" part alone and
+// survives the (TESTING) prefix being dropped. Only a fallback: a matching id always wins.
 const DEFAULT_TEMPLATE_NAME_MATCH = /1\s*sub/i;
 
 // Mirrors the server-side limit in normalizeQuoteContent. Checked here too so an over-long title

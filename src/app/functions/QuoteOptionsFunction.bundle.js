@@ -1674,7 +1674,7 @@ var OPTION_PROPERTY = "pricing_quote_options_payload";
 var SELECTED_OPTION_ID_PROPERTY = "pricing_selected_option_id";
 var SELECTED_OPTION_NAME_PROPERTY = "pricing_selected_option_name";
 var DEFAULT_QUOTE_TEMPLATE_ID = "567553820432";
-var configuredQuoteTemplateId = () => String(process.env.QUOTE_TEMPLATE_ID || "") || DEFAULT_QUOTE_TEMPLATE_ID;
+var configuredQuoteTemplateId = () => DEFAULT_QUOTE_TEMPLATE_ID || String(process.env.QUOTE_TEMPLATE_ID || "");
 var MAX_OPTIONS = 10;
 var MAX_PAYLOAD_LENGTH = 6e4;
 var SAFE_ERRORS = Object.freeze({

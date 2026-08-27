@@ -26,12 +26,22 @@ const SELECTED_OPTION_NAME_PROPERTY = 'pricing_selected_option_name';
 // alphabetically", which silently generated quotes against whichever template happened to sort
 // first, and is the likeliest reason a generated quote rendered a template nobody was editing.
 //
-// The secret still wins when it is set, so a different portal or a template swap needs no deploy.
-// Either way the card only preselects a default that is actually in the portal's template list.
+// This id takes PRECEDENCE over the QUOTE_TEMPLATE_ID secret, which is the opposite of the usual
+// config-beats-code order, and deliberately so.
+//
+// That secret is set to the "Sales Quote - New Customers" template -- see the wording of
+// QUOTE_CONFIGURATION_REQUIRED below, which predates this app's use of a picker. While the secret
+// won, it silently overrode the intended default on every card load: the card kept landing on
+// Sales Quote - New Customers even though "(TESTING) 1 sub" sorts FIRST in the list, so not even
+// the alphabetical fallback could be blamed.
+//
+// The secret is kept as a last resort so another portal can still point the app somewhere without
+// a deploy. To hand control back to configuration, set the secret to the intended template and
+// clear this constant.
 const DEFAULT_QUOTE_TEMPLATE_ID = '567553820432';
 
 const configuredQuoteTemplateId = () =>
-  String(process.env.QUOTE_TEMPLATE_ID || '') || DEFAULT_QUOTE_TEMPLATE_ID;
+  DEFAULT_QUOTE_TEMPLATE_ID || String(process.env.QUOTE_TEMPLATE_ID || '');
 
 const MAX_OPTIONS = 10;
 const MAX_PAYLOAD_LENGTH = 60_000;
