@@ -159,7 +159,10 @@ const carriesFees = (key) => !String(key).startsWith('metered:');
 const feeTotals = (item, option) => {
   const price = Number(item.properties.price);
   if (!Number.isFinite(price)) return null;
-  const amount = price * Number(item.properties.quantity || 0);
+  // Net of the discount. `price` is now the LIST price on any discounted line, so reading it
+  // alone would report list amounts in the fee columns and overstate every total.
+  const net = price - Number(item.properties.discount || 0);
+  const amount = net * Number(item.properties.quantity || 0);
   // A line is recurring exactly when it carries a billing frequency -- the same test the Contract
   // Summary and the reconciliation test use.
   const recurring = Boolean(item.properties.recurringbillingfrequency);
@@ -280,21 +283,57 @@ const baseManagedProperties = ({ option, key, component, product, source }) => (
   nylas_line_item_source: source,
 });
 
-const recurringProperties = ({ option, key, component, product, price, quantity, description, source }) => {
-  const paymentsPerYear = option.result.paymentsPerYear;
+// price + discount, expressed the way HubSpot models a discounted line.
+//
+// Sending only the net price hid the discount entirely: the quote showed the agreed rate with no
+// indication anything had been given away. So the LIST price goes in `price` and the difference
+// goes in `discount`, HubSpot's own field, and HubSpot's net comes out at the agreed amount.
+//
+// A flat amount, not hs_discount_percentage, for a reason worth keeping. Support is priced as a
+// share of platform ARR, so its list-to-net gap already carries the product discounts as well as
+// its own -- 15% entered, 23.41% effective. A percentage rounded to two decimals against a
+// five-figure base drifts by tens of cents; list minus net is exact to the cent by construction.
+const priceProperties = (price, listPrice) => {
+  if (price == null) return {};
+  const net = round(price, 2);
+  // No discount to state when nothing was given away. Guard on a positive gap rather than
+  // inequality: floating point can leave a sub-cent difference on an undiscounted line.
+  if (listPrice == null) return { price: String(net) };
+  const list = round(listPrice, 2);
+  if (list - net < 0.01) return { price: String(net) };
+  return { price: String(list), discount: String(round(list - net, 2)) };
+};
+
+// billingPeriodsPerYear defaults to the payment schedule, but a line can override it. The seven
+// package products are priced as MONTHLY rates and must stay monthly: stamping them with the
+// payment schedule said "quarterly" on a line whose price is a per-month figure. They bill nothing
+// (quantity 0), so this is about the line describing itself honestly.
+const recurringProperties = ({
+  option,
+  key,
+  component,
+  product,
+  price,
+  listPrice,
+  quantity,
+  description,
+  source,
+  billingPeriodsPerYear,
+}) => {
+  const paymentsPerYear = billingPeriodsPerYear || option.result.paymentsPerYear;
   return {
     ...baseManagedProperties({ option, key, component, product, source }),
     quantity: String(quantity),
-    // An omitted price means "use the product's default". It must stay omitted: round(undefined)
+    // An omitted price means "use the product's default", and must stay omitted: round(undefined)
     // is NaN, and String(NaN) is the literal "NaN", which HubSpot would take as the price.
-    // Two decimals. A price is money, and 9 decimals put values like 1.393524 and 0.773333333
-    // into HubSpot's Unit Price column -- neither is a price anyone can be charged.
-    ...(price == null ? {} : { price: String(round(price, 2)) }),
+    ...priceProperties(price, listPrice),
     // Omitted when blank so HubSpot falls back to the product library's own description.
     // Sending '' would overwrite that with nothing.
     ...(description ? { description: String(description).slice(0, 5_000) } : {}),
     recurringbillingfrequency: paymentFrequency(paymentsPerYear),
     hs_recurring_billing_period: `P${option.input.termMonths}M`,
+    // Follows the line's own frequency, not the deal's: a monthly line over a 24-month term has
+    // 24 payments, not the 8 a quarterly schedule would give.
     hs_recurring_billing_number_of_payments: String(
       (option.input.termMonths / 12) * paymentsPerYear,
     ),
@@ -306,10 +345,10 @@ const recurringProperties = ({ option, key, component, product, price, quantity,
   };
 };
 
-const oneTimeProperties = ({ option, key, component, product, price, description, source }) => ({
+const oneTimeProperties = ({ option, key, component, product, price, listPrice, description, source }) => ({
   ...baseManagedProperties({ option, key, component, product, source }),
   quantity: '1',
-  price: String(round(price)),
+  ...priceProperties(price, listPrice),
   ...(description ? { description: String(description).slice(0, 5_000) } : {}),
 });
 
@@ -339,6 +378,9 @@ const buildMeteredLines = (option, source) => {
             // Quantity 0: the Enterprise Drawdown Fee carries the money and usage comes out of
             // that pool, so these lines are the rate schedule and add nothing to the total.
             quantity: 0,
+            // Monthly, whatever the payment schedule. These rates are per month, and the drawdown
+            // fee is the only charge in the package that follows the deal's billing cadence.
+            billingPeriodsPerYear: 12,
             // Price is left to HubSpot unless the rep actually changed it.
             //
             // Sending a price overrides the product's own list price, and the code was sending
@@ -347,10 +389,15 @@ const buildMeteredLines = (option, source) => {
             // it lets HubSpot hydrate the product's default, which is the number the product
             // library already holds and the one the customer should see.
             //
-            // When a discount WAS entered the rate genuinely differs from the default, so it is
-            // sent -- as a monthly rate, the same basis the product is priced on.
+            // When a discount WAS entered the rate genuinely differs from the default, so both
+            // the list rate and the discount are sent -- as monthly rates, the same basis the
+            // product is priced on. Quantity is 0, so this moves no money; it makes the agreed
+            // rate and the concession visible on the rate schedule.
             ...(line.discretionaryDiscount > 0
-              ? { price: line.billingUnitRate }
+              ? {
+                  price: line.billingUnitRate,
+                  listPrice: line.billingUnitRate / (1 - line.discretionaryDiscount),
+                }
               : {}),
             source,
           }),
@@ -390,6 +437,7 @@ const buildSubscriptionSummaryLine = (option, source) => ({
     product: CATALOG.enterprise,
     quantity: 1,
     price: option.result.proposedPlatformArr / option.result.paymentsPerYear,
+    listPrice: option.result.listPlatformArr / option.result.paymentsPerYear,
     source,
   }),
 });
@@ -410,6 +458,7 @@ const buildDealBundleLine = (option) => ({
     product: CATALOG.enterprise,
     quantity: 1,
     price: option.result.proposedPlatformArr / option.result.paymentsPerYear,
+    listPrice: option.result.listPlatformArr / option.result.paymentsPerYear,
     source: 'deal',
   }),
 });
@@ -428,6 +477,7 @@ const buildSupportLine = (option, source) => {
         product,
         quantity: 1,
         price: option.result.supportAnnual / option.result.paymentsPerYear,
+        listPrice: option.result.listSupportAnnual / option.result.paymentsPerYear,
         source,
       }),
     },
@@ -447,6 +497,7 @@ const buildAddOnLines = (option, source) =>
         product,
         quantity: 1,
         price: addOn.annualAmount / option.result.paymentsPerYear,
+        listPrice: addOn.listAnnualAmount / option.result.paymentsPerYear,
         source,
       }),
     };
@@ -468,6 +519,7 @@ const buildOnboardingLines = (option, source) => {
         component: 'onboarding',
         product,
         price: option.result.onboardingAmount,
+        listPrice: option.result.listOnboardingAmount,
         source,
       }),
     },
@@ -485,6 +537,12 @@ const allocateBundle = (total, count) => {
 const buildProfessionalServiceLines = (option, source) => {
   const selected = option.input.professionalServices || [];
   const prices = allocateBundle(option.result.professionalServicesAmount, selected.length);
+  // The list amounts are allocated the same way, so each line's discount is its own share of the
+  // bundle's concession and the shares still sum to the totals exactly.
+  const listPrices = allocateBundle(
+    option.result.listProfessionalServicesAmount,
+    selected.length,
+  );
   return selected.map((key, index) => {
     const product = CATALOG[key];
     if (!product) throw new Error('PRODUCT_MAPPING_REQUIRED');
@@ -496,6 +554,7 @@ const buildProfessionalServiceLines = (option, source) => {
         component: 'professional_services',
         product,
         price: prices[index],
+        listPrice: listPrices[index],
         source,
       }),
     };

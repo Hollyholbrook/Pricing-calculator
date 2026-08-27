@@ -45,8 +45,10 @@ test('Deal line items reconcile to the approved calculation', () => {
   const items = buildDealLineItems(selected);
   // An absent price means "use the product default" and always sits on a quantity-0 rate
   // schedule line, so it contributes nothing either way.
-  const lineAmount = ({ price, quantity }) =>
-    price == null ? 0 : Number(price) * Number(quantity);
+  // Net of `discount`: `price` is the LIST price on any discounted line, so this is what HubSpot
+  // will actually bill, which is the number that has to reconcile to the calculation.
+  const lineAmount = ({ price, quantity, discount }) =>
+    price == null ? 0 : (Number(price) - Number(discount || 0)) * Number(quantity);
   const recurring = items
     .filter(({ properties }) => properties.recurringbillingfrequency)
     .reduce((sum, { properties }) => sum + lineAmount(properties), 0);
@@ -130,7 +132,16 @@ test('Deal line items reconcile to the approved calculation', () => {
   // So it cannot always multiply back to the exact ARR: 80128.38 / 4 is 20032.095, which is not a
   // chargeable amount. At 20032.10 a quarter the year comes to 80128.40. The invoice is right and
   // the calculator's figure is the theoretical one; the gap is at most half a cent per payment.
-  const drawdownPrice = Number(recurringItems[0].properties.price);
+  // Net of the discount: on a discounted deal `price` is the LIST per-payment figure and the
+  // concession sits in `discount`, so what the customer pays is the difference.
+  // Rounded: subtracting two cent-precise decimals in binary floating point leaves residue
+  // (22257.88 - 2225.78 came out as 20032.100000000002).
+  const drawdownPrice =
+    Math.round(
+      (Number(recurringItems[0].properties.price) -
+        Number(recurringItems[0].properties.discount || 0)) *
+        100,
+    ) / 100;
   const perPayment = selected.result.proposedPlatformArr / selected.result.paymentsPerYear;
   assert.equal(drawdownPrice, Math.round((perPayment + Number.EPSILON) * 100) / 100);
   assert.ok(
@@ -264,8 +275,10 @@ test('itemized Quote line items reconcile to recurring and one-time totals', () 
   }));
   // An absent price means "use the product default" and always sits on a quantity-0 rate
   // schedule line, so it contributes nothing either way.
-  const lineAmount = ({ price, quantity }) =>
-    price == null ? 0 : Number(price) * Number(quantity);
+  // Net of `discount`: `price` is the LIST price on any discounted line, so this is what HubSpot
+  // will actually bill, which is the number that has to reconcile to the calculation.
+  const lineAmount = ({ price, quantity, discount }) =>
+    price == null ? 0 : (Number(price) - Number(discount || 0)) * Number(quantity);
   const recurring = items
     .filter(({ properties }) => properties.recurringbillingfrequency)
     .reduce((sum, { properties }) => sum + lineAmount(properties), 0);
