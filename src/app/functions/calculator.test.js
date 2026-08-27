@@ -218,7 +218,10 @@ test('applies account pricing overrides and records the settings version', () =>
   );
 });
 
-test('Excel-compatible regression: screenshot quote displays $95,250 TCV', () => {
+// The recurring half is still the workbook screenshot, unchanged, and remains the guard on the
+// Excel-compatible rate maths. Only the one-time half moved: Quick Launch + went $5,000 -> $10,000
+// on 2026-08-27, lifting TCV by exactly that. The screenshot's own TCV was $95,250.
+test('Excel-compatible regression: screenshot quote recurring figures, corrected onboarding', () => {
   const result = calculateQuote({
     startDate: '2026-09-01',
     termMonths: 12,
@@ -243,8 +246,10 @@ test('Excel-compatible regression: screenshot quote displays $95,250 TCV', () =>
   assert.equal(result.proposedPlatformArr, 82_045.09);
   assert.equal(result.supportAnnual, 8_204.51);
   assert.equal(result.committedArr, 90_249.6);
-  assert.equal(result.tcv, 95_249.6);
-  assert.equal(Math.round(result.tcv), 95_250);
+  assert.equal(result.onboardingAmount, 10_000);
+  assert.equal(result.tcv, 100_249.6);
+  // The screenshot showed $95,250; the gap is the onboarding correction and nothing else.
+  assert.equal(Math.round(result.tcv) - 5_000, 95_250);
   assert.equal(result.approvalTierRequired, 'head_sales');
 });
 
@@ -320,7 +325,8 @@ test('uses the largest line discount for approval and discounts each charge inde
 
   assert.equal(result.largestDiscretionaryDiscount, 0.35);
   assert.equal(result.approvalTierRequired, 'finance');
-  assert.equal(result.onboardingAmount, 3_250);
+  // Quick Launch + at $10,000 less its own 35%.
+  assert.equal(result.onboardingAmount, 6_500);
   assert.equal(result.professionalServicesAmount, 1_800);
   assert.equal(result.selectedAddOns[0].annualAmount, 1_920);
 
@@ -358,7 +364,9 @@ test('discounts on items that are not quoted do not escalate the approval tier',
     paymentFrequency: 'annual_in_advance',
     volumes: { connect_ca: 20_000 },
     supportLevel: 'basic',
-    onboardingPackage: 'quick_launch',
+    // Must be "None": Quick Launch used to be $0, so the onboarding discount below moved no money
+    // by accident rather than by the guard. It is $5,000 now, so "None" is the only $0 package.
+    onboardingPackage: 'none',
     professionalServices: [],
     addOns: [],
   };

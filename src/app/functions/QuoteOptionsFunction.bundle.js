@@ -168,11 +168,21 @@ var require_pricingRules = __commonJS({
           annualCap: 2e4
         }
       ],
+      // Corrected 2026-08-27, and this time corroborated by three independent sources that all agree:
+      //   1. the updated pricing workbook, RATE CARD "ONBOARDING PACKAGES" -- 5,000 / 10,000 / 15,000
+      //   2. the HubSpot product library export of the same day -- the same three figures
+      //   3. Holly's explicit instruction
+      // The old $0 / $5,000 / $10,000 ladder was one step low on every package, so every quote that
+      // included onboarding under-charged by $5,000 while the line item billed the product's real
+      // price -- the Deal's ARR and TCV disagreeing with the customer's own invoice.
+      //
+      // This was fixed once earlier in the day and then lost: it shared a commit with the Agent Email
+      // tier change, so rolling that back took this with it even though the two are unrelated.
       onboardingRules: [
         { key: "none", package: "None", oneTimeAmount: 0 },
-        { key: "quick_launch", package: "Quick Launch", oneTimeAmount: 0 },
-        { key: "quick_launch_plus", package: "Quick Launch +", oneTimeAmount: 5e3 },
-        { key: "strategic", package: "Strategic Onboarding", oneTimeAmount: 1e4 }
+        { key: "quick_launch", package: "Quick Launch", oneTimeAmount: 5e3 },
+        { key: "quick_launch_plus", package: "Quick Launch +", oneTimeAmount: 1e4 },
+        { key: "strategic", package: "Strategic Onboarding", oneTimeAmount: 15e3 }
       ],
       professionalServicesRules: [
         { itemCount: 0, oneTimeAmount: 0 },

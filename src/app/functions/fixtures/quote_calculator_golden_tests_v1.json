@@ -16,7 +16,9 @@
       },
       "supportLevel": "full",
       "onboardingPackage": "quick_launch_plus",
-      "addOns": ["enterprise_accelerator"],
+      "addOns": [
+        "enterprise_accelerator"
+      ],
       "professionalServices": [
         "google_verification_review",
         "architecture_workflow_review"
@@ -30,7 +32,9 @@
       "supportDiscount": 0,
       "onboardingDiscount": 0,
       "professionalServicesDiscount": 0,
-      "addOnDiscounts": { "enterprise_accelerator": 0 },
+      "addOnDiscounts": {
+        "enterprise_accelerator": 0
+      },
       "autoRenewal": true,
       "redliningRequested": false
     },
@@ -42,18 +46,75 @@
       "supportAnnual": 8141.76,
       "annualAddOns": 2480.4,
       "committedArr": 92039.76,
-      "oneTime": 8800,
-      "tcv": 192879.52,
+      "oneTime": 13800,
+      "tcv": 197879.52,
       "approvalStatus": "WITHIN_GUARDRAILS",
       "lines": [
-        { "productKey": "connect_ca", "volume": 2800, "baseBlendedRate": 1.496, "listUnitRate": 1.55, "proposedUnitRate": 1.4, "listMrr": 4340, "proposedMrr": 3920 },
-        { "productKey": "calendar_ca", "volume": 2800, "baseBlendedRate": 1.032, "listUnitRate": 1.07, "proposedUnitRate": 0.96, "listMrr": 2996, "proposedMrr": 2688 },
-        { "productKey": "notetaker_bot_hours", "volume": 150, "baseBlendedRate": 0.6, "listUnitRate": 0.62, "proposedUnitRate": 0.56, "listMrr": 93, "proposedMrr": 84 },
-        { "productKey": "agent_accounts", "volume": 0, "baseBlendedRate": 0, "listUnitRate": 0, "proposedUnitRate": 0, "listMrr": 0, "proposedMrr": 0 },
-        { "productKey": "agent_email_thousands", "volume": 120, "baseBlendedRate": 0.788, "listUnitRate": 0.82, "proposedUnitRate": 0.77, "listMrr": 98.2, "proposedMrr": 92.8 },
-        { "productKey": "agent_storage_gb", "volume": 0, "baseBlendedRate": 0, "listUnitRate": 0, "proposedUnitRate": 0, "listMrr": 0, "proposedMrr": 0 },
-        { "productKey": "agent_bandwidth_gb", "volume": 0, "baseBlendedRate": 0, "listUnitRate": 0, "proposedUnitRate": 0, "listMrr": 0, "proposedMrr": 0 }
+        {
+          "productKey": "connect_ca",
+          "volume": 2800,
+          "baseBlendedRate": 1.496,
+          "listUnitRate": 1.55,
+          "proposedUnitRate": 1.4,
+          "listMrr": 4340,
+          "proposedMrr": 3920
+        },
+        {
+          "productKey": "calendar_ca",
+          "volume": 2800,
+          "baseBlendedRate": 1.032,
+          "listUnitRate": 1.07,
+          "proposedUnitRate": 0.96,
+          "listMrr": 2996,
+          "proposedMrr": 2688
+        },
+        {
+          "productKey": "notetaker_bot_hours",
+          "volume": 150,
+          "baseBlendedRate": 0.6,
+          "listUnitRate": 0.62,
+          "proposedUnitRate": 0.56,
+          "listMrr": 93,
+          "proposedMrr": 84
+        },
+        {
+          "productKey": "agent_accounts",
+          "volume": 0,
+          "baseBlendedRate": 0,
+          "listUnitRate": 0,
+          "proposedUnitRate": 0,
+          "listMrr": 0,
+          "proposedMrr": 0
+        },
+        {
+          "productKey": "agent_email_thousands",
+          "volume": 120,
+          "baseBlendedRate": 0.788,
+          "listUnitRate": 0.82,
+          "proposedUnitRate": 0.77,
+          "listMrr": 98.2,
+          "proposedMrr": 92.8
+        },
+        {
+          "productKey": "agent_storage_gb",
+          "volume": 0,
+          "baseBlendedRate": 0,
+          "listUnitRate": 0,
+          "proposedUnitRate": 0,
+          "listMrr": 0,
+          "proposedMrr": 0
+        },
+        {
+          "productKey": "agent_bandwidth_gb",
+          "volume": 0,
+          "baseBlendedRate": 0,
+          "listUnitRate": 0,
+          "proposedUnitRate": 0,
+          "listMrr": 0,
+          "proposedMrr": 0
+        }
       ]
-    }
+    },
+    "note": "Transcribed from the One-Subscription Pricing Workbook. One deliberate override, 2026-08-27: onboarding is 5/10/15K, confirmed by the updated workbook RATE CARD, the HubSpot product export and Holly. That lifts oneTime by $5,000 (Quick Launch + 5K->10K) and TCV with it. Every rate is still the workbook, verbatim."
   }
 ]

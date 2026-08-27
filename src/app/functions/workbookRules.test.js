@@ -66,14 +66,13 @@ test('workbook modifiers and fixed charges are exact', () => {
   );
   assert.deepEqual(
     rules.onboardingRules.map(({ key, oneTimeAmount }) => [key, oneTimeAmount]),
-    // 'none' has been in pricingRules since e828a2c ("optional onboarding") but was never added
-    // here, so this assertion has been failing on main ever since. None means no onboarding was
-    // sold, which is a real selection at $0 -- not a missing entry.
+    // NOT the workbook's old figures: corrected 2026-08-27 and confirmed by the updated workbook's
+    // own RATE CARD "ONBOARDING PACKAGES" table, the HubSpot product export, and Holly.
     [
       ['none', 0],
-      ['quick_launch', 0],
-      ['quick_launch_plus', 5_000],
-      ['strategic', 10_000],
+      ['quick_launch', 5_000],
+      ['quick_launch_plus', 10_000],
+      ['strategic', 15_000],
     ],
   );
   assert.deepEqual(
@@ -151,8 +150,8 @@ test('support, recurring add-ons, onboarding, professional services, ARR, and TC
   assert.equal(result.supportAnnual, 1_980);
   assert.equal(result.annualAddOns, 8_400);
   assert.equal(result.professionalServicesAmount, 3_800);
-  assert.equal(result.onboardingAmount, 5_000);
+  assert.equal(result.onboardingAmount, 10_000);
   assert.equal(result.committedArr, 30_180);
-  assert.equal(result.oneTime, 8_800);
-  assert.equal(result.tcv, 38_980);
+  assert.equal(result.oneTime, 13_800);
+  assert.equal(result.tcv, 43_980);
 });

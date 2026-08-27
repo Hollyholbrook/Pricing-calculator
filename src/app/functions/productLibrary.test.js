@@ -165,16 +165,24 @@ test('a null pricing model is read as flat, which is what HubSpot documents', ()
   assert.deepEqual(row.disagreements, []);
 });
 
-test('the onboarding mismatch is reported as a price disagreement', () => {
-  // pricingRules currently has Quick Launch at $0 (the workbook figure). HubSpot says $5,000.
-  const row = _test.compareProduct('quick_launch', CATALOG.quick_launch, {
+test('onboarding now agrees with the product library, and drift would still be reported', () => {
+  // Quick Launch was $0 locally against $5,000 in HubSpot until 2026-08-27. They agree now, so the
+  // fixture asserts BOTH directions -- otherwise this test would sit here passing vacuously, the
+  // way the stale-name fixture did once the label was corrected.
+  const agreeing = _test.compareProduct('quick_launch', CATALOG.quick_launch, {
     id: CATALOG.quick_launch.id,
     properties: { name: CATALOG.quick_launch.name, price: '5000' },
   });
-  assert.equal(row.localKind, 'one_time');
+  assert.equal(agreeing.localKind, 'one_time');
+  assert.deepEqual(agreeing.disagreements, []);
+
+  const drifted = _test.compareProduct('quick_launch', CATALOG.quick_launch, {
+    id: CATALOG.quick_launch.id,
+    properties: { name: CATALOG.quick_launch.name, price: '7500' },
+  });
   assert.deepEqual(
-    row.disagreements.map(({ field, local, hubspot }) => [field, local, hubspot]),
-    [['price', 0, 5000]],
+    drifted.disagreements.map(({ field, local, hubspot }) => [field, local, hubspot]),
+    [['price', 5000, 7500]],
   );
 });
 
