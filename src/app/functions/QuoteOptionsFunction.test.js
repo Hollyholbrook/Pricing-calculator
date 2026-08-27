@@ -265,3 +265,76 @@ test('the contract term is mirrored onto the Deal, and junk is never sent', () =
   assert.deepEqual(_test.contractTermProperties(0), {});
   assert.deepEqual(_test.contractTermProperties('not a number'), {});
 });
+
+// Holly, 2026-08-27: "I don't like that the calculator is storing stuff, I want to delete that."
+//
+// Three properties held serialized JSON: the option document, the raw input, and the whole
+// calculation result. Nothing read any of them except the card's restore, which is gone. This test
+// is the guard that stops one of them creeping back -- each is cheap to reintroduce by habit, and
+// nothing else would notice, because a stored blob breaks no assertion and shows up nowhere except
+// on the Deal record Holly is looking at.
+test('Lock in stores no serialized configuration on the Deal', async () => {
+  const settings = defaultSettings();
+  const input = {
+    termMonths: 12,
+    paymentFrequency: 'annual_in_advance',
+    volumes: { connect_ca: 2_000 },
+    supportLevel: 'basic',
+    onboardingPackage: 'quick_launch',
+    professionalServices: [],
+    addOns: [],
+  };
+  const written = [];
+  const client = {
+    crm: {
+      associations: {
+        v4: { basicApi: { getPage: async () => ({ results: [] }) } },
+      },
+      lineItems: { basicApi: { create: async () => ({ id: 'li-1' }) } },
+      quotes: {
+        basicApi: { create: async () => ({ id: 'q-1' }) },
+        associationsApi: { create: async () => undefined },
+      },
+      deals: {
+        basicApi: {
+          update: async (_id, { properties }) => {
+            written.push(properties);
+            return { id: _id };
+          },
+        },
+      },
+      objects: {
+        basicApi: { getById: async () => ({ id: 'q-1', properties: {} }) },
+      },
+    },
+  };
+
+  await _test.lockLiveCalculation(
+    client,
+    'deal-1',
+    { document: { schemaVersion: '1.0', revision: 1, options: [] } },
+    { input, quoteContent: {}, paymentMethod: 'credit_card', discountReason: '' },
+    '45023718',
+    settings,
+  ).catch(() => undefined);
+
+  const blobs = [
+    'pricing_quote_options_payload',
+    'pricing_quote_inputs_payload',
+    'pricing_calculation_payload',
+  ];
+  assert.ok(written.length > 0, 'the Deal must still be updated');
+  for (const properties of written) {
+    for (const blob of blobs) {
+      if (properties[blob] === undefined) continue;
+      // Present is allowed ONLY as '' -- that is how an existing stored blob gets cleared.
+      assert.equal(properties[blob], '', `${blob} may only ever be written as an empty string`);
+    }
+  }
+  // And at least one update must actually clear them, so old Deals are cleaned up rather than
+  // keeping a stale copy forever.
+  assert.ok(
+    written.some((properties) => properties.pricing_quote_options_payload === ''),
+    'the option payload must be explicitly cleared',
+  );
+});

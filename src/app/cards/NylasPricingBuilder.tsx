@@ -153,9 +153,6 @@ interface QuoteOption {
   result?: QuoteResult;
   createdAt?: string;
   updatedAt?: string;
-  // Card-only: marks that the saved configuration has already been restored, so a later
-  // response cannot overwrite edits made since the load. Never sent to the server.
-  restoredFromDeal?: boolean;
 }
 
 interface OptionDocument {
@@ -412,38 +409,10 @@ const firstDayOfFollowingMonth = () => {
   return `${nextMonth.getFullYear()}-${String(nextMonth.getMonth() + 1).padStart(2, "0")}-01`;
 };
 
-const todayIso = () => {
-  const today = new Date();
-  return `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(
-    today.getDate(),
-  ).padStart(2, "0")}`;
-};
-
-// A restored start date is kept only if it is still usable. A configuration locked weeks ago
-// restores the date it was locked with, and nothing else would move it -- so the calculator would
-// sit on a start date in the past and quote against it. Anything absent or already gone reverts to
-// the standing default, the first of next month.
-//
-// ISO dates compare correctly as strings, so no parsing is needed.
-// Key order is not guaranteed to match between a value parsed from the Deal and one rebuilt in the
-// card, so compare canonically rather than by JSON.stringify alone.
-const canonical = (value: unknown): string =>
-  JSON.stringify(value, (_key, inner) =>
-    inner && typeof inner === "object" && !Array.isArray(inner)
-      ? Object.fromEntries(
-          Object.entries(inner as Record<string, unknown>).sort(
-            ([left], [right]) => left.localeCompare(right),
-          ),
-        )
-      : inner,
-  );
-
-const usableStartDate = (saved?: string | null) => {
-  if (!saved || !/^\d{4}-\d{2}-\d{2}$/.test(saved))
-    return firstDayOfFollowingMonth();
-  return saved >= todayIso() ? saved : firstDayOfFollowingMonth();
-};
-
+// todayIso and usableStartDate went with the restore. They existed to stop a configuration locked
+// weeks ago from restoring a start date already in the past. Nothing restores a date now -- the
+// calculator opens on the first of next month every time -- so there is no stale date to guard
+// against.
 const emptyInput = (): QuoteInput => ({
   startDate: firstDayOfFollowingMonth(),
   termMonths: 12,
@@ -638,7 +607,6 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
   const [paymentMethod, setPaymentMethod] = useState(DEFAULT_PAYMENT_METHOD);
   // The configuration as it is stored on the Deal, for telling "this would update what is already
   // locked" from "this would produce something new". Empty when nothing has been locked yet.
-  const [lockedInput, setLockedInput] = useState("");
   // Not a pricing input: it changes no number, and normalizeStoredInput would strip it from
   // option.input. It travels as its own parameter and lands on pricing_discount_reason.
   const [discountReason, setDiscountReason] = useState("");
@@ -676,38 +644,19 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
 
   const updateFromBody = (body: ServerlessBody) => {
     if (body.dealName) setDealName(body.dealName);
-    // Restore the last locked configuration, once, on the initial load.
+    // No restore from the Deal. The card starts empty and keeps whatever the rep types for as long
+    // as they are on the page; nothing reaches back in and replaces it.
     //
-    // Lock in persists the live option, so a reload can bring the rep back to what they had rather
-    // than an empty calculator -- which is what makes reloading the record after Lock in safe, and
-    // is the only reason the neighbouring Line items and Quotes cards can be refreshed at all.
+    // There used to be a restore here, repopulating the calculator from the configuration Lock in
+    // had stored on the Deal. Holly, 2026-08-27: "I don't like that it keeps clearing out." The
+    // restore was the clearing -- it dropped the stored `result` to force a fresh preview, so
+    // every load came back with the inputs filled and all the figures blank, needing a re-preview
+    // before anything could be read. Removing the store (see lockLiveCalculation) removed the
+    // reason for this block to exist.
     //
-    // Guarded by a flag rather than by "is editing empty": a later response must never overwrite
-    // edits the rep has made since the load.
-    const saved = body.optionSet?.options?.[0];
-    if (saved?.input) {
-      // Snapshot what is STORED, before usableStartDate below possibly moves the start date. A
-      // bumped date is a real change -- it moves the contract dates and produces a new quote --
-      // so it must read as changed rather than as an update in place.
-      setLockedInput(canonical(saved.input));
-      setEditing((current) =>
-        current.restoredFromDeal
-          ? current
-          : {
-              ...saved,
-              status: "draft",
-              input: {
-                ...saved.input,
-                startDate: usableStartDate(saved.input.startDate),
-              },
-              // The stored result belongs to the stored input. Dropping it forces a fresh preview,
-              // so the figures on screen cannot be stale relative to current pricing rules --
-              // and the start date above may have moved, which changes the contract dates.
-              result: undefined,
-              restoredFromDeal: true,
-            },
-      );
-    }
+    // Anything a later response wants to feed back into `editing` belongs here, and must be
+    // guarded so it cannot overwrite edits made since the load -- that was the original bug this
+    // block's flag existed for.
     if (body.quoteTemplates) {
       setQuoteTemplates(body.quoteTemplates);
       // Preselect the configured default when it is one of the usable templates, so the picker
@@ -826,15 +775,18 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
         paymentMethod,
         discountReason,
       });
-      // generateQuote is idempotent on the quote content hash, so a repeat lock reuses the
-      // existing Quote rather than creating one. Saying "created" either way misreports it.
       // refreshObjectProperties is documented as "Refresh CRM record properties on the page" --
-      // property values only. It updates the Deal's own fields but cannot touch the Line items and
-      // Quotes cards beside this one, which is what actually needs to change after a lock. No SDK
-      // action refreshes a sibling card; reloadPage is the only thing that does.
+      // property values only, so the Deal's own approval and pricing fields update in place.
       //
-      // Reloading is safe now only because Lock in persists the configuration and the card
-      // restores it above. Before that, a reload left the rep with an empty calculator.
+      // reloadPage is NOT called any more, and that is the whole point. It was the only action
+      // that refreshes the sibling Line items and Quotes cards, but it reloads the page, which
+      // threw away everything in this card -- and the restore that softened the blow is gone with
+      // the stored configuration. Reloading now would empty the calculator on every Lock in, which
+      // is the "clearing out" Holly asked to stop.
+      //
+      // The cost is that the Line items and Quotes cards beside this one keep showing their
+      // pre-lock contents until the rep refreshes the record themselves. The alert below says
+      // where to look, so nothing is silently stale.
       actions.refreshObjectProperties();
       actions.addAlert({
         // Every lock creates a Quote now -- there is no reuse branch -- so there is one message.
@@ -845,11 +797,9 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
         message:
           `${body.lineItemCount || 0} calculated line items replaced the Deal line items. ` +
           `Template: ${body.templateName || body.templateId || "unknown"}. ` +
-          `The draft Quote is on the Deal's Quotes card.`,
+          `The draft Quote is on the Deal's Quotes card -- refresh the record to see it.`,
         type: "success",
       });
-      // After the alert, so the rep sees the confirmation before the page goes.
-      actions.reloadPage();
     } catch (lockError) {
       setError(
         lockError instanceof Error
@@ -900,9 +850,6 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
         saving={saving}
         discountReason={discountReason}
         onDiscountReasonChange={setDiscountReason}
-        matchesLocked={
-          lockedInput !== "" && canonical(editing.input) === lockedInput
-        }
         quoteTemplates={quoteTemplates}
         templateId={templateId}
         onTemplateChange={setTemplateId}
@@ -925,7 +872,6 @@ const OptionEditor = ({
   saving,
   discountReason,
   onDiscountReasonChange,
-  matchesLocked,
   quoteTemplates,
   templateId,
   onTemplateChange,
@@ -943,7 +889,6 @@ const OptionEditor = ({
   saving: boolean;
   discountReason: string;
   onDiscountReasonChange: (value: string) => void;
-  matchesLocked: boolean;
   quoteTemplates: { id: string; name: string }[];
   templateId: string;
   onTemplateChange: (value: string) => void;
@@ -1647,7 +1592,11 @@ const OptionEditor = ({
               idempotent on the content hash, so an unchanged configuration reuses the existing
               Quote rather than making another. The label says which of those is about to
               happen, because "create quote" on a deal that already has one is a lie. */}
-          {matchesLocked ? "Update existing config" : "Lock in & create quote"}
+          {/* One label, always. It used to read "Update existing config" when the card matched
+              the configuration stored on the Deal -- there is no stored configuration now, and
+              every Lock in creates a new Quote regardless, so the old label described something
+              that never happened. */}
+          Lock in &amp; create quote
         </LoadingButton>
       </Flex>
     </Flex>

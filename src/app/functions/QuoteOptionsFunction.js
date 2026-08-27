@@ -518,7 +518,16 @@ const buildSelectedProperties = (option, approvalStatus) => {
   const properties = {
     [SELECTED_OPTION_ID_PROPERTY]: option.id,
     [SELECTED_OPTION_NAME_PROPERTY]: option.name,
-    pricing_quote_inputs_payload: JSON.stringify(input),
+    // The two JSON blobs are CLEARED, not written. Holly, 2026-08-27: "I don't like that the
+    // calculator is storing stuff, I want to delete that." pricing_quote_inputs_payload held the
+    // whole input and pricing_calculation_payload the whole result, neither of which anything
+    // reads -- the discrete pricing_* properties below are what the approval block and reports
+    // actually use, and they stay.
+    //
+    // Set to '' rather than dropped so that Deals already carrying a blob are emptied the next
+    // time they are locked in, instead of keeping a stale copy forever.
+    pricing_quote_inputs_payload: '',
+    pricing_calculation_payload: '',
     pricing_calculation_status: result.calculationStatus,
     pricing_drawdown_annual: String(result.proposedPlatformArr),
     pricing_recurring_per_period: String(result.recurringPerPeriod),
@@ -526,7 +535,6 @@ const buildSelectedProperties = (option, approvalStatus) => {
     pricing_largest_discretionary_discount_pct: String(
       result.largestDiscretionaryDiscount,
     ),
-    pricing_calculation_payload: JSON.stringify(result),
     pricing_calculated_at: String(Date.parse(result.calculatedAt)),
     pricing_input_state_hash: result.stateHash,
     pricing_line_item_sync_status: 'stale',
@@ -693,22 +701,29 @@ const lockLiveCalculation = async (
   Object.assign(properties, discountReasonProperties(parameters.discountReason));
   properties.pricing_approval_timestamp = String(Date.now());
 
-  // Persist the configuration, not just its totals.
+  // The configuration is NOT stored on the Deal. Holly, 2026-08-27: "I don't like that the
+  // calculator is storing stuff, I want to delete that."
   //
-  // Lock in used to write the pricing_* summary properties and the line items and then forget the
-  // inputs that produced them, so a page reload left the rep with an empty calculator and no way
-  // to reopen, adjust or regenerate. That is also what made refreshing the page after Lock in
-  // destructive, and so blocked reloading the record to pick up the new line items and Quote.
+  // It used to be serialized into pricing_calculation_payload so the card could repopulate itself
+  // after a reload. That store is what produced the two behaviours she asked to remove with it:
+  // the "Update existing config" button label, which compared the card against the stored copy,
+  // and the calculator resetting to the stored configuration on load. The Deal still gets every
+  // pricing_* summary property, the line items and the Quote -- only the input blob is gone.
   //
-  // The document holds exactly one live option, replacing any previous one: this is a single live
-  // calculation per Deal, not a history. Revision advances so the optimistic-concurrency check on
-  // other actions still sees a change.
+  // The property is explicitly cleared rather than left alone, so Deals that already carry a blob
+  // are cleaned out the next time they are locked in.
+  //
+  // `document` is still built, because syncDealLineItems and generateQuote below read the selected
+  // option out of it. It lives for the length of this request and is never written.
   const document = {
     schemaVersion: '1.0',
     revision: (state.document?.revision || 0) + 1,
     options: [liveOption],
   };
-  await writeDocument(client, dealId, document, properties);
+  await updateDealProperties(client, dealId, {
+    ...properties,
+    [OPTION_PROPERTY]: '',
+  });
 
   const liveState = {
     ...state,

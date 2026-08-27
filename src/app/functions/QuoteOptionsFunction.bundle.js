@@ -2039,7 +2039,16 @@ var buildSelectedProperties = (option, approvalStatus) => {
   const properties = {
     [SELECTED_OPTION_ID_PROPERTY]: option.id,
     [SELECTED_OPTION_NAME_PROPERTY]: option.name,
-    pricing_quote_inputs_payload: JSON.stringify(input),
+    // The two JSON blobs are CLEARED, not written. Holly, 2026-08-27: "I don't like that the
+    // calculator is storing stuff, I want to delete that." pricing_quote_inputs_payload held the
+    // whole input and pricing_calculation_payload the whole result, neither of which anything
+    // reads -- the discrete pricing_* properties below are what the approval block and reports
+    // actually use, and they stay.
+    //
+    // Set to '' rather than dropped so that Deals already carrying a blob are emptied the next
+    // time they are locked in, instead of keeping a stale copy forever.
+    pricing_quote_inputs_payload: "",
+    pricing_calculation_payload: "",
     pricing_calculation_status: result.calculationStatus,
     pricing_drawdown_annual: String(result.proposedPlatformArr),
     pricing_recurring_per_period: String(result.recurringPerPeriod),
@@ -2047,7 +2056,6 @@ var buildSelectedProperties = (option, approvalStatus) => {
     pricing_largest_discretionary_discount_pct: String(
       result.largestDiscretionaryDiscount
     ),
-    pricing_calculation_payload: JSON.stringify(result),
     pricing_calculated_at: String(Date.parse(result.calculatedAt)),
     pricing_input_state_hash: result.stateHash,
     pricing_line_item_sync_status: "stale",
@@ -2183,7 +2191,10 @@ var lockLiveCalculation = async (client, dealId, state, parameters, portalId, se
     revision: (state.document?.revision || 0) + 1,
     options: [liveOption]
   };
-  await writeDocument(client, dealId, document, properties);
+  await updateDealProperties(client, dealId, {
+    ...properties,
+    [OPTION_PROPERTY]: ""
+  });
   const liveState = {
     ...state,
     document,
