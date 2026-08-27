@@ -554,7 +554,10 @@ const summaryTable = (result: QuoteResult, termMonths: number) => {
       annual: 0,
     },
     {
-      label: "Subscription Drawdown",
+      // The name the product carries in HubSpot, and the name the workbook's own Contract Summary
+      // uses (section VI, row 51). This row said "Subscription Drawdown", which matched neither --
+      // the other four labels here were already verbatim from that table.
+      label: "Enterprise Drawdown Commitment",
       oneTime: 0,
       annual: result.proposedPlatformArr,
     },

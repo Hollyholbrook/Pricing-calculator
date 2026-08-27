@@ -484,3 +484,30 @@ test('fee columns sum to the calculation', () => {
       `${tolerance} that per-payment cent rounding can explain`,
   );
 });
+
+// The Contract Summary in the card is modelled on section VI of the pricing workbook, and its row
+// labels are that table's, verbatim. "Subscription Drawdown" had drifted -- it matched neither the
+// workbook (which says "Enterprise Drawdown Commitment", row 51) nor the HubSpot product of the
+// same name, while the other four labels were already exact.
+//
+// The labels live in the card, which has no test runner of its own, so this reads the source. Not
+// elegant, but the alternative is that the one label a customer reads on the summary is the only
+// string in this repo nothing checks.
+test('the Contract Summary row labels match the workbook section VI table', () => {
+  const source = require('node:fs').readFileSync(
+    require('node:path').join(__dirname, '..', 'cards', 'NylasPricingBuilder.tsx'),
+    'utf8',
+  );
+  const block = source.slice(
+    source.indexOf('const summaryTable ='),
+    source.indexOf('const summaryTable =') + 1_400,
+  );
+  const labels = [...block.matchAll(/label: "([^"]+)"/g)].map(([, label]) => label);
+  assert.deepEqual(labels, [
+    'Onboarding',
+    'Professional Services',
+    'Enterprise Drawdown Commitment',
+    'Subscription Add-ons',
+    'Subscription Support',
+  ]);
+});
