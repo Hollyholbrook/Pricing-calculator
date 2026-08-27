@@ -576,3 +576,119 @@ test('the credit card limit is exclusive, so exactly the limit is still allowed'
   );
   assert.equal(overLimit.requiresBankTransfer, true);
 });
+
+// Professional services are priced by HOW MANY were selected, per the workbook's bundled ladder
+// and Shane Tjin, 2026-08-27: "any combination of PS would result in the below pricing... it's not
+// specific to any one selection."
+//
+// This is a regression test for a bug that reached production and was invisible from the code: the
+// card showed three services selected and "List $0 one-time" beneath them. psItemCount used to be
+// readable from the input and won over the selection, and normalizeStoredInput wrote it into every
+// stored configuration -- so a config saved with no services pinned the fee at $0 forever after it
+// was restored, however many services the rep then picked.
+test('the professional services fee follows the selection, never a stale psItemCount', () => {
+  const base = {
+    termMonths: 12,
+    paymentFrequency: 'annual_in_advance',
+    volumes: { connect_ca: 5_000 },
+    supportLevel: 'basic',
+    onboardingPackage: 'none',
+    addOns: [],
+    professionalServices: [
+      'gtm_review',
+      'architecture_workflow_review',
+      'google_verification_review',
+    ],
+  };
+  // The ladder: 3 selected is $5,500, not 3 x $2,000.
+  assert.equal(calculateQuote(base).professionalServicesAmount, 5_500);
+
+  // The actual failure: a stale count riding along in the input must be ignored entirely.
+  assert.equal(
+    calculateQuote({ ...base, psItemCount: 0 }).professionalServicesAmount,
+    5_500,
+    'a stale psItemCount must not override the selected services',
+  );
+  // ...in either direction. An inflated count must not invent revenue that no line item backs.
+  assert.equal(
+    calculateQuote({ ...base, psItemCount: 5 }).professionalServicesAmount,
+    5_500,
+  );
+
+  // And every rung of the ladder is driven by the selection alone.
+  const ladder = [
+    [[], 0],
+    [['gtm_review'], 2_000],
+    [['gtm_review', 'google_verification_review'], 3_800],
+    [['gtm_review', 'google_verification_review', 'architecture_workflow_review'], 5_500],
+    [
+      [
+        'gtm_review',
+        'google_verification_review',
+        'architecture_workflow_review',
+        'provider_oauth_app_creation',
+      ],
+      7_200,
+    ],
+    [
+      [
+        'gtm_review',
+        'google_verification_review',
+        'architecture_workflow_review',
+        'provider_oauth_app_creation',
+        'notification_webhook_best_practices',
+      ],
+      8_800,
+    ],
+  ];
+  for (const [services, expected] of ladder) {
+    assert.equal(
+      calculateQuote({ ...base, professionalServices: services, psItemCount: 0 })
+        .professionalServicesAmount,
+      expected,
+      `${services.length} services must price at ${expected}`,
+    );
+  }
+});
+
+test('a stored configuration carries no psItemCount to go stale', () => {
+  // normalizeStoredInput is what persists a locked configuration. It used to write psItemCount,
+  // which is how the stale value outlived the selection that produced it.
+  const stored = normalizeStoredInput({
+    termMonths: 12,
+    paymentFrequency: 'annual_in_advance',
+    volumes: { connect_ca: 5_000 },
+    supportLevel: 'basic',
+    onboardingPackage: 'none',
+    addOns: [],
+    professionalServices: ['gtm_review', 'google_verification_review'],
+  });
+  assert.equal('psItemCount' in stored, false, 'psItemCount must not be persisted');
+  assert.deepEqual(stored.professionalServices, ['gtm_review', 'google_verification_review']);
+  // Round-trips to the right money with nothing else carried over.
+  assert.equal(calculateQuote(stored).professionalServicesAmount, 3_800);
+});
+
+test('the OAuth add-on dependency reads the same single source', () => {
+  const base = {
+    termMonths: 12,
+    paymentFrequency: 'annual_in_advance',
+    volumes: { connect_ca: 5_000 },
+    supportLevel: 'basic',
+    onboardingPackage: 'none',
+    addOns: ['verified_oauth'],
+  };
+  // Turnkey Verified OAuth requires at least one professional-services item. That check used to
+  // read psItemCount too, so a stale count could block a valid deal or pass an invalid one.
+  const withNone = calculateQuote({ ...base, professionalServices: [], psItemCount: 3 });
+  assert.ok(
+    withNone.blockingReasons.includes('OAUTH_REQUIRES_PROFESSIONAL_SERVICES'),
+    'an inflated count must not satisfy the dependency',
+  );
+  const withOne = calculateQuote({
+    ...base,
+    professionalServices: ['gtm_review'],
+    psItemCount: 0,
+  });
+  assert.equal(withOne.blockingReasons.includes('OAUTH_REQUIRES_PROFESSIONAL_SERVICES'), false);
+});

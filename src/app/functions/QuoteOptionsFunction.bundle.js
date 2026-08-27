@@ -374,7 +374,7 @@ var require_calculator = __commonJS({
         requireAllowedString(key, allowedProfessionalServices, "professionalServices");
       }
       const psItemCount = requireInteger(
-        input.psItemCount ?? professionalServices.length,
+        professionalServices.length,
         0,
         5,
         "professionalServices"
@@ -813,7 +813,8 @@ var require_calculator = __commonJS({
         professionalServicesDiscount: input.professionalServicesDiscount,
         volumes: input.volumes,
         professionalServices: input.professionalServices,
-        psItemCount: input.psItemCount,
+        // psItemCount is deliberately NOT stored. It is derived from professionalServices on every
+        // calculation, and persisting it is what let a stale count outlive the selection it came from.
         addOns: input.addOns,
         autoRenewal: input.autoRenewal,
         renewalTermMonths: input.renewalTermMonths,

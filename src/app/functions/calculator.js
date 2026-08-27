@@ -162,8 +162,20 @@ const normalizeInput = (input, activeRules = rules) => {
   for (const key of professionalServices) {
     requireAllowedString(key, allowedProfessionalServices, 'professionalServices');
   }
+  // ALWAYS derived from the selected services, never read from the input.
+  //
+  // This used to be `input.psItemCount ?? professionalServices.length`, so an explicit psItemCount
+  // won over the picker. normalizeStoredInput wrote that field into every stored configuration, so
+  // once a config saved with no services was restored, `psItemCount: 0` rode along and pinned the
+  // professional-services fee at $0 no matter what the rep selected afterwards. Three services
+  // showing "List $0 one-time" on screen is exactly that.
+  //
+  // Deriving it also closes the older gap the two fields created: the fee was priced from
+  // psItemCount while the LINE ITEMS were built from professionalServices, so the two could
+  // disagree and put quoted revenue in the pricing properties and in no line item at all. They
+  // cannot disagree now, because there is only one source.
   const psItemCount = requireInteger(
-    input.psItemCount ?? professionalServices.length,
+    professionalServices.length,
     0,
     5,
     'professionalServices',
@@ -701,7 +713,9 @@ const normalizeStoredInput = (rawInput, pricingPolicy = {}) => {
     professionalServicesDiscount: input.professionalServicesDiscount,
     volumes: input.volumes,
     professionalServices: input.professionalServices,
-    psItemCount: input.psItemCount,
+    // psItemCount is deliberately NOT stored. It is derived from professionalServices on every
+    // calculation, and persisting it is what let a stale count outlive the selection it came from.
+
     addOns: input.addOns,
     autoRenewal: input.autoRenewal,
     renewalTermMonths: input.renewalTermMonths,
