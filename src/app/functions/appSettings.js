@@ -13,6 +13,10 @@ const defaultPricingPolicy = () => ({
   calculationMethod: 'excel_compatible',
   minimumCommittedArr: 25_000,
   redliningMinimumArr: 50_000,
+  // Credit card is refused on an invoice above this. Configurable like the other thresholds,
+  // because it is a finance policy rather than a rate -- and because a hard-coded limit could not
+  // be tested at its own boundary without contriving a deal that lands exactly on $25,000.
+  creditCardMaximumInvoice: 25_000,
   salesDirectorDiscountMax: 0.1,
   headSalesDiscountMax: 0.3,
   termDiscounts: { '12': 0, '24': 0.025, '36': 0.05 },
@@ -86,6 +90,12 @@ const normalizePricingPolicy = (incoming) => {
       0,
       1_000_000_000,
       'redliningMinimumArr',
+    ),
+    creditCardMaximumInvoice: requireNumber(
+      value.creditCardMaximumInvoice ?? defaults.creditCardMaximumInvoice,
+      0,
+      1_000_000_000,
+      'creditCardMaximumInvoice',
     ),
     salesDirectorDiscountMax: requireNumber(
       value.salesDirectorDiscountMax ?? defaults.salesDirectorDiscountMax,

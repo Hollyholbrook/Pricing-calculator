@@ -440,3 +440,131 @@ test('stored input is normalized to catalog keys and drops retracted redline tex
   // Retracted redlines must never survive into a customer-facing Quote.
   assert.equal(stored.specialTerms, '');
 });
+
+// Credit card is not permitted on an invoice above $25,000 -- ACH/Bank Transfer (wire) is
+// required. Holly, 2026-08-27, a hard requirement rather than an approval step.
+//
+// The subtlety worth protecting: the limit is judged on the largest single INVOICE, not on ARR and
+// not on TCV. Those three differ by an order of magnitude on the same deal, and picking the wrong
+// one silently lets a barred credit card through.
+test('the credit card limit is judged on the largest invoice, not on ARR or TCV', () => {
+  const base = {
+    termMonths: 12,
+    paymentFrequency: 'monthly_in_advance',
+    volumes: { connect_ca: 20_000 },
+    supportLevel: 'basic',
+    onboardingPackage: 'none',
+    professionalServices: [],
+    addOns: [],
+  };
+  const monthly = calculateQuote(base);
+
+  // ARR is nearly $300K and TCV the same, but the customer is invoiced monthly, and one month is
+  // under the limit. Testing ARR here would demand ACH on a $24K invoice.
+  assert.ok(monthly.committedArr > 250_000, 'ARR is far above the limit');
+  assert.ok(monthly.recurringInvoiceAmount < 25_000, 'but a monthly invoice is not');
+  assert.equal(monthly.requiresBankTransfer, false);
+
+  // Same deal, plus onboarding. The recurring payment has not moved, but the FIRST invoice now
+  // carries the one-time charge as well and crosses the limit. This is the case a naive
+  // "recurringPerPeriod > limit" check gets wrong.
+  const withOnboarding = calculateQuote({ ...base, onboardingPackage: 'strategic' });
+  assert.equal(
+    withOnboarding.recurringInvoiceAmount,
+    monthly.recurringInvoiceAmount,
+    'the recurring payment is unchanged',
+  );
+  assert.ok(withOnboarding.firstInvoiceAmount > 25_000, 'the first invoice crosses the limit');
+  assert.equal(withOnboarding.requiresBankTransfer, true);
+  assert.equal(
+    withOnboarding.largestInvoiceAmount,
+    withOnboarding.firstInvoiceAmount,
+    'the largest invoice is the first one',
+  );
+});
+
+test('a single large annual invoice requires bank transfer', () => {
+  const annual = calculateQuote({
+    termMonths: 12,
+    paymentFrequency: 'annual_in_advance',
+    volumes: { connect_ca: 20_000 },
+    supportLevel: 'basic',
+    onboardingPackage: 'none',
+    professionalServices: [],
+    addOns: [],
+  });
+  assert.equal(annual.requiresBankTransfer, true);
+  // Billed once a year, so the invoice IS the ARR and the two coincide. That they agree here is
+  // why the monthly case above is the one that actually proves the rule.
+  assert.equal(annual.recurringInvoiceAmount, annual.committedArr);
+});
+
+test('a small deal is left on credit card', () => {
+  const small = calculateQuote({
+    termMonths: 12,
+    paymentFrequency: 'annual_in_advance',
+    volumes: { connect_ca: 1_200 },
+    supportLevel: 'basic',
+    onboardingPackage: 'none',
+    professionalServices: [],
+    addOns: [],
+  });
+  assert.ok(small.largestInvoiceAmount < 25_000);
+  assert.equal(small.requiresBankTransfer, false);
+});
+
+test('the invoice figures reconcile to the recurring payment and the one-time total', () => {
+  const result = calculateQuote({
+    termMonths: 24,
+    paymentFrequency: 'quarterly_in_advance',
+    volumes: { connect_ca: 5_000 },
+    supportLevel: 'full',
+    onboardingPackage: 'quick_launch_plus',
+    professionalServices: ['gtm_review'],
+    addOns: ['privacy_filter'],
+  });
+  // No independent arithmetic: the invoice figures must be the calculation's own numbers, or the
+  // rule is judged on something the Contract Summary never showed.
+  assert.equal(result.recurringInvoiceAmount, result.recurringPerPeriod);
+  assert.equal(
+    result.firstInvoiceAmount,
+    round(result.recurringPerPeriod + result.oneTime, 2),
+  );
+  assert.equal(
+    result.largestInvoiceAmount,
+    Math.max(result.firstInvoiceAmount, result.recurringInvoiceAmount),
+  );
+});
+
+test('the credit card limit is exclusive, so exactly the limit is still allowed', () => {
+  // "> $25K" -- an invoice of exactly $25,000 is permitted. An off-by-one here silently changes
+  // the policy for every deal that lands on the boundary.
+  const atLimit = calculateQuote(
+    {
+      termMonths: 12,
+      paymentFrequency: 'annual_in_advance',
+      volumes: { connect_ca: 1_000 },
+      supportLevel: 'basic',
+      onboardingPackage: 'none',
+      professionalServices: [],
+      addOns: [],
+    },
+    { minimumCommittedArr: 0, creditCardMaximumInvoice: 19_800 },
+  );
+  assert.equal(atLimit.largestInvoiceAmount, 19_800, 'fixture must sit exactly on the limit');
+  assert.equal(atLimit.requiresBankTransfer, false);
+
+  const overLimit = calculateQuote(
+    {
+      termMonths: 12,
+      paymentFrequency: 'annual_in_advance',
+      volumes: { connect_ca: 1_000 },
+      supportLevel: 'basic',
+      onboardingPackage: 'none',
+      professionalServices: [],
+      addOns: [],
+    },
+    { minimumCommittedArr: 0, creditCardMaximumInvoice: 19_799.99 },
+  );
+  assert.equal(overLimit.requiresBankTransfer, true);
+});

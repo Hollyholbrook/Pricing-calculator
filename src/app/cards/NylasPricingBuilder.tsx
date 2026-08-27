@@ -128,6 +128,11 @@ interface QuoteResult {
   listCommittedArr: number;
   committedArr: number;
   recurringPerPeriod: number;
+  firstInvoiceAmount: number;
+  recurringInvoiceAmount: number;
+  largestInvoiceAmount: number;
+  requiresBankTransfer: boolean;
+  creditCardMaximumInvoice: number;
   listOneTime: number;
   oneTime: number;
   listTcv: number;
@@ -328,13 +333,25 @@ const paymentOptions = [
 // The card's own stable keys, NOT HubSpot's. The Deal property's internal values are mapped
 // server-side, so the picker does not have to know how the portal encodes them and a renamed
 // option value needs no card change.
+const CREDIT_CARD_OPTION = { value: "credit_card", label: "Credit card" };
+const BANK_TRANSFER_METHOD = "ach";
+
 const paymentMethodOptions = [
-  { value: "credit_card", label: "Credit card" },
-  { value: "ach", label: "Bank transfer / ACH" },
+  CREDIT_CARD_OPTION,
+  { value: BANK_TRANSFER_METHOD, label: "Bank transfer / ACH" },
   // Last, not first: it is the exception now that Credit card is the default, and a rep who picks
   // it is deliberately clearing the field rather than accepting a blank.
   { value: "", label: "Not specified" },
 ];
+
+// Above the invoice limit, credit card is not offered at all rather than offered and rejected.
+// A disabled-but-visible option invites the rep to try it and read an error; withholding it makes
+// the only permitted answer the one on screen. "Not specified" goes too -- the requirement is that
+// ACH/Bank Transfer IS selected, so leaving it blank does not satisfy it either.
+const permittedPaymentMethodOptions = (requiresBankTransfer: boolean) =>
+  requiresBankTransfer
+    ? paymentMethodOptions.filter(({ value }) => value === BANK_TRANSFER_METHOD)
+    : paymentMethodOptions;
 
 const DEFAULT_PAYMENT_METHOD = "credit_card";
 
@@ -1410,6 +1427,24 @@ const OptionEditor = ({
   );
 
   const approvalBlocked = (previewResult?.blockingReasons.length || 0) > 0;
+  // Credit card is not permitted above the invoice limit -- ACH/Bank Transfer (wire) is required.
+  // The rep must SELECT it: the option list below is narrowed to it and Lock in stays disabled
+  // until it is chosen, rather than the card silently switching the method for them. A quietly
+  // changed payment method is not something anyone would notice on a $250,000 order form.
+  const requiresBankTransfer = previewResult?.requiresBankTransfer === true;
+  const bankTransferNotSelected =
+    requiresBankTransfer && paymentMethod !== BANK_TRANSFER_METHOD;
+
+  // Selected FOR the rep, not left to them. Credit card is the default, so every large deal would
+  // otherwise open in a blocked state and need a hand-click on the only option the dropdown still
+  // offers -- friction on the deals that least deserve it.
+  //
+  // The switch is never silent: the notice below states that the method was set and why, and it
+  // stays on screen for as long as the rule applies. Auto-selecting something quietly on a
+  // $250,000 order form is exactly the kind of change nobody would catch.
+  useEffect(() => {
+    if (bankTransferNotSelected) onPaymentMethodChange(BANK_TRANSFER_METHOD);
+  }, [bankTransferNotSelected, onPaymentMethodChange]);
   const approvalBannerVariant = approvalBlocked
     ? "error"
     : previewResult?.approvalTierRequired === "none"
@@ -1426,6 +1461,40 @@ const OptionEditor = ({
       {previewError && (
         <Alert title="Pricing is not up to date" variant="error">
           {previewError} The figures below are from your previous entry.
+        </Alert>
+      )}
+
+      {/* A disabled Lock in button with no explanation reads as a broken card, so the reason is
+          stated wherever it can be triggered. It names the actual invoice figure, because the
+          limit is judged on the largest single INVOICE and not on ARR or TCV -- a rep looking at a
+          $290,000 ARR would otherwise have no idea why a $24,000 monthly payment was fine. */}
+      {requiresBankTransfer && (
+        <Alert
+          title={
+            bankTransferNotSelected
+              ? "Set Payment Method to Bank transfer / ACH"
+              : "Payment Method set to Bank transfer / ACH"
+          }
+          variant={bankTransferNotSelected ? "error" : "warning"}
+        >
+          The largest invoice on this configuration is{" "}
+          {currency(previewResult?.largestInvoiceAmount)}, above the{" "}
+          {currency(previewResult?.creditCardMaximumInvoice)} credit card limit,
+          so credit card is not permitted and has been removed as an option.
+          {previewResult &&
+          previewResult.firstInvoiceAmount >
+            previewResult.recurringInvoiceAmount ? (
+            <Text variant="microcopy">
+              The recurring payment is{" "}
+              {currency(previewResult.recurringInvoiceAmount)}; the first
+              invoice is larger because it also carries{" "}
+              {currency(
+                previewResult.firstInvoiceAmount -
+                  previewResult.recurringInvoiceAmount,
+              )}{" "}
+              of one-time charges.
+            </Text>
+          ) : null}
         </Alert>
       )}
 
@@ -1504,7 +1573,12 @@ const OptionEditor = ({
                 label="Payment Method"
                 name="payment_method"
                 value={paymentMethod}
-                options={paymentMethodOptions}
+                options={permittedPaymentMethodOptions(requiresBankTransfer)}
+                description={
+                  requiresBankTransfer
+                    ? `Required: invoices above ${currency(previewResult?.creditCardMaximumInvoice)} cannot be paid by credit card.`
+                    : undefined
+                }
                 onChange={(value) => onPaymentMethodChange(String(value))}
               />
               {/* onChange, not onInput: onInput fires per keystroke and would re-render the whole
@@ -1834,6 +1908,9 @@ const OptionEditor = ({
             !pricingIsCurrent ||
             !previewResult ||
             previewResult.blockingReasons.length > 0 ||
+            // Credit card above the invoice limit is refused server-side too, but only after the
+            // Deal line items have been archived, so it is stopped here first.
+            bankTransferNotSelected ||
             // The server rejects an over-long title with a generic INVALID_QUOTE_CONTENT, after
             // the Deal line items have already been replaced. Blocking here keeps the field's own
             // message as the only thing the rep has to read.

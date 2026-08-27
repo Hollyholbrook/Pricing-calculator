@@ -16,6 +16,15 @@ var require_pricingRules = __commonJS({
       maximumVolume: 1e9,
       minimumCommittedArr: 25e3,
       redliningMinimumArr: 5e4,
+      // Credit card is not accepted on an invoice above this amount -- ACH/Bank Transfer (wire) is
+      // required. Holly, 2026-08-27, as a hard REQUIREMENT rather than an approval step.
+      //
+      // Compared against the LARGEST SINGLE INVOICE, not against ARR or TCV. The first invoice carries
+      // the recurring payment plus every one-time charge (onboarding and professional services), so it
+      // is the largest one and it is what decides this. A $240,000 ARR deal billed monthly invoices
+      // $20,000 a period -- under the limit -- but $35,000 on the first invoice if $15,000 of
+      // onboarding rides along with it, which is over. Testing ARR would have missed that.
+      creditCardMaximumInvoice: 25e3,
       products: [
         {
           key: "connect_ca",
@@ -528,6 +537,11 @@ var require_calculator = __commonJS({
       })),
       minimumCommittedArr: pricingPolicy.minimumCommittedArr ?? rules.minimumCommittedArr,
       redliningMinimumArr: pricingPolicy.redliningMinimumArr ?? rules.redliningMinimumArr,
+      // This merge is an explicit allow-list, not a spread, so a new policy key silently falls back to
+      // the frozen rules until it is named here. Adding the settings entry alone was not enough: the
+      // override was accepted, validated, normalized -- and then ignored, which a test that only
+      // passed an override would have reported as the rule working correctly.
+      creditCardMaximumInvoice: pricingPolicy.creditCardMaximumInvoice ?? rules.creditCardMaximumInvoice,
       salesDirectorDiscountMax: pricingPolicy.salesDirectorDiscountMax ?? 0.1,
       headSalesDiscountMax: pricingPolicy.headSalesDiscountMax ?? 0.3,
       termRules: rules.termRules.map((rule) => ({
@@ -690,6 +704,10 @@ var require_calculator = __commonJS({
       const tcv = round(committedArr * (input.termMonths / 12) + oneTime, 2);
       const listTcv = round(listCommittedArr * (input.termMonths / 12) + listOneTime, 2);
       const recurringPerPeriod = round(committedArr / input.payment.paymentsPerYear, 2);
+      const firstInvoiceAmount = round(recurringPerPeriod + oneTime, 2);
+      const recurringInvoiceAmount = recurringPerPeriod;
+      const largestInvoiceAmount = Math.max(firstInvoiceAmount, recurringInvoiceAmount);
+      const requiresBankTransfer = activeRules.creditCardMaximumInvoice != null && largestInvoiceAmount > activeRules.creditCardMaximumInvoice;
       const hasOauthDependencyFailure = input.addOns.includes("verified_oauth") && input.psItemCount === 0;
       const effectiveDiscounts = [
         ...Object.entries(input.productDiscounts).filter(([key]) => input.volumes[key] > 0).map(([, discount]) => discount),
@@ -743,6 +761,11 @@ var require_calculator = __commonJS({
         listCommittedArr,
         committedArr,
         recurringPerPeriod,
+        firstInvoiceAmount,
+        recurringInvoiceAmount,
+        largestInvoiceAmount,
+        requiresBankTransfer,
+        creditCardMaximumInvoice: activeRules.creditCardMaximumInvoice,
         listOneTime,
         oneTime,
         listTcv,
@@ -1583,6 +1606,10 @@ var require_appSettings = __commonJS({
       calculationMethod: "excel_compatible",
       minimumCommittedArr: 25e3,
       redliningMinimumArr: 5e4,
+      // Credit card is refused on an invoice above this. Configurable like the other thresholds,
+      // because it is a finance policy rather than a rate -- and because a hard-coded limit could not
+      // be tested at its own boundary without contriving a deal that lands exactly on $25,000.
+      creditCardMaximumInvoice: 25e3,
       salesDirectorDiscountMax: 0.1,
       headSalesDiscountMax: 0.3,
       termDiscounts: { "12": 0, "24": 0.025, "36": 0.05 },
@@ -1646,6 +1673,12 @@ var require_appSettings = __commonJS({
           0,
           1e9,
           "redliningMinimumArr"
+        ),
+        creditCardMaximumInvoice: requireNumber(
+          value.creditCardMaximumInvoice ?? defaults.creditCardMaximumInvoice,
+          0,
+          1e9,
+          "creditCardMaximumInvoice"
         ),
         salesDirectorDiscountMax: requireNumber(
           value.salesDirectorDiscountMax ?? defaults.salesDirectorDiscountMax,
@@ -2020,6 +2053,7 @@ var SAFE_ERRORS = Object.freeze({
   INVALID_QUOTE_CONTENT: "The quote display choices are invalid or incomplete.",
   LINE_ITEM_SYNC_FAILED: "HubSpot could not replace the Deal line items. Review the Deal before trying again.",
   OPTION_BLOCKED: "This option has blocking policy issues and cannot be selected.",
+  PAYMENT_METHOD_REQUIRES_BANK_TRANSFER: "Credit card is not permitted on an invoice above the limit. Set Payment Method to Bank transfer / ACH before locking in.",
   OPTION_NOT_FOUND: "The selected quote option could not be found.",
   OPTION_REQUIRED: "Select or calculate a quote option first.",
   OPTION_RECALCULATION_REQUIRED: "Pricing rules changed after this option was calculated. Recalculate it before continuing.",
@@ -2402,6 +2436,12 @@ var chooseOption = async (client, dealId, state, parameters, settings) => {
 var lockLiveCalculation = async (client, dealId, state, parameters, portalId, settings) => {
   const result = calculateQuote(parameters.input, settings.pricingPolicy, settings.version);
   if (result.blockingReasons.length > 0) throw new Error("OPTION_BLOCKED");
+  if (result.requiresBankTransfer && parameters.paymentMethod !== "ach") {
+    console.warn(
+      `Nylas pricing: refused Lock in -- largest invoice ${result.largestInvoiceAmount} exceeds the ${result.creditCardMaximumInvoice} credit card limit and payment method was "${parameters.paymentMethod || "unset"}".`
+    );
+    throw new Error("PAYMENT_METHOD_REQUIRES_BANK_TRANSFER");
+  }
   const input = normalizeStoredInput(parameters.input, settings.pricingPolicy);
   const liveOption = {
     id: `live-${result.stateHash.slice(0, 16)}`,

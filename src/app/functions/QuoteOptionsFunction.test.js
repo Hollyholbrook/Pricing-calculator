@@ -265,3 +265,150 @@ test('the contract term is mirrored onto the Deal, and junk is never sent', () =
   assert.deepEqual(_test.contractTermProperties(0), {});
   assert.deepEqual(_test.contractTermProperties('not a number'), {});
 });
+
+// Credit card is not permitted on an invoice above the limit -- ACH/Bank Transfer (wire) is
+// required. Holly, 2026-08-27.
+//
+// The card enforces this too, but the card can be running a stale bundle, so this is the guard
+// that matters. What matters as much as refusing is WHEN it refuses: syncDealLineItems archives
+// the Deal's existing line items before creating replacements, so a guard placed after it would
+// reject the lock only after emptying the Deal. These tests assert nothing was written.
+test('Lock in is refused when credit card is used above the invoice limit', async () => {
+  const settings = defaultSettings();
+  const input = {
+    termMonths: 12,
+    paymentFrequency: 'annual_in_advance',
+    volumes: { connect_ca: 20_000 },
+    supportLevel: 'basic',
+    onboardingPackage: 'none',
+    professionalServices: [],
+    addOns: [],
+  };
+  // Proves the fixture actually crosses the limit, so the refusal below is the rule firing and not
+  // some unrelated validation failure.
+  const result = calculateQuote(input, settings.pricingPolicy);
+  assert.equal(result.requiresBankTransfer, true);
+  assert.ok(result.largestInvoiceAmount > 25_000);
+
+  const touched = [];
+  const client = {
+    crm: {
+      associations: { v4: { basicApi: { getPage: async () => {
+        touched.push('read-associations');
+        return { results: [] };
+      } } } },
+      lineItems: {
+        basicApi: {
+          archive: async () => touched.push('ARCHIVED A LINE ITEM'),
+          create: async () => {
+            touched.push('CREATED A LINE ITEM');
+            return { id: 'li' };
+          },
+        },
+      },
+      deals: { basicApi: { update: async () => touched.push('WROTE TO THE DEAL') } },
+      quotes: { basicApi: { create: async () => touched.push('CREATED A QUOTE') } },
+    },
+  };
+
+  await assert.rejects(
+    () =>
+      _test.lockLiveCalculation(
+        client,
+        'deal-1',
+        { document: { schemaVersion: '1.0', revision: 1, options: [] } },
+        { input, quoteContent: {}, paymentMethod: 'credit_card', discountReason: '' },
+        '45023718',
+        settings,
+      ),
+    (error) => error.message === 'PAYMENT_METHOD_REQUIRES_BANK_TRANSFER',
+  );
+  // Nothing at all: no archive, no create, no Deal update, no quote.
+  assert.deepEqual(touched, [], `the Deal must be untouched, but got: ${touched.join(', ')}`);
+});
+
+test('an unset payment method above the limit is refused too', async () => {
+  const settings = defaultSettings();
+  const input = {
+    termMonths: 12,
+    paymentFrequency: 'annual_in_advance',
+    volumes: { connect_ca: 20_000 },
+    supportLevel: 'basic',
+    onboardingPackage: 'none',
+    professionalServices: [],
+    addOns: [],
+  };
+  const client = { crm: { deals: { basicApi: { update: async () => {
+    throw new Error('must not be reached');
+  } } } } };
+
+  // "Not specified" does not satisfy a requirement that ACH IS selected, so blank is refused on the
+  // same footing as credit card. Anything other than ach is refused.
+  for (const paymentMethod of ['', undefined, 'credit_card', 'paypal']) {
+    await assert.rejects(
+      () =>
+        _test.lockLiveCalculation(
+          client,
+          'deal-1',
+          { document: { schemaVersion: '1.0', revision: 1, options: [] } },
+          { input, quoteContent: {}, paymentMethod, discountReason: '' },
+          '45023718',
+          settings,
+        ),
+      (error) => error.message === 'PAYMENT_METHOD_REQUIRES_BANK_TRANSFER',
+      `payment method ${JSON.stringify(paymentMethod)} must be refused`,
+    );
+  }
+});
+
+test('credit card is still allowed below the invoice limit', async () => {
+  const settings = defaultSettings();
+  // Monthly billing, deliberately. A deal small enough to invoice under $25,000 ANNUALLY would be
+  // below the $25,000 Enterprise ARR minimum and blocked for that instead, so it would prove
+  // nothing about the payment-method rule. Billed monthly, this is a $91,368 ARR deal invoicing
+  // $7,614 a period: comfortably over the ARR minimum and comfortably under the card limit, which
+  // is the only combination that isolates what this test is checking.
+  const input = {
+    termMonths: 12,
+    paymentFrequency: 'monthly_in_advance',
+    volumes: { connect_ca: 5_000 },
+    supportLevel: 'basic',
+    onboardingPackage: 'none',
+    professionalServices: [],
+    addOns: [],
+  };
+  const result = calculateQuote(input, settings.pricingPolicy);
+  assert.equal(result.requiresBankTransfer, false, 'fixture must sit below the limit');
+  assert.deepEqual(result.blockingReasons, [], 'and must not be blocked for any other reason');
+  assert.ok(result.committedArr > 25_000, 'above the Enterprise ARR minimum');
+  assert.ok(result.largestInvoiceAmount < 25_000, 'but below the credit card invoice limit');
+
+  // Reaches the write path rather than being refused by the payment-method guard. It fails later,
+  // on the stubbed-out quote creation, which is enough to show the guard let it through.
+  let reachedWrite = false;
+  const client = {
+    crm: {
+      associations: { v4: { basicApi: { getPage: async () => ({ results: [] }) } } },
+      lineItems: { basicApi: { create: async () => ({ id: 'li' }) } },
+      deals: {
+        basicApi: {
+          update: async () => {
+            reachedWrite = true;
+            return { id: 'deal-1' };
+          },
+        },
+      },
+    },
+  };
+  await _test
+    .lockLiveCalculation(
+      client,
+      'deal-1',
+      { document: { schemaVersion: '1.0', revision: 1, options: [] } },
+      { input, quoteContent: {}, paymentMethod: 'credit_card', discountReason: '' },
+      '45023718',
+      settings,
+    )
+    .catch(() => undefined);
+  assert.equal(reachedWrite, true, 'a small deal on credit card must not be blocked');
+});

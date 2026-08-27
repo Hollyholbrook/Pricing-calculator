@@ -186,6 +186,9 @@ const SAFE_ERRORS = Object.freeze({
   INVALID_QUOTE_CONTENT: 'The quote display choices are invalid or incomplete.',
   LINE_ITEM_SYNC_FAILED: 'HubSpot could not replace the Deal line items. Review the Deal before trying again.',
   OPTION_BLOCKED: 'This option has blocking policy issues and cannot be selected.',
+  PAYMENT_METHOD_REQUIRES_BANK_TRANSFER:
+    'Credit card is not permitted on an invoice above the limit. Set Payment Method to ' +
+    'Bank transfer / ACH before locking in.',
   OPTION_NOT_FOUND: 'The selected quote option could not be found.',
   OPTION_REQUIRED: 'Select or calculate a quote option first.',
   OPTION_RECALCULATION_REQUIRED: 'Pricing rules changed after this option was calculated. Recalculate it before continuing.',
@@ -666,6 +669,23 @@ const lockLiveCalculation = async (
 ) => {
   const result = calculateQuote(parameters.input, settings.pricingPolicy, settings.version);
   if (result.blockingReasons.length > 0) throw new Error('OPTION_BLOCKED');
+  // Credit card is not permitted above the invoice limit -- ACH/Bank Transfer (wire) is required.
+  //
+  // Checked HERE, before anything is written, and deliberately not only in the card. The card also
+  // enforces it, but a card can be running stale code or an older cached bundle, and this is the
+  // one place that sees the real calculation and the submitted payment method together.
+  //
+  // Position matters as much as the check: syncDealLineItems ARCHIVES the Deal's line items before
+  // it creates replacements, so a guard that ran later would refuse the lock only after emptying
+  // the Deal. Everything below this line writes; nothing above it does.
+  if (result.requiresBankTransfer && parameters.paymentMethod !== 'ach') {
+    console.warn(
+      'Nylas pricing: refused Lock in -- largest invoice ' +
+        `${result.largestInvoiceAmount} exceeds the ${result.creditCardMaximumInvoice} ` +
+        `credit card limit and payment method was "${parameters.paymentMethod || 'unset'}".`,
+    );
+    throw new Error('PAYMENT_METHOD_REQUIRES_BANK_TRANSFER');
+  }
   // Never carry the raw card input forward. It can hold human labels the CATALOG cannot key on,
   // duplicate professional-services entries, and — worst — redline text the rep already retracted
   // by unchecking redliningRequested, which would otherwise reach the customer-facing Quote.

@@ -372,6 +372,12 @@ const buildActiveRules = (pricingPolicy = {}) => ({
   })),
   minimumCommittedArr: pricingPolicy.minimumCommittedArr ?? rules.minimumCommittedArr,
   redliningMinimumArr: pricingPolicy.redliningMinimumArr ?? rules.redliningMinimumArr,
+  // This merge is an explicit allow-list, not a spread, so a new policy key silently falls back to
+  // the frozen rules until it is named here. Adding the settings entry alone was not enough: the
+  // override was accepted, validated, normalized -- and then ignored, which a test that only
+  // passed an override would have reported as the rule working correctly.
+  creditCardMaximumInvoice:
+    pricingPolicy.creditCardMaximumInvoice ?? rules.creditCardMaximumInvoice,
   salesDirectorDiscountMax: pricingPolicy.salesDirectorDiscountMax ?? 0.1,
   headSalesDiscountMax: pricingPolicy.headSalesDiscountMax ?? 0.3,
   termRules: rules.termRules.map((rule) => ({
@@ -558,6 +564,21 @@ const calculateQuote = (rawInput, pricingPolicy = {}, settingsVersion = 0) => {
   const tcv = round(committedArr * (input.termMonths / 12) + oneTime, 2);
   const listTcv = round(listCommittedArr * (input.termMonths / 12) + listOneTime, 2);
   const recurringPerPeriod = round(committedArr / input.payment.paymentsPerYear, 2);
+  // Invoice amounts, which are NOT the same thing as ARR or TCV and are what the payment-method
+  // rule is judged on.
+  //
+  // The first invoice carries the recurring payment PLUS every one-time charge, so it is the
+  // largest. Subsequent invoices are the recurring payment alone. A $240,000 ARR deal billed
+  // monthly invoices $20,000 a period but $35,000 up front if $15,000 of onboarding rides along.
+  const firstInvoiceAmount = round(recurringPerPeriod + oneTime, 2);
+  const recurringInvoiceAmount = recurringPerPeriod;
+  const largestInvoiceAmount = Math.max(firstInvoiceAmount, recurringInvoiceAmount);
+  // Credit card is not permitted above the limit; ACH/Bank Transfer (wire) is required. The
+  // calculator only states the FACT -- it never sees the selected payment method, which arrives
+  // separately at Lock in. The card and lockLiveCalculation both enforce it from this flag.
+  const requiresBankTransfer =
+    activeRules.creditCardMaximumInvoice != null &&
+    largestInvoiceAmount > activeRules.creditCardMaximumInvoice;
   const hasOauthDependencyFailure =
     input.addOns.includes('verified_oauth') && input.psItemCount === 0;
   // Only discounts that actually move money count toward approval routing. A discount typed
@@ -621,6 +642,11 @@ const calculateQuote = (rawInput, pricingPolicy = {}, settingsVersion = 0) => {
     listCommittedArr,
     committedArr,
     recurringPerPeriod,
+    firstInvoiceAmount,
+    recurringInvoiceAmount,
+    largestInvoiceAmount,
+    requiresBankTransfer,
+    creditCardMaximumInvoice: activeRules.creditCardMaximumInvoice,
     listOneTime,
     oneTime,
     listTcv,

@@ -8,6 +8,15 @@ module.exports = Object.freeze({
   maximumVolume: 1_000_000_000,
   minimumCommittedArr: 25_000,
   redliningMinimumArr: 50_000,
+  // Credit card is not accepted on an invoice above this amount -- ACH/Bank Transfer (wire) is
+  // required. Holly, 2026-08-27, as a hard REQUIREMENT rather than an approval step.
+  //
+  // Compared against the LARGEST SINGLE INVOICE, not against ARR or TCV. The first invoice carries
+  // the recurring payment plus every one-time charge (onboarding and professional services), so it
+  // is the largest one and it is what decides this. A $240,000 ARR deal billed monthly invoices
+  // $20,000 a period -- under the limit -- but $35,000 on the first invoice if $15,000 of
+  // onboarding rides along with it, which is over. Testing ARR would have missed that.
+  creditCardMaximumInvoice: 25_000,
   products: [
     {
       key: 'connect_ca',
