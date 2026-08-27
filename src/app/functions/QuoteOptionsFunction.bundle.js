@@ -1673,6 +1673,8 @@ var {
 var OPTION_PROPERTY = "pricing_quote_options_payload";
 var SELECTED_OPTION_ID_PROPERTY = "pricing_selected_option_id";
 var SELECTED_OPTION_NAME_PROPERTY = "pricing_selected_option_name";
+var DEFAULT_QUOTE_TEMPLATE_ID = "567553820432";
+var configuredQuoteTemplateId = () => String(process.env.QUOTE_TEMPLATE_ID || "") || DEFAULT_QUOTE_TEMPLATE_ID;
 var MAX_OPTIONS = 10;
 var MAX_PAYLOAD_LENGTH = 6e4;
 var SAFE_ERRORS = Object.freeze({
@@ -2280,7 +2282,7 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
     parameters.quoteContent,
     `${state.dealName} \u2013 ${option.name}`
   );
-  const templateId = content.templateId || String(process.env.QUOTE_TEMPLATE_ID || "");
+  const templateId = content.templateId || configuredQuoteTemplateId();
   if (!/^\d+$/.test(templateId)) throw new Error("QUOTE_CONFIGURATION_REQUIRED");
   const templateType = await describeQuoteTemplate(client, templateId);
   const hash = contentHash(option, content);
@@ -2468,7 +2470,7 @@ exports.main = async (context) => {
         success: true,
         ...stateResponse(state),
         quoteTemplates: await usableQuoteTemplates(client),
-        defaultQuoteTemplateId: String(process.env.QUOTE_TEMPLATE_ID || ""),
+        defaultQuoteTemplateId: configuredQuoteTemplateId(),
         // The card shows this as the Quote title placeholder, so a rep who leaves the field
         // blank can see the name the quote will actually get rather than being surprised by it.
         dealName: state.dealName

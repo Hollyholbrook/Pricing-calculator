@@ -21,6 +21,18 @@ const {
 const OPTION_PROPERTY = 'pricing_quote_options_payload';
 const SELECTED_OPTION_ID_PROPERTY = 'pricing_selected_option_id';
 const SELECTED_OPTION_NAME_PROPERTY = 'pricing_selected_option_name';
+// The 1-Sub quote template. Held in code so the app defaults correctly even where the
+// QUOTE_TEMPLATE_ID secret is unset or stale -- the previous fallback was "first template
+// alphabetically", which silently generated quotes against whichever template happened to sort
+// first, and is the likeliest reason a generated quote rendered a template nobody was editing.
+//
+// The secret still wins when it is set, so a different portal or a template swap needs no deploy.
+// Either way the card only preselects a default that is actually in the portal's template list.
+const DEFAULT_QUOTE_TEMPLATE_ID = '567553820432';
+
+const configuredQuoteTemplateId = () =>
+  String(process.env.QUOTE_TEMPLATE_ID || '') || DEFAULT_QUOTE_TEMPLATE_ID;
+
 const MAX_OPTIONS = 10;
 const MAX_PAYLOAD_LENGTH = 60_000;
 
@@ -806,8 +818,8 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
     parameters.quoteContent,
     `${state.dealName} – ${option.name}`,
   );
-  // The rep's choice wins; QUOTE_TEMPLATE_ID remains the default for anyone who does not pick.
-  const templateId = content.templateId || String(process.env.QUOTE_TEMPLATE_ID || '');
+  // The rep's choice wins; the configured default covers anyone who does not pick.
+  const templateId = content.templateId || configuredQuoteTemplateId();
   if (!/^\d+$/.test(templateId)) throw new Error('QUOTE_CONFIGURATION_REQUIRED');
   const templateType = await describeQuoteTemplate(client, templateId);
   const hash = contentHash(option, content);
@@ -1038,7 +1050,7 @@ exports.main = async (context) => {
         success: true,
         ...stateResponse(state),
         quoteTemplates: await usableQuoteTemplates(client),
-        defaultQuoteTemplateId: String(process.env.QUOTE_TEMPLATE_ID || ''),
+        defaultQuoteTemplateId: configuredQuoteTemplateId(),
         // The card shows this as the Quote title placeholder, so a rep who leaves the field
         // blank can see the name the quote will actually get rather than being surprised by it.
         dealName: state.dealName,
