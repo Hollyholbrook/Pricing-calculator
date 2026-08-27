@@ -53,9 +53,9 @@ const configuredQuoteTemplateId = () =>
 // If that warning appears, read the real internal values off the property in Settings and correct
 // them here.
 //
-// payment_method, payment_frequency and auto_renewal__c are the ONLY non-pricing_* Deal properties
-// the app writes. Everything else it touches on a Deal is namespaced pricing_*; see
-// claude/quote-text-ownership.md for why that mattered.
+// payment_method, payment_frequency, auto_renewal__c and contract_term__months_ are the ONLY
+// non-pricing_* Deal properties the app writes. Everything else it touches on a Deal is namespaced
+// pricing_*; see claude/quote-text-ownership.md for why that mattered.
 const DEAL_PAYMENT_METHOD = Object.freeze({
   property: 'payment_method',
   values: Object.freeze({
@@ -89,6 +89,13 @@ const DEAL_PAYMENT_FREQUENCY = Object.freeze({
   }),
 });
 
+// The contract term in months, mirrored onto the Deal alongside pricing_term_months.
+//
+// The name is copied exactly, double underscore and trailing underscore included: HubSpot generates
+// that shape from a label like "Contract Term (Months)", and "tidying" it to contract_term_months
+// would simply miss.
+const DEAL_CONTRACT_TERM_PROPERTY = 'contract_term__months_';
+
 // Every Deal enumeration the app mirrors from the calculator. Listed once so the retry guard below
 // covers all of them: these are the only properties here whose names and values came from outside
 // the code, and any one of them can be wrong.
@@ -103,6 +110,7 @@ const DEAL_CHOICE_PROPERTIES = [
 // in runs after the Deal's line items have already been replaced. So the guard below drops a
 // rejected one and retries, exactly as it does for the two enumerations above.
 const UNVERIFIED_DEAL_PROPERTIES = [
+  DEAL_CONTRACT_TERM_PROPERTY,
   'pricing_contract_type',
   'pricing_multi_year_discount_pct',
   'pricing_multi_product_discount_pct',
@@ -130,6 +138,14 @@ const paymentFrequencyProperties = (paymentFrequency) =>
 // so there is no "not specified" case to clear.
 const autoRenewalProperties = (autoRenewal) =>
   choiceProperty(DEAL_AUTO_RENEWAL, autoRenewal === true ? 'yes' : 'no');
+
+const contractTermProperties = (termMonths) => {
+  const months = Number(termMonths);
+  // Only a real term. A blank or nonsense value would either fail the update or overwrite a good
+  // number with junk, and the term is always present on a calculated option.
+  if (!Number.isFinite(months) || months <= 0) return {};
+  return { [DEAL_CONTRACT_TERM_PROPERTY]: String(months) };
+};
 
 // Free text the rep types when they discount. Trimmed and capped rather than validated: there is no
 // right answer to check it against, and an over-long value would fail the whole update.
@@ -661,6 +677,7 @@ const lockLiveCalculation = async (
   // The rep's own words, and when they committed. Neither is a pricing input -- they change no
   // number and normalizeStoredInput would strip them from option.input.
   Object.assign(properties, autoRenewalProperties(input.autoRenewal));
+  Object.assign(properties, contractTermProperties(input.termMonths));
   Object.assign(properties, discountReasonProperties(parameters.discountReason));
   properties.pricing_approval_timestamp = String(Date.now());
 
@@ -1379,6 +1396,7 @@ exports._test = Object.freeze({
   deleteOption,
   lockLiveCalculation,
   autoRenewalProperties,
+  contractTermProperties,
   discountReasonProperties,
   paymentFrequencyProperties,
   paymentMethodProperties,

@@ -247,3 +247,14 @@ test('Auto-renewal writes Yes or No, and is never blank', () => {
   // Blank would leave whatever was on the Deal before, which is worse than being explicit.
   assert.deepEqual(_test.autoRenewalProperties(undefined), { auto_renewal__c: 'No' });
 });
+
+test('the contract term is mirrored onto the Deal, and junk is never sent', () => {
+  assert.deepEqual(_test.contractTermProperties(12), { contract_term__months_: '12' });
+  assert.deepEqual(_test.contractTermProperties(24), { contract_term__months_: '24' });
+  assert.deepEqual(_test.contractTermProperties(36), { contract_term__months_: '36' });
+  // Nothing rather than something wrong: an absent or nonsense term would either fail the update
+  // or overwrite a good number. A calculated option always carries a real term.
+  assert.deepEqual(_test.contractTermProperties(undefined), {});
+  assert.deepEqual(_test.contractTermProperties(0), {});
+  assert.deepEqual(_test.contractTermProperties('not a number'), {});
+});

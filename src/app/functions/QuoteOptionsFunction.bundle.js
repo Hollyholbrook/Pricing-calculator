@@ -1698,12 +1698,14 @@ var DEAL_PAYMENT_FREQUENCY = Object.freeze({
     monthly_in_advance: "Monthly In Advance"
   })
 });
+var DEAL_CONTRACT_TERM_PROPERTY = "contract_term__months_";
 var DEAL_CHOICE_PROPERTIES = [
   DEAL_PAYMENT_METHOD,
   DEAL_PAYMENT_FREQUENCY,
   DEAL_AUTO_RENEWAL
 ];
 var UNVERIFIED_DEAL_PROPERTIES = [
+  DEAL_CONTRACT_TERM_PROPERTY,
   "pricing_contract_type",
   "pricing_multi_year_discount_pct",
   "pricing_multi_product_discount_pct",
@@ -1719,6 +1721,11 @@ var choiceProperty = ({ property, values }, choice) => {
 var paymentMethodProperties = (paymentMethod) => choiceProperty(DEAL_PAYMENT_METHOD, paymentMethod);
 var paymentFrequencyProperties = (paymentFrequency) => choiceProperty(DEAL_PAYMENT_FREQUENCY, paymentFrequency);
 var autoRenewalProperties = (autoRenewal) => choiceProperty(DEAL_AUTO_RENEWAL, autoRenewal === true ? "yes" : "no");
+var contractTermProperties = (termMonths) => {
+  const months = Number(termMonths);
+  if (!Number.isFinite(months) || months <= 0) return {};
+  return { [DEAL_CONTRACT_TERM_PROPERTY]: String(months) };
+};
 var DISCOUNT_REASON_MAX_LENGTH = 4e3;
 var discountReasonProperties = (discountReason) => {
   if (typeof discountReason !== "string") return {};
@@ -2126,6 +2133,7 @@ var lockLiveCalculation = async (client, dealId, state, parameters, portalId, se
   Object.assign(properties, paymentMethodProperties(parameters.paymentMethod));
   Object.assign(properties, paymentFrequencyProperties(input.paymentFrequency));
   Object.assign(properties, autoRenewalProperties(input.autoRenewal));
+  Object.assign(properties, contractTermProperties(input.termMonths));
   Object.assign(properties, discountReasonProperties(parameters.discountReason));
   properties.pricing_approval_timestamp = String(Date.now());
   const document = {
@@ -2676,6 +2684,7 @@ exports._test = Object.freeze({
   deleteOption,
   lockLiveCalculation,
   autoRenewalProperties,
+  contractTermProperties,
   discountReasonProperties,
   paymentFrequencyProperties,
   paymentMethodProperties,
