@@ -190,7 +190,8 @@ interface ServerlessBody {
   latestQuoteUrl?: string | null;
   quoteId?: string;
   quoteUrl?: string;
-  reused?: boolean;
+  templateId?: string;
+  templateName?: string;
   previewResult?: QuoteResult;
   quoteTemplates?: { id: string; name: string }[];
   defaultQuoteTemplateId?: string;
@@ -292,10 +293,14 @@ const paymentOptions = [
 // server-side, so the picker does not have to know how the portal encodes them and a renamed
 // option value needs no card change.
 const paymentMethodOptions = [
-  { value: "", label: "Not specified" },
   { value: "credit_card", label: "Credit card" },
   { value: "ach", label: "Bank transfer / ACH" },
+  // Last, not first: it is the exception now that Credit card is the default, and a rep who picks
+  // it is deliberately clearing the field rather than accepting a blank.
+  { value: "", label: "Not specified" },
 ];
+
+const DEFAULT_PAYMENT_METHOD = "credit_card";
 
 const supportOptions = [
   { value: "basic", label: "Basic" },
@@ -625,7 +630,7 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
   const [quoteTitle, setQuoteTitle] = useState("");
   // Not part of the pricing input: it changes no number, and normalizeStoredInput would strip it
   // from option.input anyway. It travels as its own parameter and lands on the Deal.
-  const [paymentMethod, setPaymentMethod] = useState("");
+  const [paymentMethod, setPaymentMethod] = useState(DEFAULT_PAYMENT_METHOD);
   // The configuration as it is stored on the Deal, for telling "this would update what is already
   // locked" from "this would produce something new". Empty when nothing has been locked yet.
   const [lockedInput, setLockedInput] = useState("");
@@ -827,10 +832,15 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
       // restores it above. Before that, a reload left the rep with an empty calculator.
       actions.refreshObjectProperties();
       actions.addAlert({
-        title: body.reused
-          ? "Pricing locked in — existing draft Quote reused"
-          : "Pricing locked in and draft Quote created",
-        message: `${body.lineItemCount || 0} calculated line items replaced the Deal line items. The draft Quote is on the Deal's Quotes card.`,
+        // Every lock creates a Quote now -- there is no reuse branch -- so there is one message.
+        title: "Pricing locked in and draft Quote created",
+        // The template is named here because four rounds went into "it is using the wrong
+        // template" with no way to see which one had actually been used. Now the confirmation
+        // says so every time.
+        message:
+          `${body.lineItemCount || 0} calculated line items replaced the Deal line items. ` +
+          `Template: ${body.templateName || body.templateId || "unknown"}. ` +
+          `The draft Quote is on the Deal's Quotes card.`,
         type: "success",
       });
       // After the alert, so the rep sees the confirmation before the page goes.

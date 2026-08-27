@@ -2358,16 +2358,17 @@ var describeQuoteTemplate = async (client, templateId) => {
       "hs_type"
     ]);
     const type = template?.properties?.hs_type || "unknown";
+    const name = template?.properties?.hs_name || "";
     console.log(
-      `Nylas pricing: quote template ${templateId} ("${template?.properties?.hs_name || ""}") has hs_type "${type}" (HubSpot has previously required "${REQUIRED_QUOTE_TEMPLATE_TYPE}").`
+      `Nylas pricing: quote template ${templateId} ("${name}") has hs_type "${type}" (HubSpot has previously required "${REQUIRED_QUOTE_TEMPLATE_TYPE}").`
     );
-    return type;
+    return { type, name };
   } catch (error) {
     console.warn(
       "Nylas pricing: could not read the quote template.",
       safeProviderDiagnostics(error, "read_quote_template")
     );
-    return "unknown";
+    return { type: "unknown", name: "" };
   }
 };
 var generateQuote = async (client, dealId, state, parameters, portalId, settings) => {
@@ -2379,15 +2380,11 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
   );
   const templateId = content.templateId || configuredQuoteTemplateId();
   if (!/^\d+$/.test(templateId)) throw new Error("QUOTE_CONFIGURATION_REQUIRED");
-  const templateType = await describeQuoteTemplate(client, templateId);
-  const hash = contentHash(option, content);
-  if (state.quoteContentHash === hash && state.latestQuoteId) {
-    return {
-      quoteId: state.latestQuoteId,
-      quoteUrl: state.latestQuoteUrl || "",
-      reused: true
-    };
-  }
+  const { type: templateType, name: templateName } = await describeQuoteTemplate(
+    client,
+    templateId
+  );
+  const hash = contentHash(option, { ...content, templateId });
   const lineItems = buildQuoteLineItems(option, content);
   let quote;
   const createdLineItemIds = [];
@@ -2488,7 +2485,13 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
         pricing_quote_generated_at: generatedAt
       }
     });
-    return { quoteId: String(quote.id), quoteUrl, generatedAt, reused: false };
+    return {
+      quoteId: String(quote.id),
+      quoteUrl,
+      generatedAt,
+      templateId,
+      templateName
+    };
   } catch (error) {
     for (const id of createdLineItemIds) {
       await client.crm.lineItems.basicApi.archive(id).catch(() => void 0);

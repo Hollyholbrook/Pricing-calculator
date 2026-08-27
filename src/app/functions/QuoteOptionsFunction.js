@@ -993,17 +993,18 @@ const describeQuoteTemplate = async (client, templateId) => {
       'hs_type',
     ]);
     const type = template?.properties?.hs_type || 'unknown';
+    const name = template?.properties?.hs_name || '';
     console.log(
-      `Nylas pricing: quote template ${templateId} ("${template?.properties?.hs_name || ''}") ` +
-        `has hs_type "${type}" (HubSpot has previously required "${REQUIRED_QUOTE_TEMPLATE_TYPE}").`,
+      `Nylas pricing: quote template ${templateId} ("${name}") has hs_type "${type}" ` +
+        `(HubSpot has previously required "${REQUIRED_QUOTE_TEMPLATE_TYPE}").`,
     );
-    return type;
+    return { type, name };
   } catch (error) {
     console.warn(
       'Nylas pricing: could not read the quote template.',
       safeProviderDiagnostics(error, 'read_quote_template'),
     );
-    return 'unknown';
+    return { type: 'unknown', name: '' };
   }
 };
 
@@ -1017,15 +1018,27 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
   // The rep's choice wins; the configured default covers anyone who does not pick.
   const templateId = content.templateId || configuredQuoteTemplateId();
   if (!/^\d+$/.test(templateId)) throw new Error('QUOTE_CONFIGURATION_REQUIRED');
-  const templateType = await describeQuoteTemplate(client, templateId);
-  const hash = contentHash(option, content);
-  if (state.quoteContentHash === hash && state.latestQuoteId) {
-    return {
-      quoteId: state.latestQuoteId,
-      quoteUrl: state.latestQuoteUrl || '',
-      reused: true,
-    };
-  }
+  const { type: templateType, name: templateName } = await describeQuoteTemplate(
+    client,
+    templateId,
+  );
+  // A new Quote every time. There is deliberately no reuse branch.
+  //
+  // There used to be: an unchanged content hash returned the stored quote instead of creating one.
+  // It was a real source of confusion. The hash covered only the template the CARD sent, so when
+  // the card sent nothing and the configured default filled in, changing that default produced an
+  // identical hash -- the stored quote came back, still rendered with the OLD template, and
+  // nothing regenerated it. That is why the wrong template kept reappearing after the default was
+  // fixed.
+  //
+  // Hashing the resolved template would have fixed that one case, but any value outside the hash
+  // could do the same thing again. Generating unconditionally cannot go stale.
+  //
+  // The hash is still recorded on the Deal, as a record of what the latest quote was built from.
+  //
+  // Consequence: a Deal accumulates one Quote per Lock in. Superseded quotes are NOT archived --
+  // they are customer-facing records and deleting them is not this action's call.
+  const hash = contentHash(option, { ...content, templateId });
 
   // Built before the try so PRODUCT_MAPPING_REQUIRED fails before a quote record exists.
   const lineItems = buildQuoteLineItems(option, content);
@@ -1157,7 +1170,13 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
         pricing_quote_generated_at: generatedAt,
       },
     });
-    return { quoteId: String(quote.id), quoteUrl, generatedAt, reused: false };
+    return {
+      quoteId: String(quote.id),
+      quoteUrl,
+      generatedAt,
+      templateId,
+      templateName,
+    };
   } catch (error) {
     // Archive the quote's own line items before the quote, so a failed attempt leaves nothing
     // orphaned. The Deal's line items are syncDealLineItems' to roll back, not this function's.
