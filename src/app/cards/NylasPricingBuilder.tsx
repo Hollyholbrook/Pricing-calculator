@@ -1308,6 +1308,13 @@ const OptionEditor = ({
   );
 
   const approvalBlocked = (previewResult?.blockingReasons.length || 0) > 0;
+  // A missing discount reason blocks Lock in exactly as a policy reason does, so the banner has to
+  // read the same way: red and titled "Blocked". It was amber "Finance approval required", which
+  // said the wrong thing twice -- the colour implied "proceed with approval" and the title named a
+  // step that is not what is stopping the button. Holly, 2026-08-28.
+  //
+  // Declared after discountReasonMissing below would be a temporal-dead-zone error, so it is
+  // folded in at the point of use instead of into approvalBlocked itself.
   // Credit card is not permitted above the invoice limit -- ACH/Bank Transfer (wire) is required.
   // The rep must SELECT it: the option list below is narrowed to it and Lock in stays disabled
   // until it is chosen, rather than the card silently switching the method for them. A quietly
@@ -1331,12 +1338,13 @@ const OptionEditor = ({
   useEffect(() => {
     if (bankTransferNotSelected) onPaymentMethodChange(BANK_TRANSFER_METHOD);
   }, [bankTransferNotSelected, onPaymentMethodChange]);
-  const approvalBannerVariant = approvalBlocked
+  const lockBlocked = approvalBlocked || discountReasonMissing;
+  const approvalBannerVariant = lockBlocked
     ? "error"
     : previewResult?.approvalTierRequired === "none"
       ? "success"
       : "warning";
-  const approvalBannerTitle = approvalBlocked
+  const approvalBannerTitle = lockBlocked
     ? "Blocked"
     : previewResult?.approvalTierRequired === "none"
       ? "No approval required"
@@ -1691,30 +1699,6 @@ const OptionEditor = ({
                 </AutoGrid>
               </Flex>
             </Card>
-            {hasAnyDiscount && (
-              <Flex direction="column" gap="xs">
-                <TextArea
-                  label="Discount Reason"
-                  name="discount_reason"
-                  value={discountReason}
-                  rows={2}
-                  maxLength={4_000}
-                  placeholder="Why is this discount being given?"
-                  onChange={(value) => onDiscountReasonChange(String(value))}
-                />
-                {discountReasonMissing ? (
-                  <Text variant="microcopy" format={{ fontWeight: "bold" }}>
-                    Required. A discount cannot be locked in without a reason —
-                    this is what the approver reads.
-                  </Text>
-                ) : (
-                  <Text variant="microcopy">
-                    Recorded on the Deal for approval. Appears only because a
-                    discount has been entered.
-                  </Text>
-                )}
-              </Flex>
-            )}
           </>
         }
 
@@ -1776,6 +1760,34 @@ const OptionEditor = ({
           </>
         }
       </Flex>
+      {/* The Discount Reason sits here, immediately above the banner that demands it and the
+          button it blocks, rather than up in the add-ons section where it used to live. A rep
+          reading "a discount reason is required" should not have to scroll back up a long form to
+          find the field. Holly, 2026-08-28. */}
+      {hasAnyDiscount && (
+        <Flex direction="column" gap="xs">
+          <TextArea
+            label="Discount Reason"
+            name="discount_reason"
+            value={discountReason}
+            rows={2}
+            maxLength={4_000}
+            placeholder="Why is this discount being given?"
+            onChange={(value) => onDiscountReasonChange(String(value))}
+          />
+          {discountReasonMissing ? (
+            <Text variant="microcopy" format={{ fontWeight: "bold" }}>
+              Required. A discount cannot be locked in without a reason — this
+              is what the approver reads.
+            </Text>
+          ) : (
+            <Text variant="microcopy">
+              Recorded on the Deal for approval. Appears only because a discount
+              has been entered.
+            </Text>
+          )}
+        </Flex>
+      )}
       {/* The approval state sits with the action it gates, not up in the header: a blocking
           reason is only actionable next to the button it stops. */}
       {previewResult && (
