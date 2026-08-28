@@ -978,3 +978,37 @@ test('the quote Seller block is read back and set again if the create dropped it
   assert.match(source, /const senderMissing = Object\.entries\(sender\)\.filter\(/);
   assert.match(source, /await client\.crm\.quotes\.basicApi\.update\(String\(quote\.id\), \{/);
 });
+
+// The card is offered only the templates chosen in Settings.
+test('the template picker is narrowed by Settings, and never left empty', () => {
+  const source = require('node:fs').readFileSync(
+    require('node:path').join(__dirname, 'QuoteOptionsFunction.js'),
+    'utf8',
+  );
+  // The list action must narrow; the settings screen must NOT (it is where the choice is made).
+  assert.match(
+    source,
+    /quoteTemplates: offeredQuoteTemplates\(await usableQuoteTemplates\(client\), settings\)/,
+    'the card list must be narrowed',
+  );
+  assert.match(
+    source,
+    /quoteTemplates: await usableQuoteTemplates\(getClient\(\)\)/,
+    'the settings screen must see every template',
+  );
+  // The default resolves through Settings first, then the secret -- in both the card and the quote.
+  assert.match(source, /defaultQuoteTemplateId: defaultQuoteTemplateFor\(settings\)/);
+  assert.match(
+    source,
+    /const templateId = content\.templateId \|\| defaultQuoteTemplateFor\(settings\)/,
+  );
+  assert.match(
+    source,
+    /settings\?\.defaultQuoteTemplateId \|\| configuredQuoteTemplateId\(\)/,
+    'Settings first, then the secret',
+  );
+  // An empty choice means "all", and a stale choice must not produce an empty picker.
+  const fn = source.slice(source.indexOf('const offeredQuoteTemplates'));
+  assert.match(fn.slice(0, 900), /if \(enabled\.length === 0\) return templates;/);
+  assert.match(fn.slice(0, 900), /if \(narrowed\.length === 0\) \{/);
+});

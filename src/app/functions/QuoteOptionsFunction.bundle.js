@@ -1774,6 +1774,14 @@ var require_appSettings = __commonJS({
       allowRenewals: false,
       newBusinessPipelineIds: [],
       renewalPipelineIds: [],
+      // WHICH quote templates the card offers, and which one it preselects. Holly, 2026-08-28.
+      //
+      // An EMPTY list means "every usable template", which is what the card did before this existed --
+      // so an unconfigured portal behaves exactly as it always has rather than showing an empty picker.
+      // Choosing templates here narrows it; it never adds one the portal does not have.
+      enabledQuoteTemplateIds: [],
+      // Empty falls back to the QUOTE_TEMPLATE_ID secret, which is where the default lived before.
+      defaultQuoteTemplateId: "",
       pricingPolicy: defaultPricingPolicy()
     });
     var APPROVAL_TIERS = Object.freeze([
@@ -1784,6 +1792,12 @@ var require_appSettings = __commonJS({
       "ccso",
       "finance"
     ]);
+    var normalizeTemplateId = (value, field) => {
+      if (value == null || value === "") return "";
+      const id = String(value);
+      if (!/^\d{1,20}$/.test(id)) throw new Error(`INVALID_SETTINGS:${field}`);
+      return id;
+    };
     var requireApprovalTier = (value, field) => {
       if (!APPROVAL_TIERS.includes(value)) throw new Error(`INVALID_SETTINGS:${field}`);
       return value;
@@ -1974,6 +1988,14 @@ var require_appSettings = __commonJS({
         newBusinessPipelineIds: normalizePipelineIds(
           value.newBusinessPipelineIds || [],
           "newBusinessPipelineIds"
+        ),
+        enabledQuoteTemplateIds: normalizePipelineIds(
+          value.enabledQuoteTemplateIds || [],
+          "enabledQuoteTemplateIds"
+        ),
+        defaultQuoteTemplateId: normalizeTemplateId(
+          value.defaultQuoteTemplateId,
+          "defaultQuoteTemplateId"
         ),
         renewalPipelineIds: normalizePipelineIds(
           value.renewalPipelineIds || [],
@@ -2921,6 +2943,20 @@ var readQuoteTemplatePage = async (client, after) => {
   }
   throw lastError;
 };
+var offeredQuoteTemplates = (templates, settings) => {
+  const enabled = settings?.enabledQuoteTemplateIds || [];
+  if (enabled.length === 0) return templates;
+  const allowed = new Set(enabled.map(String));
+  const narrowed = templates.filter(({ id }) => allowed.has(String(id)));
+  if (narrowed.length === 0) {
+    console.warn(
+      "Nylas pricing: none of the quote templates chosen in Settings still exist. Offering every usable template instead."
+    );
+    return templates;
+  }
+  return narrowed;
+};
+var defaultQuoteTemplateFor = (settings) => settings?.defaultQuoteTemplateId || configuredQuoteTemplateId();
 var usableQuoteTemplates = async (client) => {
   const templates = [];
   let after;
@@ -3016,7 +3052,7 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
     parameters.quoteContent,
     `${state.dealName} \u2013 ${option.name}`
   );
-  const templateId = content.templateId || configuredQuoteTemplateId();
+  const templateId = content.templateId || defaultQuoteTemplateFor(settings);
   if (!/^\d+$/.test(templateId)) throw new Error("QUOTE_CONFIGURATION_REQUIRED");
   const { type: templateType, name: templateName } = await describeQuoteTemplate(
     client,
@@ -3250,7 +3286,10 @@ exports.main = async (context) => {
         settings: settingsState2.settings,
         configured: settingsState2.configured,
         canEdit: isSettingsAdmin(context),
-        pipelines
+        pipelines,
+        // The FULL list, not the narrowed one: this is the screen where the narrowing is chosen,
+        // so it has to show every template the portal has.
+        quoteTemplates: await usableQuoteTemplates(getClient())
       });
     }
     if (action === "update_settings") {
@@ -3278,8 +3317,8 @@ exports.main = async (context) => {
       return response(200, {
         success: true,
         ...stateResponse(state),
-        quoteTemplates: await usableQuoteTemplates(client),
-        defaultQuoteTemplateId: configuredQuoteTemplateId(),
+        quoteTemplates: offeredQuoteTemplates(await usableQuoteTemplates(client), settings),
+        defaultQuoteTemplateId: defaultQuoteTemplateFor(settings),
         // The card shows this as the Quote title placeholder, so a rep who leaves the field
         // blank can see the name the quote will actually get rather than being surprised by it.
         dealName: state.dealName

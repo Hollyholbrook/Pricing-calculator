@@ -42,6 +42,8 @@ interface AppSettings {
   allowRenewals: boolean;
   newBusinessPipelineIds: string[];
   renewalPipelineIds: string[];
+  enabledQuoteTemplateIds: string[];
+  defaultQuoteTemplateId: string;
   pricingPolicy: PricingPolicy;
 }
 
@@ -54,6 +56,7 @@ interface SettingsBody {
   configured?: boolean;
   canEdit?: boolean;
   pipelines?: { id: string; label: string }[];
+  quoteTemplates?: { id: string; name: string }[];
 }
 
 interface SettingsResult {
@@ -126,6 +129,9 @@ const SettingsPage = () => {
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [configured, setConfigured] = useState(false);
   const [canEdit, setCanEdit] = useState(false);
+  const [quoteTemplates, setQuoteTemplates] = useState<
+    { id: string; name: string }[]
+  >([]);
   const [pipelines, setPipelines] = useState<{ id: string; label: string }[]>(
     [],
   );
@@ -155,6 +161,7 @@ const SettingsPage = () => {
       setConfigured(body.configured === true);
       setCanEdit(body.canEdit === true);
       setPipelines(body.pipelines || []);
+      setQuoteTemplates(body.quoteTemplates || []);
     } catch (requestError) {
       setError(
         requestError instanceof Error
@@ -228,6 +235,23 @@ const SettingsPage = () => {
     value: id,
     label,
   }));
+  const templateOptions = quoteTemplates.map(({ id, name }) => ({
+    value: id,
+    label: name,
+  }));
+  // An empty choice means "offer every template", so the default may legitimately be one that is
+  // not in the chosen list. Once a narrowing exists, the default has to be inside it or the card
+  // would preselect something the picker will not show.
+  const offeredTemplateOptions =
+    settings.enabledQuoteTemplateIds.length === 0
+      ? templateOptions
+      : templateOptions.filter(({ value }) =>
+          settings.enabledQuoteTemplateIds.includes(value),
+        );
+  const defaultOutsideChoice =
+    settings.defaultQuoteTemplateId !== "" &&
+    settings.enabledQuoteTemplateIds.length > 0 &&
+    !settings.enabledQuoteTemplateIds.includes(settings.defaultQuoteTemplateId);
 
   return (
     <Stack distance="sm">
@@ -343,6 +367,60 @@ const SettingsPage = () => {
                 must be Renewal.
               </Text>
             )}
+        </Stack>
+      </Card>
+
+      <Card>
+        <Stack distance="sm">
+          <Heading>Quote Templates</Heading>
+          <Text variant="microcopy">
+            Which templates the pricing card offers, and which one it
+            preselects. Leave the list empty to offer every template in the
+            portal.
+          </Text>
+          <AutoGrid columnWidth={230} flexible gap="sm">
+            <MultiSelect
+              label="Templates Reps Can Choose"
+              name="enabled_quote_templates"
+              value={settings.enabledQuoteTemplateIds}
+              options={templateOptions}
+              readOnly={!canEdit}
+              onChange={(value) =>
+                setSettings({
+                  ...settings,
+                  enabledQuoteTemplateIds: value.map(String),
+                })
+              }
+            />
+            <Select
+              label="Default Template"
+              name="default_quote_template"
+              value={settings.defaultQuoteTemplateId}
+              options={[
+                { value: "", label: "Use the configured secret" },
+                ...offeredTemplateOptions,
+              ]}
+              readOnly={!canEdit}
+              onChange={(value) =>
+                setSettings({
+                  ...settings,
+                  defaultQuoteTemplateId: String(value ?? ""),
+                })
+              }
+            />
+          </AutoGrid>
+          {quoteTemplates.length === 0 && (
+            <Text variant="microcopy">
+              No quote templates could be listed for this portal. The card will
+              fall back to the configured QUOTE_TEMPLATE_ID secret.
+            </Text>
+          )}
+          {defaultOutsideChoice && (
+            <Text variant="microcopy" format={{ fontWeight: "bold" }}>
+              The default template is not one reps can choose. Add it to the
+              list above, or pick a different default.
+            </Text>
+          )}
         </Stack>
       </Card>
 

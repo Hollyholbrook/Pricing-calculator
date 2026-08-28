@@ -1177,6 +1177,32 @@ const readQuoteTemplatePage = async (client, after) => {
 // the templates the user can see in HubSpot is worse than one that lists a template the API will
 // later reject, and assertUsableQuoteTemplate already rejects a CPQ template up front with a
 // clear message. Where hs_type IS present and wrong, the option is labelled rather than removed.
+// The templates the card may offer, narrowed to the ones chosen in Settings.
+//
+// An EMPTY enabledQuoteTemplateIds means "all of them" -- the behaviour before this setting
+// existed -- so an unconfigured portal is unchanged rather than shown an empty picker. A chosen id
+// the portal no longer has simply drops out: Settings cannot conjure a template that is not there.
+const offeredQuoteTemplates = (templates, settings) => {
+  const enabled = settings?.enabledQuoteTemplateIds || [];
+  if (enabled.length === 0) return templates;
+  const allowed = new Set(enabled.map(String));
+  const narrowed = templates.filter(({ id }) => allowed.has(String(id)));
+  // Never hand back an empty picker because every chosen template has since been deleted -- that
+  // reads as a broken card. Fall back to everything and say so.
+  if (narrowed.length === 0) {
+    console.warn(
+      'Nylas pricing: none of the quote templates chosen in Settings still exist. ' +
+        'Offering every usable template instead.',
+    );
+    return templates;
+  }
+  return narrowed;
+};
+
+// Settings first, then the QUOTE_TEMPLATE_ID secret, which is where the default lived before.
+const defaultQuoteTemplateFor = (settings) =>
+  settings?.defaultQuoteTemplateId || configuredQuoteTemplateId();
+
 const usableQuoteTemplates = async (client) => {
   const templates = [];
   let after;
@@ -1323,7 +1349,9 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
     `${state.dealName} – ${option.name}`,
   );
   // The rep's choice wins; the configured default covers anyone who does not pick.
-  const templateId = content.templateId || configuredQuoteTemplateId();
+  // Settings' default, then the secret. The card normally sends an explicit templateId, so this
+  // matters when it sends none -- a configuration restored from before the picker existed.
+  const templateId = content.templateId || defaultQuoteTemplateFor(settings);
   if (!/^\d+$/.test(templateId)) throw new Error('QUOTE_CONFIGURATION_REQUIRED');
   const { type: templateType, name: templateName } = await describeQuoteTemplate(
     client,
@@ -1663,6 +1691,9 @@ exports.main = async (context) => {
         configured: settingsState.configured,
         canEdit: isSettingsAdmin(context),
         pipelines,
+        // The FULL list, not the narrowed one: this is the screen where the narrowing is chosen,
+        // so it has to show every template the portal has.
+        quoteTemplates: await usableQuoteTemplates(getClient()),
       });
     }
     if (action === 'update_settings') {
@@ -1692,8 +1723,8 @@ exports.main = async (context) => {
       return response(200, {
         success: true,
         ...stateResponse(state),
-        quoteTemplates: await usableQuoteTemplates(client),
-        defaultQuoteTemplateId: configuredQuoteTemplateId(),
+        quoteTemplates: offeredQuoteTemplates(await usableQuoteTemplates(client), settings),
+        defaultQuoteTemplateId: defaultQuoteTemplateFor(settings),
         // The card shows this as the Quote title placeholder, so a rep who leaves the field
         // blank can see the name the quote will actually get rather than being surprised by it.
         dealName: state.dealName,

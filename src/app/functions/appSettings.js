@@ -80,6 +80,14 @@ const defaultSettings = () => ({
   allowRenewals: false,
   newBusinessPipelineIds: [],
   renewalPipelineIds: [],
+  // WHICH quote templates the card offers, and which one it preselects. Holly, 2026-08-28.
+  //
+  // An EMPTY list means "every usable template", which is what the card did before this existed --
+  // so an unconfigured portal behaves exactly as it always has rather than showing an empty picker.
+  // Choosing templates here narrows it; it never adds one the portal does not have.
+  enabledQuoteTemplateIds: [],
+  // Empty falls back to the QUOTE_TEMPLATE_ID secret, which is where the default lived before.
+  defaultQuoteTemplateId: '',
   pricingPolicy: defaultPricingPolicy(),
 });
 
@@ -93,6 +101,15 @@ const APPROVAL_TIERS = Object.freeze([
   'ccso',
   'finance',
 ]);
+
+// A HubSpot object id, or blank for "not set". Blank is meaningful here -- it is how the default
+// falls back to the QUOTE_TEMPLATE_ID secret -- so it is allowed rather than rejected.
+const normalizeTemplateId = (value, field) => {
+  if (value == null || value === '') return '';
+  const id = String(value);
+  if (!/^\d{1,20}$/.test(id)) throw new Error(`INVALID_SETTINGS:${field}`);
+  return id;
+};
 
 const requireApprovalTier = (value, field) => {
   if (!APPROVAL_TIERS.includes(value)) throw new Error(`INVALID_SETTINGS:${field}`);
@@ -321,6 +338,14 @@ const normalizeSettings = (value, currentVersion = 0) => {
     newBusinessPipelineIds: normalizePipelineIds(
       value.newBusinessPipelineIds || [],
       'newBusinessPipelineIds',
+    ),
+    enabledQuoteTemplateIds: normalizePipelineIds(
+      value.enabledQuoteTemplateIds || [],
+      'enabledQuoteTemplateIds',
+    ),
+    defaultQuoteTemplateId: normalizeTemplateId(
+      value.defaultQuoteTemplateId,
+      'defaultQuoteTemplateId',
     ),
     renewalPipelineIds: normalizePipelineIds(
       value.renewalPipelineIds || [],

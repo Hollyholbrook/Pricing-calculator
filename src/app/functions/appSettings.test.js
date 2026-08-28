@@ -53,3 +53,34 @@ test('legacy Agent Email rates migrate while preserving custom settings', () => 
     [0.6, 0.75, 0.35, 0.25],
   );
 });
+
+// Which quote templates the card offers, and which it preselects.
+test('quote template settings default to today behaviour', () => {
+  const settings = defaultSettings();
+  // Empty means "every usable template" -- an unconfigured portal must be unchanged, not shown an
+  // empty picker.
+  assert.deepEqual(settings.enabledQuoteTemplateIds, []);
+  // Empty means "fall back to the QUOTE_TEMPLATE_ID secret", which is where the default lived.
+  assert.equal(settings.defaultQuoteTemplateId, '');
+});
+
+test('quote template ids are validated, and blank stays meaningful', () => {
+  const base = defaultSettings();
+  const saved = normalizeSettings({
+    ...base,
+    enabledQuoteTemplateIds: ['123', '456'],
+    defaultQuoteTemplateId: '123',
+  });
+  assert.deepEqual(saved.enabledQuoteTemplateIds, ['123', '456']);
+  assert.equal(saved.defaultQuoteTemplateId, '123');
+  // Blank is allowed: it is how the fallback is expressed.
+  assert.equal(
+    normalizeSettings({ ...base, defaultQuoteTemplateId: '' }).defaultQuoteTemplateId,
+    '',
+  );
+  // Junk is not.
+  assert.throws(
+    () => normalizeSettings({ ...base, defaultQuoteTemplateId: 'not-an-id' }),
+    /INVALID_SETTINGS:defaultQuoteTemplateId/,
+  );
+});
