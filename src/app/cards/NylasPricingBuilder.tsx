@@ -732,6 +732,10 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
   // instruction. The read-only inspect_products action still exists server-side and nothing calls
   // it; productLibrary.js and its tests are untouched, so the check can be run from somewhere
   // appropriate without rebuilding it.
+  // Whether this Lock in replaces the quote it supersedes, or leaves it and adds a new one.
+  // Defaults to FALSE: every lock creates a new quote, and throwing the previous one away is a
+  // deliberate choice the rep makes, not a side effect of clicking the button.
+  const [replaceExistingQuote, setReplaceExistingQuote] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [unsupportedDeal, setUnsupportedDeal] = useState(false);
 
@@ -886,9 +890,11 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
         quoteContent,
         paymentMethod,
         discountReason,
+        replaceExistingQuote,
       });
-      // generateQuote is idempotent on the quote content hash, so a repeat lock reuses the
-      // existing Quote rather than creating one. Saying "created" either way misreports it.
+      // Every lock creates a NEW quote -- generation is unconditional, because the hash-based
+      // reuse it replaced is what let a stale quote come back rendered with the old template.
+      // Whether the previous one is archived is the rep's choice, sent above.
       // refreshObjectProperties is documented as "Refresh CRM record properties on the page" --
       // property values only. It updates the Deal's own fields but cannot touch the Line items and
       // Quotes cards beside this one, which is what actually needs to change after a lock. No SDK
@@ -971,6 +977,8 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
         quoteTitleTooLong={quoteTitleTooLong}
         onQuoteTitleChange={setQuoteTitle}
         onInputChange={updateInput}
+        replaceExistingQuote={replaceExistingQuote}
+        onReplaceExistingQuoteChange={setReplaceExistingQuote}
         onPreview={previewQuote}
         onLock={lockAndCreateQuote}
       />
@@ -993,6 +1001,8 @@ const OptionEditor = ({
   quoteTitleTooLong,
   onQuoteTitleChange,
   onInputChange,
+  replaceExistingQuote,
+  onReplaceExistingQuoteChange,
   onPreview,
   onLock,
 }: {
@@ -1013,6 +1023,8 @@ const OptionEditor = ({
     field: K,
     value: QuoteInput[K],
   ) => void;
+  replaceExistingQuote: boolean;
+  onReplaceExistingQuoteChange: (checked: boolean) => void;
   onPreview: (input: QuoteInput) => Promise<QuoteResult>;
   onLock: () => void;
 }) => {
@@ -1751,7 +1763,16 @@ const OptionEditor = ({
         </Alert>
       )}
 
-      <Flex justify="end">
+      {/* Beside the button, not up in the form: it describes what THIS click is about to do to
+          the Deal's existing quote, and it is only meaningful at the moment of clicking. */}
+      <Flex justify="end" align="center" gap="md">
+        <Checkbox
+          name="replace_existing_quote"
+          checked={replaceExistingQuote}
+          onChange={(checked) => onReplaceExistingQuoteChange(checked)}
+        >
+          Replace the existing quote
+        </Checkbox>
         <LoadingButton
           variant="primary"
           loading={saving}

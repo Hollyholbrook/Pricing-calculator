@@ -612,3 +612,55 @@ test('a generated quote carries the deal owner and the clickwrap acceptance meth
   // The owner has to be read before the Deal update overwrites what we read alongside it.
   assert.match(source, /'hubspot_owner_id',\n\s*\]\);/, 'the deal owner must be read');
 });
+
+// Replacing the previous quote is opt-in.
+//
+// Every Lock in creates a new quote -- generation is unconditional. Archiving the one it
+// supersedes used to happen automatically, which made a Deal look like it had a single quote being
+// edited in place when in fact the old one was being thrown away. Holly, 2026-08-28: default to
+// creating a new one and leaving the old, with a checkbox beside Lock in to replace instead.
+test('the superseded quote is only archived when the rep asked for it', () => {
+  const source = require('node:fs').readFileSync(
+    require('node:path').join(__dirname, 'QuoteOptionsFunction.js'),
+    'utf8',
+  );
+
+  // Gated, not unconditional.
+  assert.match(
+    source,
+    /if \(parameters\.replaceExistingQuote === true\) \{\s*\n\s*await archiveSupersededQuote\(/,
+    'archiveSupersededQuote must be gated on the rep opting in',
+  );
+
+  // Strict === true, so anything absent or malformed keeps the old quote. The destructive
+  // reading has to be the one that is asked for.
+  assert.match(
+    source,
+    /replaceExistingQuote: parameters\.replaceExistingQuote === true,/,
+    'the flag must be read strictly, defaulting to keeping the quote',
+  );
+  assert.doesNotMatch(
+    source,
+    /replaceExistingQuote: parameters\.replaceExistingQuote \|\|/,
+    'a truthy coercion would let a stray value archive a quote',
+  );
+});
+
+test('an absent or junk flag never archives', async () => {
+  // The helper itself stays unconditional -- the gate is the caller's -- so this pins the
+  // behaviour the gate depends on: called with no predecessor, it does nothing.
+  const archived = [];
+  const client = {
+    crm: {
+      quotes: {
+        basicApi: {
+          getById: async (id) => ({ id, properties: { hs_status: 'DRAFT' } }),
+          archive: async (id) => archived.push(String(id)),
+        },
+      },
+    },
+  };
+  assert.equal(await _test.archiveSupersededQuote(client, '', '222'), null);
+  assert.equal(await _test.archiveSupersededQuote(client, undefined, '222'), null);
+  assert.deepEqual(archived, []);
+});

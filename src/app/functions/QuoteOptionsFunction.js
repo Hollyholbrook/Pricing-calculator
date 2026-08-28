@@ -752,7 +752,15 @@ const lockLiveCalculation = async (
     client,
     dealId,
     liveState,
-    { quoteContent: parameters.quoteContent || {} },
+    {
+      quoteContent: parameters.quoteContent || {},
+      // Default FALSE: a Lock in creates a NEW quote and leaves the previous one alone. The rep
+      // opts in to replacing it, per the checkbox beside Lock in. Holly, 2026-08-28.
+      //
+      // Strict === true so anything absent, malformed or truthy-but-not-boolean means "keep it".
+      // The destructive reading must be the one that has to be asked for.
+      replaceExistingQuote: parameters.replaceExistingQuote === true,
+    },
     portalId,
     settings,
   );
@@ -1380,9 +1388,16 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
       pricing_quote_generation_status: 'draft_created',
       pricing_quote_generated_at: generatedAt,
     });
+    // Only when the rep asked for it. Every Lock in creates a new quote; whether the one it
+    // supersedes is archived is their call, made on the checkbox beside the button. Archiving by
+    // default made a Deal look like it had one quote being edited in place, which is not what is
+    // happening -- the old one was being thrown away.
+    //
     // Last, so that any earlier failure rolls back the NEW quote and leaves the old one as the
     // Deal's current quote rather than archiving it out from under a failed generate.
-    await archiveSupersededQuote(client, supersededQuoteId, quote.id);
+    if (parameters.replaceExistingQuote === true) {
+      await archiveSupersededQuote(client, supersededQuoteId, quote.id);
+    }
 
     return {
       quoteId: String(quote.id),
