@@ -430,9 +430,19 @@ const graduatedTierProperties = (line) => {
     hs_tier_prices: JSON.stringify(
       tiers.map(({ rate }, index) => ({ index, price: round(rate, 2) })),
     ),
-    // Without this the printed table reads "0 - 50" with no stated unit. Taken from the product's
-    // own unit of measure rather than hardcoded, so it stays right if the band unit ever changes.
-    units: line.unitOfMeasure,
+    // `units` is NOT sent. It was, briefly, to label the tier bounds -- "0 - 50" reads better as
+    // "0 - 50 /1,000 Emails". In this portal `units` is an ENUMERATION, and its options are
+    // /GB's, /Emails, /Agent Accounts, /CA's, /Bot Hours. Sending "1,000 emails" returned
+    // INVALID_OPTION, and because syncDealLineItems archives before it creates, that emptied the
+    // Deal on 2026-08-28.
+    //
+    // /Emails is NOT a substitute: these bounds are in thousands, so labelling them /Emails would
+    // state a range 1000x too small on a customer's contract. Better no unit than a wrong one --
+    // the product's own name already says "Per 1,000 Emails Sent".
+    //
+    // To get the label back, add an option like "/1,000 Emails" to the Line item `units` property
+    // in HubSpot, then send that exact string. Do not reintroduce this from the product's
+    // unitOfMeasure, which is free text and will not match the enumeration.
   };
 };
 

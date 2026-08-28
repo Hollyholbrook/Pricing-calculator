@@ -761,7 +761,10 @@ test('the Agent Email line carries its own adjusted tiers, in thousands', () => 
   // wrong, and a single blended figure would collapse four tiers into one.
   assert.equal(properties.price, undefined, 'a tiered line must not carry a flat price');
 
-  assert.equal(properties.units, '1,000 emails', 'the tier bounds need their unit stated');
+  // `units` is an ENUMERATION in this portal (/GB's, /Emails, /Agent Accounts, /CA's, /Bot Hours).
+  // Sending "1,000 emails" returned INVALID_OPTION and, because the sync archives before it
+  // creates, emptied the Deal. Asserted as absent so it cannot come back by accident.
+  assert.equal(properties.units, undefined, 'units is an enumeration this value is not in');
 });
 
 test('the discretionary discount is baked into each Agent Email tier', () => {
@@ -806,7 +809,8 @@ test('the tier properties are allowed through and are droppable', () => {
     source.match(/const OPTIONAL_CUSTOM_LINE_ITEM_PROPERTIES = \[([\s\S]*?)^\];/m)[1],
   );
   // Revenue Hub gated: a portal without it must fall back to the product's tiers, not lose the Deal.
-  for (const property of ['hs_pricing_model', 'hs_tier_ranges', 'hs_tier_prices', 'units']) {
+  // 'units' is deliberately absent -- see the units test below.
+  for (const property of ['hs_pricing_model', 'hs_tier_ranges', 'hs_tier_prices']) {
     assert.equal(allowed.has(property), true, `${property} must be allowed`);
     assert.equal(optional.has(property), true, `${property} must be droppable`);
   }
@@ -858,4 +862,37 @@ test('every line that carries a price also carries proposed_rate', () => {
     ),
     'a discounted charge line is needed or this proves nothing',
   );
+});
+
+// No line item may send `units`, on either surface.
+//
+// It is a real property in this portal but an ENUMERATION -- /GB's, /Emails, /Agent Accounts,
+// /CA's, /Bot Hours. A value outside that list is rejected with INVALID_OPTION, and because
+// syncDealLineItems archives before it creates, that emptied the Deal on 2026-08-28. The tier
+// bounds are in thousands, so /Emails is not a substitute: it would state a range 1000x too small
+// on a customer's contract.
+test('no line item sends units, and the allow-list would refuse it', () => {
+  const selected = option();
+  const content = normalizeQuoteContent({ includeUncommittedRateSchedule: true });
+  for (const [surface, items] of [
+    ['deal', buildDealLineItems(selected)],
+    ['quote', buildQuoteLineItems(selected, content)],
+  ]) {
+    for (const item of items) {
+      assert.equal(item.properties.units, undefined, `${surface} line ${item.key} sends units`);
+    }
+  }
+
+  const source = require('node:fs').readFileSync(
+    require('node:path').join(__dirname, 'QuoteOptionsFunction.js'),
+    'utf8',
+  );
+  const block = source.match(/const HUBSPOT_LINE_ITEM_PROPERTIES = new Set\(\[([\s\S]*?)^\]\);/m);
+  const allowed = new Set(
+    block[1]
+      .split('\n')
+      .filter((line) => !line.trim().startsWith('//'))
+      .flatMap((line) => [...line.matchAll(/'([^']+)'/g)].map(([, name]) => name)),
+  );
+  assert.equal(allowed.has('units'), false, 'units must not be in the allow-list');
 });

@@ -1146,10 +1146,20 @@ var require_lineItemModel = __commonJS({
         ),
         hs_tier_prices: JSON.stringify(
           tiers.map(({ rate }, index) => ({ index, price: round(rate, 2) }))
-        ),
-        // Without this the printed table reads "0 - 50" with no stated unit. Taken from the product's
-        // own unit of measure rather than hardcoded, so it stays right if the band unit ever changes.
-        units: line.unitOfMeasure
+        )
+        // `units` is NOT sent. It was, briefly, to label the tier bounds -- "0 - 50" reads better as
+        // "0 - 50 /1,000 Emails". In this portal `units` is an ENUMERATION, and its options are
+        // /GB's, /Emails, /Agent Accounts, /CA's, /Bot Hours. Sending "1,000 emails" returned
+        // INVALID_OPTION, and because syncDealLineItems archives before it creates, that emptied the
+        // Deal on 2026-08-28.
+        //
+        // /Emails is NOT a substitute: these bounds are in thousands, so labelling them /Emails would
+        // state a range 1000x too small on a customer's contract. Better no unit than a wrong one --
+        // the product's own name already says "Per 1,000 Emails Sent".
+        //
+        // To get the label back, add an option like "/1,000 Emails" to the Line item `units` property
+        // in HubSpot, then send that exact string. Do not reintroduce this from the product's
+        // unitOfMeasure, which is free text and will not match the enumeration.
       };
     };
     var buildMeteredLines = (option, source) => {
@@ -2607,7 +2617,9 @@ var HUBSPOT_LINE_ITEM_PROPERTIES = /* @__PURE__ */ new Set([
   "description",
   // 'product_category' deliberately omitted: it is not a HubSpot-defined Line Item property, so
   // in a portal that never had it created every create fails with a 400 and the sync collapses.
-  "units",
+  // 'units' deliberately omitted. It exists in this portal but is an ENUMERATION -- /GB's,
+  // /Emails, /Agent Accounts, /CA's, /Bot Hours -- so any value outside that list is rejected
+  // with INVALID_OPTION, which emptied the Deal on 2026-08-28. See lineItemModel.js.
   // Tiered pricing, sent on the graduated Agent Email line only. HubSpot-defined and documented on
   // line items, but gated on a Revenue Hub subscription, so they are droppable below: a portal
   // without Revenue Hub must fall back to the product's own tiers, not fail the create.
@@ -2660,10 +2672,7 @@ var OPTIONAL_CUSTOM_LINE_ITEM_PROPERTIES = [
   // which is the behaviour before this change: visibly unadjusted, but a quote rather than nothing.
   "hs_pricing_model",
   "hs_tier_ranges",
-  "hs_tier_prices",
-  // Never verified against this portal's Line Item schema. Cosmetic -- it labels the tier table's
-  // bounds -- so it is not worth a failed create.
-  "units"
+  "hs_tier_prices"
 ];
 var errorStatus = (error) => Number(
   error?.code ?? error?.status ?? error?.statusCode ?? error?.response?.status ?? error?.body?.status

@@ -817,7 +817,9 @@ const HUBSPOT_LINE_ITEM_PROPERTIES = new Set([
   'description',
   // 'product_category' deliberately omitted: it is not a HubSpot-defined Line Item property, so
   // in a portal that never had it created every create fails with a 400 and the sync collapses.
-  'units',
+  // 'units' deliberately omitted. It exists in this portal but is an ENUMERATION -- /GB's,
+  // /Emails, /Agent Accounts, /CA's, /Bot Hours -- so any value outside that list is rejected
+  // with INVALID_OPTION, which emptied the Deal on 2026-08-28. See lineItemModel.js.
   // Tiered pricing, sent on the graduated Agent Email line only. HubSpot-defined and documented on
   // line items, but gated on a Revenue Hub subscription, so they are droppable below: a portal
   // without Revenue Hub must fall back to the product's own tiers, not fail the create.
@@ -891,9 +893,6 @@ const OPTIONAL_CUSTOM_LINE_ITEM_PROPERTIES = [
   'hs_pricing_model',
   'hs_tier_ranges',
   'hs_tier_prices',
-  // Never verified against this portal's Line Item schema. Cosmetic -- it labels the tier table's
-  // bounds -- so it is not worth a failed create.
-  'units',
 ];
 
 const errorStatus = (error) =>
