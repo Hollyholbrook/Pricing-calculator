@@ -1130,6 +1130,47 @@ const describeQuoteTemplate = async (client, templateId) => {
   }
 };
 
+// Archive the quote this Lock in supersedes.
+//
+// Quote generation is unconditional -- the hash-based reuse it replaced is what let a stale quote
+// come back rendered with the old template -- so every Lock in minted another draft and a Deal
+// quietly collected a stack of them. Holly, 2026-08-28.
+//
+// WHICH QUOTE. Only the one named by the Deal's pricing_latest_quote_id, which this function
+// writes and nothing else does. The Deal's own quote associations are NOT scanned: a rep can
+// attach a quote by hand and this action has no business deciding what that is.
+//
+// ONLY IF STILL DRAFT. A quote created through the API starts DRAFT and stays there until someone
+// publishes it, so this cannot reach anything a customer has been sent or has opened. Any other
+// status -- published, approved, expired, or one this code does not recognise -- is left alone and
+// logged. The check is a positive test for DRAFT rather than a list of statuses to avoid, so a
+// status HubSpot adds later fails safe.
+//
+// NEVER FAILS THE LOCK. By the time this runs the new quote exists and the Deal points at it. A
+// leftover draft is untidy; a Lock in that reports failure over one is not.
+const archiveSupersededQuote = async (client, supersededQuoteId, newQuoteId) => {
+  if (!supersededQuoteId || supersededQuoteId === String(newQuoteId)) return null;
+  try {
+    const superseded = await client.crm.quotes.basicApi.getById(supersededQuoteId, ['hs_status']);
+    const status = superseded?.properties?.hs_status;
+    if (status !== 'DRAFT') {
+      console.warn(
+        `Nylas pricing: superseded quote ${supersededQuoteId} left in place -- status is ` +
+          `${status || 'unknown'}, not DRAFT.`,
+      );
+      return null;
+    }
+    await client.crm.quotes.basicApi.archive(supersededQuoteId);
+    return supersededQuoteId;
+  } catch (error) {
+    console.warn(
+      `Nylas pricing: could not archive superseded quote ${supersededQuoteId}. It is left in ` +
+        `place. ${String(error?.body?.message || error?.message || error)}`,
+    );
+    return null;
+  }
+};
+
 const generateQuote = async (client, dealId, state, parameters, portalId, settings) => {
   const option = selectedOptionForDraft(state);
   assertCurrentSettings(option, settings);
@@ -1161,6 +1202,18 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
   // Consequence: a Deal accumulates one Quote per Lock in. Superseded quotes are NOT archived --
   // they are customer-facing records and deleting them is not this action's call.
   const hash = contentHash(option, { ...content, templateId });
+
+  // Read before anything is written, because updateDealProperties below overwrites it. Tolerant
+  // of a portal without the property: this is cleanup, not part of producing a correct quote.
+  let supersededQuoteId = '';
+  try {
+    const priorDeal = await client.crm.deals.basicApi.getById(String(dealId), [
+      'pricing_latest_quote_id',
+    ]);
+    supersededQuoteId = priorDeal?.properties?.pricing_latest_quote_id || '';
+  } catch {
+    supersededQuoteId = '';
+  }
 
   // Built before the try so PRODUCT_MAPPING_REQUIRED fails before a quote record exists.
   const lineItems = buildQuoteLineItems(option, content);
@@ -1299,6 +1352,10 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
       pricing_quote_generation_status: 'draft_created',
       pricing_quote_generated_at: generatedAt,
     });
+    // Last, so that any earlier failure rolls back the NEW quote and leaves the old one as the
+    // Deal's current quote rather than archiving it out from under a failed generate.
+    await archiveSupersededQuote(client, supersededQuoteId, quote.id);
+
     return {
       quoteId: String(quote.id),
       quoteUrl,
@@ -1513,6 +1570,7 @@ exports.main = async (context) => {
 };
 
 exports._test = Object.freeze({
+  archiveSupersededQuote,
   associatedIds,
   createLineItem,
   isUnknownPropertyRejection,

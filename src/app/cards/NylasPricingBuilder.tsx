@@ -689,7 +689,10 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
   const [paymentMethod, setPaymentMethod] = useState(DEFAULT_PAYMENT_METHOD);
   // The configuration as it is stored on the Deal, for telling "this would update what is already
   // locked" from "this would produce something new". Empty when nothing has been locked yet.
-  const [lockedInput, setLockedInput] = useState("");
+  // The value is no longer read: it existed only to decide between "Update existing config" and
+  // "Lock in & create quote" on the button, and that label is now constant. The setter stays so
+  // restoring a saved configuration still records what was locked.
+  const [, setLockedInput] = useState("");
   // Not a pricing input: it changes no number, and normalizeStoredInput would strip it from
   // option.input. It travels as its own parameter and lands on pricing_discount_reason.
   const [discountReason, setDiscountReason] = useState("");
@@ -974,9 +977,6 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
         saving={saving}
         discountReason={discountReason}
         onDiscountReasonChange={setDiscountReason}
-        matchesLocked={
-          lockedInput !== "" && canonical(editing.input) === lockedInput
-        }
         quoteTemplates={quoteTemplates}
         templateId={templateId}
         onTemplateChange={setTemplateId}
@@ -1164,7 +1164,6 @@ const OptionEditor = ({
   saving,
   discountReason,
   onDiscountReasonChange,
-  matchesLocked,
   quoteTemplates,
   templateId,
   onTemplateChange,
@@ -1182,7 +1181,6 @@ const OptionEditor = ({
   saving: boolean;
   discountReason: string;
   onDiscountReasonChange: (value: string) => void;
-  matchesLocked: boolean;
   quoteTemplates: { id: string; name: string }[];
   templateId: string;
   onTemplateChange: (value: string) => void;
@@ -1957,11 +1955,14 @@ const OptionEditor = ({
             quoteTitleTooLong
           }
         >
-          {/* The same action either way -- line items are replaced and generateQuote is
-              idempotent on the content hash, so an unchanged configuration reuses the existing
-              Quote rather than making another. The label says which of those is about to
-              happen, because "create quote" on a deal that already has one is a lie. */}
-          {matchesLocked ? "Update existing config" : "Lock in & create quote"}
+          {/* One label, always. It used to read "Update existing config" when the configuration
+              matched the last lock, on the reasoning that generateQuote was idempotent on the
+              content hash and an unchanged configuration would reuse the existing Quote.
+              That stopped being true when quote generation went unconditional -- the hash-based
+              reuse was what let a stale quote come back rendered with the old template. So the
+              button said "update" while actually minting another draft, and a Deal quietly
+              collected one draft Quote per click. Holly, 2026-08-28. */}
+          Lock in & create quote
         </LoadingButton>
       </Flex>
     </Flex>

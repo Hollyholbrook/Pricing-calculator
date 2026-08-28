@@ -2817,6 +2817,26 @@ var describeQuoteTemplate = async (client, templateId) => {
     return { type: "unknown", name: "" };
   }
 };
+var archiveSupersededQuote = async (client, supersededQuoteId, newQuoteId) => {
+  if (!supersededQuoteId || supersededQuoteId === String(newQuoteId)) return null;
+  try {
+    const superseded = await client.crm.quotes.basicApi.getById(supersededQuoteId, ["hs_status"]);
+    const status = superseded?.properties?.hs_status;
+    if (status !== "DRAFT") {
+      console.warn(
+        `Nylas pricing: superseded quote ${supersededQuoteId} left in place -- status is ${status || "unknown"}, not DRAFT.`
+      );
+      return null;
+    }
+    await client.crm.quotes.basicApi.archive(supersededQuoteId);
+    return supersededQuoteId;
+  } catch (error) {
+    console.warn(
+      `Nylas pricing: could not archive superseded quote ${supersededQuoteId}. It is left in place. ${String(error?.body?.message || error?.message || error)}`
+    );
+    return null;
+  }
+};
 var generateQuote = async (client, dealId, state, parameters, portalId, settings) => {
   const option = selectedOptionForDraft(state);
   assertCurrentSettings(option, settings);
@@ -2831,6 +2851,15 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
     templateId
   );
   const hash = contentHash(option, { ...content, templateId });
+  let supersededQuoteId = "";
+  try {
+    const priorDeal = await client.crm.deals.basicApi.getById(String(dealId), [
+      "pricing_latest_quote_id"
+    ]);
+    supersededQuoteId = priorDeal?.properties?.pricing_latest_quote_id || "";
+  } catch {
+    supersededQuoteId = "";
+  }
   const lineItems = buildQuoteLineItems(option, content);
   let quote;
   const createdLineItemIds = [];
@@ -2931,6 +2960,7 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
       pricing_quote_generation_status: "draft_created",
       pricing_quote_generated_at: generatedAt
     });
+    await archiveSupersededQuote(client, supersededQuoteId, quote.id);
     return {
       quoteId: String(quote.id),
       quoteUrl,
@@ -3124,6 +3154,7 @@ exports.main = async (context) => {
   }
 };
 exports._test = Object.freeze({
+  archiveSupersededQuote,
   associatedIds,
   createLineItem,
   isUnknownPropertyRejection,

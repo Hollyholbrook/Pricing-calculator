@@ -517,3 +517,59 @@ test('a genuinely missing property is still dropped so the Deal is not emptied',
   assert.equal(sent[1].one_time_fees, undefined);
   assert.equal(sent[1].price, '1760', 'only the rejected field comes off');
 });
+
+// Superseded draft quotes are archived; anything a customer could have seen is not.
+//
+// Quote generation is unconditional, so every Lock in mints a new draft. Before this, nothing
+// cleaned up the last one and a Deal collected a stack of them.
+const quoteClient = (status, { archiveThrows = false } = {}) => {
+  const archived = [];
+  return {
+    archived,
+    client: {
+      crm: {
+        quotes: {
+          basicApi: {
+            getById: async (id) => ({ id, properties: { hs_status: status } }),
+            archive: async (id) => {
+              if (archiveThrows) throw new Error('quote is locked');
+              archived.push(String(id));
+            },
+          },
+        },
+      },
+    },
+  };
+};
+
+test('the superseded draft quote is archived', async () => {
+  const { client, archived } = quoteClient('DRAFT');
+  const result = await _test.archiveSupersededQuote(client, '111', '222');
+  assert.equal(result, '111');
+  assert.deepEqual(archived, ['111']);
+});
+
+test('a published or viewed quote is never archived', async () => {
+  // Every status that is not DRAFT must survive, including ones this code does not know about --
+  // the test is positive for DRAFT so a status HubSpot adds later fails safe.
+  for (const status of ['APPROVED', 'PENDING_APPROVAL', 'REJECTED', 'EXPIRED', 'SOMETHING_NEW', undefined]) {
+    const { client, archived } = quoteClient(status);
+    const result = await _test.archiveSupersededQuote(client, '111', '222');
+    assert.equal(result, null, `status ${status} must not be archived`);
+    assert.deepEqual(archived, [], `status ${status} must not be archived`);
+  }
+});
+
+test('the quote just created is never archived as its own predecessor', async () => {
+  const { client, archived } = quoteClient('DRAFT');
+  assert.equal(await _test.archiveSupersededQuote(client, '222', '222'), null);
+  assert.equal(await _test.archiveSupersededQuote(client, '', '222'), null);
+  assert.deepEqual(archived, []);
+});
+
+test('a failed archive does not fail the Lock in', async () => {
+  const { client } = quoteClient('DRAFT', { archiveThrows: true });
+  // Resolves rather than throwing: the new quote and the Deal are already correct at this point,
+  // and a leftover draft is untidy rather than wrong.
+  assert.equal(await _test.archiveSupersededQuote(client, '111', '222'), null);
+});
