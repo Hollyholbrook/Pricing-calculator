@@ -1194,6 +1194,44 @@ const describeQuoteTemplate = async (client, templateId) => {
 //
 // NEVER FAILS THE LOCK. By the time this runs the new quote exists and the Deal points at it. A
 // leftover draft is untidy; a Lock in that reports failure over one is not.
+// The Seller block on the printed quote.
+//
+// hubspot_owner_id sets the quote's OWNER. It is not what the customer reads: the Seller section
+// renders from the hs_sender_* properties, and setting the owner alone left it blank. Confirmed by
+// Holly on a real quote, 2026-08-28 -- which is why these are written now and were not written
+// speculatively alongside the owner.
+//
+// Only the three fields the Owners API can actually answer for. hs_sender_jobtitle, _phone and the
+// hs_sender_company_* block are real properties but an owner record has nothing to fill them with,
+// and sending blanks would replace whatever the template already supplies with nothing.
+//
+// Never fails the quote. A missing or unreadable owner just leaves the Seller block to whatever
+// HubSpot would have done anyway -- which is the behaviour before this change, not something worse.
+const senderProperties = async (client, ownerId) => {
+  if (!ownerId) return {};
+  try {
+    const owner = await client.crm.owners.ownersApi.getById(Number(ownerId));
+    const firstName = owner?.firstName || '';
+    const lastName = owner?.lastName || '';
+    const email = owner?.email || '';
+    if (!firstName && !lastName && !email) {
+      console.warn(`Nylas pricing: owner ${ownerId} has no name or email; Seller left to HubSpot.`);
+      return {};
+    }
+    return {
+      ...(firstName ? { hs_sender_firstname: firstName } : {}),
+      ...(lastName ? { hs_sender_lastname: lastName } : {}),
+      ...(email ? { hs_sender_email: email } : {}),
+    };
+  } catch (error) {
+    console.warn(
+      `Nylas pricing: could not read owner ${ownerId} for the Seller block. ` +
+        `${String(error?.body?.message || error?.message || error)}`,
+    );
+    return {};
+  }
+};
+
 const archiveSupersededQuote = async (client, supersededQuoteId, newQuoteId) => {
   if (!supersededQuoteId || supersededQuoteId === String(newQuoteId)) return null;
   try {
@@ -1265,6 +1303,10 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
     dealOwnerId = '';
   }
 
+  // Resolved before the try for the same reason as the line items: a failure here must not leave a
+  // half-made quote behind. senderProperties never throws, so this is belt and braces.
+  const sender = await senderProperties(client, dealOwnerId);
+
   // Built before the try so PRODUCT_MAPPING_REQUIRED fails before a quote record exists.
   const lineItems = buildQuoteLineItems(option, content);
   let quote;
@@ -1309,6 +1351,9 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
         //
         // Omitted when the Deal has no owner: an empty string is not "no owner" to HubSpot.
         ...(dealOwnerId ? { hubspot_owner_id: dealOwnerId } : {}),
+        // The Seller block the customer reads. The owner above is the CRM record's owner; these
+        // three are what the quote actually prints. Both are needed.
+        ...sender,
         // Acceptance method. HubSpot's Quotes guide documents three values -- clickwrap,
         // esignature and print_and_sign -- and print_and_sign is THE DEFAULT. It is not inherited
         // from the quote template, which is why every generated quote came out "Print and sign"
@@ -1644,6 +1689,7 @@ exports.main = async (context) => {
 
 exports._test = Object.freeze({
   archiveSupersededQuote,
+  senderProperties,
   associatedIds,
   createLineItem,
   isUnknownPropertyRejection,

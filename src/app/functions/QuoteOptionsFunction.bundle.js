@@ -2849,6 +2849,29 @@ var describeQuoteTemplate = async (client, templateId) => {
     return { type: "unknown", name: "" };
   }
 };
+var senderProperties = async (client, ownerId) => {
+  if (!ownerId) return {};
+  try {
+    const owner = await client.crm.owners.ownersApi.getById(Number(ownerId));
+    const firstName = owner?.firstName || "";
+    const lastName = owner?.lastName || "";
+    const email = owner?.email || "";
+    if (!firstName && !lastName && !email) {
+      console.warn(`Nylas pricing: owner ${ownerId} has no name or email; Seller left to HubSpot.`);
+      return {};
+    }
+    return {
+      ...firstName ? { hs_sender_firstname: firstName } : {},
+      ...lastName ? { hs_sender_lastname: lastName } : {},
+      ...email ? { hs_sender_email: email } : {}
+    };
+  } catch (error) {
+    console.warn(
+      `Nylas pricing: could not read owner ${ownerId} for the Seller block. ${String(error?.body?.message || error?.message || error)}`
+    );
+    return {};
+  }
+};
 var archiveSupersededQuote = async (client, supersededQuoteId, newQuoteId) => {
   if (!supersededQuoteId || supersededQuoteId === String(newQuoteId)) return null;
   try {
@@ -2896,6 +2919,7 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
     supersededQuoteId = "";
     dealOwnerId = "";
   }
+  const sender = await senderProperties(client, dealOwnerId);
   const lineItems = buildQuoteLineItems(option, content);
   let quote;
   const createdLineItemIds = [];
@@ -2937,6 +2961,9 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
         //
         // Omitted when the Deal has no owner: an empty string is not "no owner" to HubSpot.
         ...dealOwnerId ? { hubspot_owner_id: dealOwnerId } : {},
+        // The Seller block the customer reads. The owner above is the CRM record's owner; these
+        // three are what the quote actually prints. Both are needed.
+        ...sender,
         // Acceptance method. HubSpot's Quotes guide documents three values -- clickwrap,
         // esignature and print_and_sign -- and print_and_sign is THE DEFAULT. It is not inherited
         // from the quote template, which is why every generated quote came out "Print and sign"
@@ -3209,6 +3236,7 @@ exports.main = async (context) => {
 };
 exports._test = Object.freeze({
   archiveSupersededQuote,
+  senderProperties,
   associatedIds,
   createLineItem,
   isUnknownPropertyRejection,

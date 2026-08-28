@@ -763,3 +763,72 @@ test('the deal read returns the stored discount reason', () => {
     'the read must return discountReason to the card',
   );
 });
+
+// The Seller block on the printed quote comes from hs_sender_*, not from the owner.
+//
+// Setting hubspot_owner_id alone left it blank -- confirmed on a real quote, 2026-08-28. The owner
+// is the CRM record's owner; hs_sender_* is what the customer reads. Both are needed.
+const ownerClient = (owner, { throws = false } = {}) => ({
+  crm: {
+    owners: {
+      ownersApi: {
+        getById: async (id) => {
+          if (throws) throw new Error('owner not found');
+          return { id, ...owner };
+        },
+      },
+    },
+  },
+});
+
+test('the Seller block is filled from the deal owner', async () => {
+  const properties = await _test.senderProperties(
+    ownerClient({ firstName: 'Holly', lastName: 'Holbrook', email: 'holly.holbrook@nylas.com' }),
+    '12345',
+  );
+  assert.deepEqual(properties, {
+    hs_sender_firstname: 'Holly',
+    hs_sender_lastname: 'Holbrook',
+    hs_sender_email: 'holly.holbrook@nylas.com',
+  });
+});
+
+test('an unreadable owner leaves the Seller block alone rather than blanking it', async () => {
+  // Blank strings would REPLACE whatever the template supplies with nothing, which is worse than
+  // not writing at all. Every one of these must come back empty, not partially filled.
+  assert.deepEqual(await _test.senderProperties(ownerClient({}, { throws: true }), '12345'), {});
+  assert.deepEqual(await _test.senderProperties(ownerClient({}), '12345'), {});
+  assert.deepEqual(await _test.senderProperties(ownerClient({}), ''), {});
+  assert.deepEqual(
+    await _test.senderProperties(ownerClient({ firstName: '', lastName: '', email: '' }), '1'),
+    {},
+  );
+});
+
+test('a partial owner record sends only the fields it has', async () => {
+  const properties = await _test.senderProperties(
+    ownerClient({ firstName: 'Holly', lastName: '', email: 'holly.holbrook@nylas.com' }),
+    '12345',
+  );
+  assert.deepEqual(properties, {
+    hs_sender_firstname: 'Holly',
+    hs_sender_email: 'holly.holbrook@nylas.com',
+  });
+  assert.equal('hs_sender_lastname' in properties, false, 'an empty last name must not be sent');
+});
+
+test('the quote create carries the sender properties', () => {
+  const source = require('node:fs').readFileSync(
+    require('node:path').join(__dirname, 'QuoteOptionsFunction.js'),
+    'utf8',
+  );
+  const create = source.match(
+    /quote = await client\.crm\.quotes\.basicApi\.create\(\{([\s\S]*?)\n      \},/,
+  );
+  assert.ok(create, 'the quote create call must be findable');
+  assert.match(create[1], /\.\.\.sender,/, 'the sender block must reach the create call');
+  // Resolved before the try, so a failure cannot leave a half-made quote behind.
+  const senderLine = source.indexOf('const sender = await senderProperties(');
+  const createLine = source.indexOf('quote = await client.crm.quotes.basicApi.create(');
+  assert.ok(senderLine > 0 && senderLine < createLine);
+});
