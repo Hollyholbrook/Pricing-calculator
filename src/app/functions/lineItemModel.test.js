@@ -736,13 +736,15 @@ test('the Agent Email line carries its own adjusted tiers, in thousands', () => 
 
   assert.equal(properties.hs_pricing_model, 'graduated');
 
-  // Bands are [0,50) [50,100) [100,500) [500,null) in thousands, exclusive upper.
-  // HubSpot's `end` is INCLUSIVE, so it is upper - 1, and the last tier omits `end`.
+  // Bands are [0,50) [50,100) [100,500) [500,null) in THOUSANDS, exclusive upper. The printed
+  // ranges are in SINGLE EMAILS -- Shane Tjin, 2026-08-28: the bounds must read "0 - 49,999
+  // emails", not "0 - 49". HubSpot's `end` is INCLUSIVE, so it is upper * 1000 - 1, and the last
+  // tier omits `end`. The PRICES stay per 1,000 emails; see the units note in lineItemModel.js.
   assert.deepEqual(JSON.parse(properties.hs_tier_ranges), [
-    { start: 0, end: 49 },
-    { start: 50, end: 99 },
-    { start: 100, end: 499 },
-    { start: 500 },
+    { start: 0, end: 49_999 },
+    { start: 50_000, end: 99_999 },
+    { start: 100_000, end: 499_999 },
+    { start: 500_000 },
   ]);
 
   // 12 months (no term discount) monthly in advance (+8%): the workbook's additive adjustment.
@@ -895,4 +897,36 @@ test('no line item sends units, and the allow-list would refuse it', () => {
       .flatMap((line) => [...line.matchAll(/'([^']+)'/g)].map(([, name]) => name)),
   );
   assert.equal(allowed.has('units'), false, 'units must not be in the allow-list');
+});
+
+// The Agent Email line must stay at quantity 0.
+//
+// Its tier RANGES are in single emails while its tier PRICES are per 1,000 emails -- deliberate,
+// so the printed bounds read "0 - 49,999" rather than "0 - 49". HubSpot computes a tiered line's
+// amount as quantity x tier price, so the two units only stay harmless while the quantity is zero.
+// The metered lines are a rate schedule; the committed money is carried by the drawdown fee.
+//
+// If this test ever fails, do NOT just change the number: the units in graduatedTierProperties
+// have to change with it, or the line bills 1000x.
+test('the Agent Email line stays at quantity 0, because its tier units differ', () => {
+  const selected = emailOption(0.2);
+  const content = normalizeQuoteContent({ includeUncommittedRateSchedule: true });
+  for (const [surface, items] of [
+    ['deal', buildDealLineItems(selected)],
+    ['quote', buildQuoteLineItems(selected, content)],
+  ]) {
+    const item = items.find((line) => String(line.key).includes('agent_email'));
+    assert.ok(item, `${surface}: the Agent Email line must exist`);
+    assert.equal(item.properties.quantity, '0', `${surface}: quantity must be 0`);
+
+    const ranges = JSON.parse(item.properties.hs_tier_ranges);
+    const prices = JSON.parse(item.properties.hs_tier_prices);
+    // Ranges in emails: the first boundary is five figures, not two.
+    assert.equal(ranges[0].end, 49_999, `${surface}: bounds must be in emails`);
+    // Prices per thousand: a per-email price would round to $0.00 at HubSpot's precision.
+    assert.ok(
+      prices.every(({ price }) => price >= 0.01),
+      `${surface}: a per-email price would render as $0.00`,
+    );
+  }
 });

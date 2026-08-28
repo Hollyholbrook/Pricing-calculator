@@ -1134,6 +1134,7 @@ var require_lineItemModel = __commonJS({
       ...priceProperties(price, listPrice),
       ...description ? { description: String(description).slice(0, 5e3) } : {}
     });
+    var EMAILS_PER_BAND_UNIT = 1e3;
     var graduatedTierProperties = (line) => {
       const tiers = line.proposedBandRates;
       if (!tiers || tiers.length === 0) return {};
@@ -1141,7 +1142,7 @@ var require_lineItemModel = __commonJS({
         hs_pricing_model: "graduated",
         hs_tier_ranges: JSON.stringify(
           tiers.map(
-            ({ lower, upper }) => upper == null ? { start: lower } : { start: lower, end: upper - 1 }
+            ({ lower, upper }) => upper == null ? { start: lower * EMAILS_PER_BAND_UNIT } : { start: lower * EMAILS_PER_BAND_UNIT, end: upper * EMAILS_PER_BAND_UNIT - 1 }
           )
         ),
         hs_tier_prices: JSON.stringify(

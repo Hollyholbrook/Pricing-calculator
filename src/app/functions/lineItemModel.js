@@ -398,17 +398,28 @@ const oneTimeProperties = ({ option, key, component, product, price, listPrice, 
 // alongside them because the price is derived from the tiers. The caller already omits price on
 // graduated lines.
 //
-// UNITS -- everything here is in THOUSANDS of emails. Holly, 2026-08-27. HubSpot multiplies
-// quantity by the tier price, so the range bounds and the price must share one unit. Thousands is
-// the unit the product is sold in ("Agent Accounts - Per 1,000 Emails Sent") and the unit the
-// workbook's rate card is written in. Expressing the ranges in single emails would force the tier
-// price to $0.00108, which renders as $0.00 at HubSpot's two-decimal currency precision -- a quote
-// stating a zero rate for a product that bills.
+// UNITS -- the RANGES are in single emails; the PRICES are per 1,000 emails. Shane Tjin,
+// 2026-08-28, after reviewing real quotes at all four payment frequencies: the bounds must read
+// "0 - 49,999 emails", not "0 - 49".
 //
-// BOUNDS -- pricingRules bands carry an EXCLUSIVE upper; HubSpot's `end` is INCLUSIVE, so `end` is
-// `upper - 1`. That is only safe because volumes are integers (requireInteger in calculator.js);
-// with a fractional volume this would leave an unpriced gap between tiers. The last tier omits
-// `end` entirely to mean open-ended.
+// The two are DELIBERATELY IN DIFFERENT UNITS. That is a trade, not an oversight:
+//
+//   - ranges in thousands, prices per thousand -- arithmetically consistent, but prints "0 - 49"
+//     on a customer's contract, which reads as 49 emails;
+//   - ranges in emails, prices per email -- also consistent, but forces $0.00108 a tier, which
+//     renders as $0.00 at HubSpot's two-decimal currency precision;
+//   - ranges in emails, prices per thousand -- reads correctly, and is what was chosen.
+//
+// THE COST: HubSpot computes a tiered line's amount as quantity x tier price, so if this line ever
+// carried a real quantity its amount would be 1000x too high. It does not -- the metered lines are
+// a RATE SCHEDULE at quantity 0, and the committed money is carried by the drawdown fee. A test
+// pins that quantity at 0 for exactly this reason. Do not put a quantity on this line without
+// changing the units here first.
+//
+// BOUNDS -- pricingRules bands carry an EXCLUSIVE upper in THOUSANDS; HubSpot's `end` is INCLUSIVE
+// and written here in emails, so `end` is `upper * 1000 - 1`: band [50, 100) becomes
+// 50,000 - 99,999. Safe because volumes are integers (requireInteger in calculator.js). The last
+// tier omits `end` entirely to mean open-ended.
 //
 // PRICES -- proposedBandRates already carries the discretionary discount baked into each tier,
 // which is what Holly asked for. So unlike the flat metered lines, where `price` is the list rate
@@ -417,6 +428,9 @@ const oneTimeProperties = ({ option, key, component, product, price, listPrice, 
 //
 // `index` is the POSITION in hs_tier_ranges, not a tier number. Both arrays are built from the
 // same list in the same order, so position and index agree by construction rather than by luck.
+// pricingRules band bounds are in thousands of emails; the printed ranges are in single emails.
+const EMAILS_PER_BAND_UNIT = 1_000;
+
 const graduatedTierProperties = (line) => {
   const tiers = line.proposedBandRates;
   if (!tiers || tiers.length === 0) return {};
@@ -424,7 +438,9 @@ const graduatedTierProperties = (line) => {
     hs_pricing_model: 'graduated',
     hs_tier_ranges: JSON.stringify(
       tiers.map(({ lower, upper }) =>
-        upper == null ? { start: lower } : { start: lower, end: upper - 1 },
+        upper == null
+          ? { start: lower * EMAILS_PER_BAND_UNIT }
+          : { start: lower * EMAILS_PER_BAND_UNIT, end: upper * EMAILS_PER_BAND_UNIT - 1 },
       ),
     ),
     hs_tier_prices: JSON.stringify(
