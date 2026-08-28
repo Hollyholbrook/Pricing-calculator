@@ -725,17 +725,85 @@ const renewalInput = (extra = {}) => ({
   ...extra,
 });
 
-test('a discount on a renewal routes to the CCSO, not the size ladder', () => {
-  for (const discount of [0.05, 0.2, 0.45]) {
-    const renewal = calculateQuote(renewalInput({ discretionaryDiscount: discount }), {}, 0, 'renewal');
+test('the approval matrix: same thresholds, different approver by deal type', () => {
+  // Holly's table, 2026-08-28:
+  //   0%            no approval                    all
+  //   up to 10%     Sales Director / CS Director   new / renewal
+  //   10% - 30%     Head of Sales / CCSO           new / renewal
+  //   over 30%      Finance                        all
+  const tier = (d, category) =>
+    calculateQuote(renewalInput({ discretionaryDiscount: d }), {}, 0, category)
+      .approvalTierRequired;
+  const rows = [
+    [0, 'none', 'none'],
+    [0.05, 'sales_director', 'cs_director'],
+    [0.1, 'sales_director', 'cs_director'],
+    [0.101, 'head_sales', 'ccso'],
+    [0.3, 'head_sales', 'ccso'],
+    [0.301, 'finance', 'finance'],
+    [1, 'finance', 'finance'],
+  ];
+  for (const [discount, newBusiness, renewal] of rows) {
+    assert.equal(tier(discount, 'new_business'), newBusiness, `new business at ${discount}`);
+    assert.equal(tier(discount, 'renewal'), renewal, `renewal at ${discount}`);
+  }
+  // The boundaries are inclusive at the top of each band: exactly 10% is still the first tier.
+  assert.equal(tier(0.1, 'renewal'), 'cs_director');
+  assert.equal(tier(0.3, 'renewal'), 'ccso');
+});
+
+test('term and payment adjustments are pre-approved and never escalate', () => {
+  // A 36-month monthly-in-advance deal moves every rate, and must still need no approval.
+  const adjusted = renewalInput({ termMonths: 36, paymentFrequency: 'monthly_in_advance' });
+  for (const category of ['new_business', 'renewal']) {
     assert.equal(
-      renewal.approvalTierRequired,
-      'ccso',
-      `${discount * 100}% on a renewal must go to the CCSO, not a size-based tier`,
+      calculateQuote(adjusted, {}, 0, category).approvalTierRequired,
+      'none',
+      `${category}: term and frequency are not concessions`,
     );
   }
-  // No discount, no approval.
-  assert.equal(calculateQuote(renewalInput(), {}, 0, 'renewal').approvalTierRequired, 'none');
+});
+
+test('a 100%-off line goes to Finance even if the thresholds would allow it', () => {
+  // Redundant at the default 30% ceiling, but a raised threshold must not let a free line through
+  // at a lower tier.
+  const policy = { salesDirectorDiscountMax: 1, headSalesDiscountMax: 1 };
+  for (const category of ['new_business', 'renewal']) {
+    assert.equal(
+      calculateQuote(renewalInput({ discretionaryDiscount: 1 }), policy, 0, category)
+        .approvalTierRequired,
+      'finance',
+      `${category}: a free line is Finance's call`,
+    );
+    // ...and a merely large discount does not trip THIS rule. Asserted on the reason rather than
+    // the tier: at 90% off the ARR falls under the Enterprise minimum, which forces Finance for a
+    // different and legitimate reason, so the tier alone cannot tell the two apart.
+    const large = calculateQuote(renewalInput({ discretionaryDiscount: 0.9 }), policy, 0, category);
+    assert.equal(
+      large.approvalReasons.some((reason) => /discounted 100%/.test(reason)),
+      false,
+      `${category}: 90% is not a free line`,
+    );
+    const free = calculateQuote(renewalInput({ discretionaryDiscount: 1 }), policy, 0, category);
+    assert.ok(free.approvalReasons.some((reason) => /discounted 100%/.test(reason)));
+  }
+});
+
+test('the approvers for each rung come from Settings', () => {
+  const policy = {
+    newBusinessFirstApprovalTier: 'finance',
+    renewalSecondApprovalTier: 'head_sales',
+  };
+  assert.equal(
+    calculateQuote(renewalInput({ discretionaryDiscount: 0.05 }), policy, 0, 'new_business')
+      .approvalTierRequired,
+    'finance',
+  );
+  assert.equal(
+    calculateQuote(renewalInput({ discretionaryDiscount: 0.2 }), policy, 0, 'renewal')
+      .approvalTierRequired,
+    'head_sales',
+  );
 });
 
 test('new business still uses the size ladder', () => {
@@ -749,22 +817,6 @@ test('new business still uses the size ladder', () => {
   assert.equal(
     calculateQuote(renewalInput({ discretionaryDiscount: 0.05 })).approvalTierRequired,
     'sales_director',
-  );
-});
-
-test('the renewal approver and threshold come from Settings', () => {
-  const policy = { renewalApprovalTier: 'finance', renewalDiscountApprovalMin: 0.1 };
-  // Under the configured floor: no approval at all.
-  assert.equal(
-    calculateQuote(renewalInput({ discretionaryDiscount: 0.05 }), policy, 0, 'renewal')
-      .approvalTierRequired,
-    'none',
-  );
-  // Over it: the configured approver, not the hard-coded one.
-  assert.equal(
-    calculateQuote(renewalInput({ discretionaryDiscount: 0.15 }), policy, 0, 'renewal')
-      .approvalTierRequired,
-    'finance',
   );
 });
 

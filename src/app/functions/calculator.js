@@ -321,72 +321,74 @@ const buildApproval = (
   const currencyLabel = (value) => `$${round(value, 2).toLocaleString('en-US')}`;
   const isRenewal = dealCategory === 'renewal';
 
-  // RENEWALS: one approver for discounts, and the size-based ladder does not apply. Holly,
-  // 2026-08-28. Every value here comes from Settings -- who approves, and the discount above which
-  // approval is needed -- because that is policy, not arithmetic.
-  if (isRenewal) {
-    if (largestDiscretionaryDiscount > activeRules.renewalDiscountApprovalMin) {
-      tier = activeRules.renewalApprovalTier;
-      reasons.push(
-        activeRules.renewalDiscountApprovalMin > 0
-          ? `Renewal discount is greater than ${percentLabel(activeRules.renewalDiscountApprovalMin)}.`
-          : 'Renewal includes a discretionary discount.',
-      );
-    }
-    // The OAuth check is a VALIDITY rule, not a commercial one -- the add-on cannot function
-    // without a professional-services item -- so it applies to renewals too, and still blocks.
-    if (hasOauthDependencyFailure) {
-      blockingReasons.push('OAUTH_REQUIRES_PROFESSIONAL_SERVICES');
-      reasons.push('Turnkey Verified OAuth requires at least one professional-services item.');
-    }
-    // Everything below -- the Enterprise ARR minimum, the redlining ARR threshold, the
-    // non-standard-terms escalation -- is skipped when renewalRelaxesNonDiscountApprovals is on.
-    // Two of those BLOCK Lock in rather than merely requiring approval, and a renewal is expected
-    // to come in under the new-business minimum, so leaving them on refuses every small renewal.
-    if (activeRules.renewalRelaxesNonDiscountApprovals) {
-      if (input.redliningRequested) {
-        reasons.push('Customer-requested redlines require Legal approval.');
-      }
-      return { tier, reasons, blockingReasons };
-    }
-  }
+  // THE APPROVAL MATRIX. One ladder, shared by both deal types; only the approver's name changes.
+  // Holly, 2026-08-28:
+  //
+  //   0%                              no approval                   all
+  //   up to salesDirectorDiscountMax  Sales Director / CS Director   new / renewal
+  //   up to headSalesDiscountMax      Head of Sales / CCSO           new / renewal
+  //   above that                      Finance                        all
+  //
+  // Term length and payment frequency never count toward this. They adjust the RATE and are
+  // pre-approved; largestDiscretionaryDiscount is only what a rep typed as a concession.
+  //
+  // An earlier build this same day routed ALL renewal discounts to the CCSO with no ladder. This
+  // table replaced it.
+  const firstTier = isRenewal
+    ? activeRules.renewalFirstApprovalTier
+    : activeRules.newBusinessFirstApprovalTier;
+  const secondTier = isRenewal
+    ? activeRules.renewalSecondApprovalTier
+    : activeRules.newBusinessSecondApprovalTier;
 
-  if (!isRenewal && 
+  if (
     largestDiscretionaryDiscount > 0 &&
     largestDiscretionaryDiscount <= activeRules.salesDirectorDiscountMax
   ) {
-    tier = 'sales_director';
+    tier = firstTier;
     reasons.push(
       `Discretionary discount is greater than 0% and no more than ${percentLabel(activeRules.salesDirectorDiscountMax)}.`,
     );
   } else if (
-    !isRenewal &&
     largestDiscretionaryDiscount > activeRules.salesDirectorDiscountMax &&
     largestDiscretionaryDiscount <= activeRules.headSalesDiscountMax
   ) {
-    tier = 'head_sales';
+    tier = secondTier;
     reasons.push(
       `Discretionary discount is greater than ${percentLabel(activeRules.salesDirectorDiscountMax)} and no more than ${percentLabel(activeRules.headSalesDiscountMax)}.`,
     );
-  } else if (!isRenewal && largestDiscretionaryDiscount > activeRules.headSalesDiscountMax) {
+  } else if (largestDiscretionaryDiscount > activeRules.headSalesDiscountMax) {
     tier = 'finance';
     reasons.push(
       `Discretionary discount is greater than ${percentLabel(activeRules.headSalesDiscountMax)}.`,
     );
   }
 
+  // A line given away entirely is Finance's call whatever the thresholds say. Redundant while the
+  // top threshold is 30% -- 100% already exceeds it -- but it stops a raised threshold from
+  // quietly letting a free line through at a lower tier.
+  if (activeRules.financeApprovesFullDiscount && largestDiscretionaryDiscount >= 1) {
+    tier = 'finance';
+    reasons.push('A line is discounted 100%.');
+  }
+
   if (input.nonStandardTerms) {
     tier = 'finance';
     reasons.push('Contract includes non-standard terms.');
   }
-  if (committedArr < activeRules.minimumCommittedArr) {
+  const relaxed = isRenewal && activeRules.renewalRelaxesNonDiscountApprovals;
+  // Renewals skip the ARR-based rules. Both BLOCK Lock in rather than escalating, and a renewal is
+  // expected to land under the new-business minimum, so leaving them on refuses every small
+  // renewal outright. Holly, 2026-08-28. Non-standard terms are NOT relaxed -- the matrix says
+  // Finance for all deal types.
+  if (!relaxed && committedArr < activeRules.minimumCommittedArr) {
     tier = 'finance';
     reasons.push(
       `Committed ARR is below the ${currencyLabel(activeRules.minimumCommittedArr)} Enterprise minimum.`,
     );
     blockingReasons.push('BELOW_ENTERPRISE_MINIMUM');
   }
-  if (input.redliningRequested && committedArr < activeRules.redliningMinimumArr) {
+  if (!relaxed && input.redliningRequested && committedArr < activeRules.redliningMinimumArr) {
     tier = 'finance';
     reasons.push(
       `Redlining was requested below the ${currencyLabel(activeRules.redliningMinimumArr)} ARR threshold.`,
@@ -425,11 +427,13 @@ const buildActiveRules = (pricingPolicy = {}) => ({
     pricingPolicy.creditCardMaximumInvoice ?? rules.creditCardMaximumInvoice,
   salesDirectorDiscountMax: pricingPolicy.salesDirectorDiscountMax ?? 0.1,
   headSalesDiscountMax: pricingPolicy.headSalesDiscountMax ?? 0.3,
-  // Renewal approval, configurable in Settings. The merge here is an explicit allow-list, not a
-  // spread, so a key that is not named here is accepted, validated, normalized -- and then
-  // silently ignored. These three have to be listed or the settings do nothing.
-  renewalApprovalTier: pricingPolicy.renewalApprovalTier ?? 'ccso',
-  renewalDiscountApprovalMin: pricingPolicy.renewalDiscountApprovalMin ?? 0,
+  // The approval matrix, configurable in Settings. The merge here is an explicit allow-list, not
+  // a spread: a key not named here is accepted, validated, normalized -- and then ignored.
+  newBusinessFirstApprovalTier: pricingPolicy.newBusinessFirstApprovalTier ?? 'sales_director',
+  newBusinessSecondApprovalTier: pricingPolicy.newBusinessSecondApprovalTier ?? 'head_sales',
+  renewalFirstApprovalTier: pricingPolicy.renewalFirstApprovalTier ?? 'cs_director',
+  renewalSecondApprovalTier: pricingPolicy.renewalSecondApprovalTier ?? 'ccso',
+  financeApprovesFullDiscount: pricingPolicy.financeApprovesFullDiscount ?? true,
   renewalRelaxesNonDiscountApprovals:
     pricingPolicy.renewalRelaxesNonDiscountApprovals ?? true,
   termRules: rules.termRules.map((rule) => ({

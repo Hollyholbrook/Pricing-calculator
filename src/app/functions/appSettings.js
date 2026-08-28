@@ -19,23 +19,31 @@ const defaultPricingPolicy = () => ({
   creditCardMaximumInvoice: 25_000,
   salesDirectorDiscountMax: 0.1,
   headSalesDiscountMax: 0.3,
-  // RENEWAL APPROVAL. Configurable rather than hard-coded, like every other threshold here --
-  // who signs off on a concession is a policy that changes without the code changing. Holly,
-  // 2026-08-28.
+  // APPROVAL MATRIX (Holly, 2026-08-28). The THRESHOLDS are shared by both deal types -- only
+  // who signs off changes:
   //
-  // On a renewal, a discount above renewalDiscountApprovalMin routes to renewalApprovalTier and
-  // the size-based Sales Director / Head of Sales / Finance ladder does NOT apply: renewals have
-  // one approver for discounts. Set renewalDiscountApprovalMin above 0 to allow a small renewal
-  // discount without sign-off, or set renewalApprovalTier to 'finance' etc. to route elsewhere.
-  renewalApprovalTier: 'ccso',
-  renewalDiscountApprovalMin: 0,
-  // Renewals skip the NON-discount approvals: the Enterprise ARR minimum, the redlining ARR
-  // threshold, and the non-standard-terms escalation. Holly's call -- a renewal is expected to
-  // come in under the $25,000 new-business minimum, and that rule BLOCKS Lock in rather than
-  // merely requiring approval, so leaving it on would refuse every small renewal outright.
+  //   no approval      0% deviation                                      all
+  //   first tier       up to salesDirectorDiscountMax (10%)              Sales Director / CS Director
+  //   second tier      that up to headSalesDiscountMax (30%)             Head of Sales / CCSO
+  //   finance          above 30%, any 100%-off line, non-standard terms  all
   //
-  // The OAuth dependency check is NOT part of this and always applies: it is a validity rule --
-  // the add-on cannot function without a professional-services item -- not a commercial one.
+  // Term and payment-frequency adjustments are pre-approved and never counted: the ladder reads
+  // largestDiscretionaryDiscount, which is only what a rep typed.
+  //
+  // Configurable because the approver for a concession is policy. An earlier build routed ALL
+  // renewal discounts to the CCSO with no ladder; this table replaced it.
+  newBusinessFirstApprovalTier: 'sales_director',
+  newBusinessSecondApprovalTier: 'head_sales',
+  renewalFirstApprovalTier: 'cs_director',
+  renewalSecondApprovalTier: 'ccso',
+  // A line given away entirely goes to Finance whatever the thresholds say. Redundant while
+  // headSalesDiscountMax is 30% -- 100% already exceeds it -- but it stops a raised threshold from
+  // quietly letting a free line through at a lower tier.
+  financeApprovesFullDiscount: true,
+  // Renewals still skip the non-discount BLOCKS: the Enterprise ARR minimum and the redlining ARR
+  // threshold. Holly's call, and untouched by the table above, which is about approval rather than
+  // about refusing a lock -- a renewal is expected to land under the new-business minimum, and
+  // that rule blocks rather than escalates.
   renewalRelaxesNonDiscountApprovals: true,
   termDiscounts: { '12': 0, '24': 0.025, '36': 0.05 },
   paymentPremiums: {
@@ -77,7 +85,14 @@ const defaultSettings = () => ({
 
 // The tiers the card knows how to label. A tier it cannot label would render as a raw key on a
 // blocking banner, so an unknown one fails closed at save time rather than at quote time.
-const APPROVAL_TIERS = Object.freeze(['none', 'sales_director', 'head_sales', 'ccso', 'finance']);
+const APPROVAL_TIERS = Object.freeze([
+  'none',
+  'sales_director',
+  'cs_director',
+  'head_sales',
+  'ccso',
+  'finance',
+]);
 
 const requireApprovalTier = (value, field) => {
   if (!APPROVAL_TIERS.includes(value)) throw new Error(`INVALID_SETTINGS:${field}`);
@@ -130,16 +145,26 @@ const normalizePricingPolicy = (incoming) => {
       1,
       'salesDirectorDiscountMax',
     ),
-    renewalApprovalTier: requireApprovalTier(
-      value.renewalApprovalTier ?? defaults.renewalApprovalTier,
-      'renewalApprovalTier',
+    newBusinessFirstApprovalTier: requireApprovalTier(
+      value.newBusinessFirstApprovalTier ?? defaults.newBusinessFirstApprovalTier,
+      'newBusinessFirstApprovalTier',
     ),
-    renewalDiscountApprovalMin: requireNumber(
-      value.renewalDiscountApprovalMin ?? defaults.renewalDiscountApprovalMin,
-      0,
-      1,
-      'renewalDiscountApprovalMin',
+    newBusinessSecondApprovalTier: requireApprovalTier(
+      value.newBusinessSecondApprovalTier ?? defaults.newBusinessSecondApprovalTier,
+      'newBusinessSecondApprovalTier',
     ),
+    renewalFirstApprovalTier: requireApprovalTier(
+      value.renewalFirstApprovalTier ?? defaults.renewalFirstApprovalTier,
+      'renewalFirstApprovalTier',
+    ),
+    renewalSecondApprovalTier: requireApprovalTier(
+      value.renewalSecondApprovalTier ?? defaults.renewalSecondApprovalTier,
+      'renewalSecondApprovalTier',
+    ),
+    financeApprovesFullDiscount:
+      typeof value.financeApprovesFullDiscount === 'boolean'
+        ? value.financeApprovesFullDiscount
+        : defaults.financeApprovesFullDiscount,
     renewalRelaxesNonDiscountApprovals:
       typeof value.renewalRelaxesNonDiscountApprovals === 'boolean'
         ? value.renewalRelaxesNonDiscountApprovals

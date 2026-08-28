@@ -492,52 +492,41 @@ var require_calculator = __commonJS({
       const percentLabel = (value) => `${round(value * 100, 2)}%`;
       const currencyLabel = (value) => `$${round(value, 2).toLocaleString("en-US")}`;
       const isRenewal = dealCategory2 === "renewal";
-      if (isRenewal) {
-        if (largestDiscretionaryDiscount > activeRules.renewalDiscountApprovalMin) {
-          tier = activeRules.renewalApprovalTier;
-          reasons.push(
-            activeRules.renewalDiscountApprovalMin > 0 ? `Renewal discount is greater than ${percentLabel(activeRules.renewalDiscountApprovalMin)}.` : "Renewal includes a discretionary discount."
-          );
-        }
-        if (hasOauthDependencyFailure) {
-          blockingReasons.push("OAUTH_REQUIRES_PROFESSIONAL_SERVICES");
-          reasons.push("Turnkey Verified OAuth requires at least one professional-services item.");
-        }
-        if (activeRules.renewalRelaxesNonDiscountApprovals) {
-          if (input.redliningRequested) {
-            reasons.push("Customer-requested redlines require Legal approval.");
-          }
-          return { tier, reasons, blockingReasons };
-        }
-      }
-      if (!isRenewal && largestDiscretionaryDiscount > 0 && largestDiscretionaryDiscount <= activeRules.salesDirectorDiscountMax) {
-        tier = "sales_director";
+      const firstTier = isRenewal ? activeRules.renewalFirstApprovalTier : activeRules.newBusinessFirstApprovalTier;
+      const secondTier = isRenewal ? activeRules.renewalSecondApprovalTier : activeRules.newBusinessSecondApprovalTier;
+      if (largestDiscretionaryDiscount > 0 && largestDiscretionaryDiscount <= activeRules.salesDirectorDiscountMax) {
+        tier = firstTier;
         reasons.push(
           `Discretionary discount is greater than 0% and no more than ${percentLabel(activeRules.salesDirectorDiscountMax)}.`
         );
-      } else if (!isRenewal && largestDiscretionaryDiscount > activeRules.salesDirectorDiscountMax && largestDiscretionaryDiscount <= activeRules.headSalesDiscountMax) {
-        tier = "head_sales";
+      } else if (largestDiscretionaryDiscount > activeRules.salesDirectorDiscountMax && largestDiscretionaryDiscount <= activeRules.headSalesDiscountMax) {
+        tier = secondTier;
         reasons.push(
           `Discretionary discount is greater than ${percentLabel(activeRules.salesDirectorDiscountMax)} and no more than ${percentLabel(activeRules.headSalesDiscountMax)}.`
         );
-      } else if (!isRenewal && largestDiscretionaryDiscount > activeRules.headSalesDiscountMax) {
+      } else if (largestDiscretionaryDiscount > activeRules.headSalesDiscountMax) {
         tier = "finance";
         reasons.push(
           `Discretionary discount is greater than ${percentLabel(activeRules.headSalesDiscountMax)}.`
         );
       }
+      if (activeRules.financeApprovesFullDiscount && largestDiscretionaryDiscount >= 1) {
+        tier = "finance";
+        reasons.push("A line is discounted 100%.");
+      }
       if (input.nonStandardTerms) {
         tier = "finance";
         reasons.push("Contract includes non-standard terms.");
       }
-      if (committedArr < activeRules.minimumCommittedArr) {
+      const relaxed = isRenewal && activeRules.renewalRelaxesNonDiscountApprovals;
+      if (!relaxed && committedArr < activeRules.minimumCommittedArr) {
         tier = "finance";
         reasons.push(
           `Committed ARR is below the ${currencyLabel(activeRules.minimumCommittedArr)} Enterprise minimum.`
         );
         blockingReasons.push("BELOW_ENTERPRISE_MINIMUM");
       }
-      if (input.redliningRequested && committedArr < activeRules.redliningMinimumArr) {
+      if (!relaxed && input.redliningRequested && committedArr < activeRules.redliningMinimumArr) {
         tier = "finance";
         reasons.push(
           `Redlining was requested below the ${currencyLabel(activeRules.redliningMinimumArr)} ARR threshold.`
@@ -573,11 +562,13 @@ var require_calculator = __commonJS({
       creditCardMaximumInvoice: pricingPolicy.creditCardMaximumInvoice ?? rules.creditCardMaximumInvoice,
       salesDirectorDiscountMax: pricingPolicy.salesDirectorDiscountMax ?? 0.1,
       headSalesDiscountMax: pricingPolicy.headSalesDiscountMax ?? 0.3,
-      // Renewal approval, configurable in Settings. The merge here is an explicit allow-list, not a
-      // spread, so a key that is not named here is accepted, validated, normalized -- and then
-      // silently ignored. These three have to be listed or the settings do nothing.
-      renewalApprovalTier: pricingPolicy.renewalApprovalTier ?? "ccso",
-      renewalDiscountApprovalMin: pricingPolicy.renewalDiscountApprovalMin ?? 0,
+      // The approval matrix, configurable in Settings. The merge here is an explicit allow-list, not
+      // a spread: a key not named here is accepted, validated, normalized -- and then ignored.
+      newBusinessFirstApprovalTier: pricingPolicy.newBusinessFirstApprovalTier ?? "sales_director",
+      newBusinessSecondApprovalTier: pricingPolicy.newBusinessSecondApprovalTier ?? "head_sales",
+      renewalFirstApprovalTier: pricingPolicy.renewalFirstApprovalTier ?? "cs_director",
+      renewalSecondApprovalTier: pricingPolicy.renewalSecondApprovalTier ?? "ccso",
+      financeApprovesFullDiscount: pricingPolicy.financeApprovesFullDiscount ?? true,
       renewalRelaxesNonDiscountApprovals: pricingPolicy.renewalRelaxesNonDiscountApprovals ?? true,
       termRules: rules.termRules.map((rule) => ({
         ...rule,
@@ -1723,23 +1714,31 @@ var require_appSettings = __commonJS({
       creditCardMaximumInvoice: 25e3,
       salesDirectorDiscountMax: 0.1,
       headSalesDiscountMax: 0.3,
-      // RENEWAL APPROVAL. Configurable rather than hard-coded, like every other threshold here --
-      // who signs off on a concession is a policy that changes without the code changing. Holly,
-      // 2026-08-28.
+      // APPROVAL MATRIX (Holly, 2026-08-28). The THRESHOLDS are shared by both deal types -- only
+      // who signs off changes:
       //
-      // On a renewal, a discount above renewalDiscountApprovalMin routes to renewalApprovalTier and
-      // the size-based Sales Director / Head of Sales / Finance ladder does NOT apply: renewals have
-      // one approver for discounts. Set renewalDiscountApprovalMin above 0 to allow a small renewal
-      // discount without sign-off, or set renewalApprovalTier to 'finance' etc. to route elsewhere.
-      renewalApprovalTier: "ccso",
-      renewalDiscountApprovalMin: 0,
-      // Renewals skip the NON-discount approvals: the Enterprise ARR minimum, the redlining ARR
-      // threshold, and the non-standard-terms escalation. Holly's call -- a renewal is expected to
-      // come in under the $25,000 new-business minimum, and that rule BLOCKS Lock in rather than
-      // merely requiring approval, so leaving it on would refuse every small renewal outright.
+      //   no approval      0% deviation                                      all
+      //   first tier       up to salesDirectorDiscountMax (10%)              Sales Director / CS Director
+      //   second tier      that up to headSalesDiscountMax (30%)             Head of Sales / CCSO
+      //   finance          above 30%, any 100%-off line, non-standard terms  all
       //
-      // The OAuth dependency check is NOT part of this and always applies: it is a validity rule --
-      // the add-on cannot function without a professional-services item -- not a commercial one.
+      // Term and payment-frequency adjustments are pre-approved and never counted: the ladder reads
+      // largestDiscretionaryDiscount, which is only what a rep typed.
+      //
+      // Configurable because the approver for a concession is policy. An earlier build routed ALL
+      // renewal discounts to the CCSO with no ladder; this table replaced it.
+      newBusinessFirstApprovalTier: "sales_director",
+      newBusinessSecondApprovalTier: "head_sales",
+      renewalFirstApprovalTier: "cs_director",
+      renewalSecondApprovalTier: "ccso",
+      // A line given away entirely goes to Finance whatever the thresholds say. Redundant while
+      // headSalesDiscountMax is 30% -- 100% already exceeds it -- but it stops a raised threshold from
+      // quietly letting a free line through at a lower tier.
+      financeApprovesFullDiscount: true,
+      // Renewals still skip the non-discount BLOCKS: the Enterprise ARR minimum and the redlining ARR
+      // threshold. Holly's call, and untouched by the table above, which is about approval rather than
+      // about refusing a lock -- a renewal is expected to land under the new-business minimum, and
+      // that rule blocks rather than escalates.
       renewalRelaxesNonDiscountApprovals: true,
       termDiscounts: { "12": 0, "24": 0.025, "36": 0.05 },
       paymentPremiums: {
@@ -1777,7 +1776,14 @@ var require_appSettings = __commonJS({
       renewalPipelineIds: [],
       pricingPolicy: defaultPricingPolicy()
     });
-    var APPROVAL_TIERS = Object.freeze(["none", "sales_director", "head_sales", "ccso", "finance"]);
+    var APPROVAL_TIERS = Object.freeze([
+      "none",
+      "sales_director",
+      "cs_director",
+      "head_sales",
+      "ccso",
+      "finance"
+    ]);
     var requireApprovalTier = (value, field) => {
       if (!APPROVAL_TIERS.includes(value)) throw new Error(`INVALID_SETTINGS:${field}`);
       return value;
@@ -1820,16 +1826,23 @@ var require_appSettings = __commonJS({
           1,
           "salesDirectorDiscountMax"
         ),
-        renewalApprovalTier: requireApprovalTier(
-          value.renewalApprovalTier ?? defaults.renewalApprovalTier,
-          "renewalApprovalTier"
+        newBusinessFirstApprovalTier: requireApprovalTier(
+          value.newBusinessFirstApprovalTier ?? defaults.newBusinessFirstApprovalTier,
+          "newBusinessFirstApprovalTier"
         ),
-        renewalDiscountApprovalMin: requireNumber(
-          value.renewalDiscountApprovalMin ?? defaults.renewalDiscountApprovalMin,
-          0,
-          1,
-          "renewalDiscountApprovalMin"
+        newBusinessSecondApprovalTier: requireApprovalTier(
+          value.newBusinessSecondApprovalTier ?? defaults.newBusinessSecondApprovalTier,
+          "newBusinessSecondApprovalTier"
         ),
+        renewalFirstApprovalTier: requireApprovalTier(
+          value.renewalFirstApprovalTier ?? defaults.renewalFirstApprovalTier,
+          "renewalFirstApprovalTier"
+        ),
+        renewalSecondApprovalTier: requireApprovalTier(
+          value.renewalSecondApprovalTier ?? defaults.renewalSecondApprovalTier,
+          "renewalSecondApprovalTier"
+        ),
+        financeApprovesFullDiscount: typeof value.financeApprovesFullDiscount === "boolean" ? value.financeApprovesFullDiscount : defaults.financeApprovesFullDiscount,
         renewalRelaxesNonDiscountApprovals: typeof value.renewalRelaxesNonDiscountApprovals === "boolean" ? value.renewalRelaxesNonDiscountApprovals : defaults.renewalRelaxesNonDiscountApprovals,
         headSalesDiscountMax: requireNumber(
           value.headSalesDiscountMax ?? defaults.headSalesDiscountMax,

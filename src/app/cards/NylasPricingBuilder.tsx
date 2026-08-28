@@ -655,6 +655,8 @@ const approvalLabel = (value?: string) =>
     // Renewals route discounts here instead of the size-based ladder. Configurable in Settings --
     // renewalApprovalTier -- so this map has to cover every tier the settings allow, or a banner
     // renders a raw key like "ccso" at a rep.
+    // Renewal-side names for the same two rungs. Same thresholds, different approver.
+    cs_director: "CS Director",
     ccso: "CCSO",
     finance: "Finance",
   })[value || "none"] ||
@@ -1437,30 +1439,6 @@ const OptionEditor = ({
         </Alert>
       )}
 
-      {/* Contract Summary, laid out like section VI of the pricing workbook: a row per charge
-          type, and columns for one-time, per-billing-period, annual and whole-term.
-
-          Every figure here is read from the calculation, never recomputed: the rows sum to
-          result.oneTime, result.recurringPerPeriod, result.committedArr and result.tcv exactly.
-          The term column is the one-time amount for one-time rows, and annual x years for
-          recurring rows -- which is how the workbook's "Total Fees for Term" column works. */}
-      {previewResult && (
-        <Flex direction="column" gap="xs">
-          <Flex justify="between" align="center" gap="md" wrap>
-            <Heading>Contract Summary:</Heading>
-            <Flex gap="xs" align="center">
-              {previewLoading && (
-                <LoadingSpinner size="xs" label="Updating pricing" />
-              )}
-              {previewLoading && (
-                <Text variant="microcopy">Updating pricing…</Text>
-              )}
-            </Flex>
-          </Flex>
-          {summaryTable(previewResult, option.input.termMonths)}
-        </Flex>
-      )}
-
       {/* No Card wrapper: Card supplies fixed padding that cannot be reduced from here, and it
           was the widest source of horizontal inset. */}
       <Flex direction="column" gap="xs">
@@ -1897,6 +1875,34 @@ const OptionEditor = ({
           Lock in & create quote
         </LoadingButton>
       </Flex>
+
+      {/* Contract Summary sits BELOW the button now, not between the form and the action:
+          it is what a rep checks after configuring, so it belongs at the end of the flow.
+          Holly, 2026-08-28.
+
+          Laid out like section VI of the pricing workbook: a row per charge
+          type, and columns for one-time, per-billing-period, annual and whole-term.
+
+          Every figure here is read from the calculation, never recomputed: the rows sum to
+          result.oneTime, result.recurringPerPeriod, result.committedArr and result.tcv exactly.
+          The term column is the one-time amount for one-time rows, and annual x years for
+          recurring rows -- which is how the workbook's "Total Fees for Term" column works. */}
+      {previewResult && (
+        <Flex direction="column" gap="xs">
+          <Flex justify="between" align="center" gap="md" wrap>
+            <Heading>Contract Summary:</Heading>
+            <Flex gap="xs" align="center">
+              {previewLoading && (
+                <LoadingSpinner size="xs" label="Updating pricing" />
+              )}
+              {previewLoading && (
+                <Text variant="microcopy">Updating pricing…</Text>
+              )}
+            </Flex>
+          </Flex>
+          {summaryTable(previewResult, option.input.termMonths)}
+        </Flex>
+      )}
     </Flex>
   );
 };
