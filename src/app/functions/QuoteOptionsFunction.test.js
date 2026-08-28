@@ -412,3 +412,108 @@ test('credit card is still allowed below the invoice limit', async () => {
     .catch(() => undefined);
   assert.equal(reachedWrite, true, 'a small deal on credit card must not be blocked');
 });
+
+// A line item must never be created silently missing a field because HubSpot was busy.
+//
+// On the 2026-08-28 quote, one of five identical professional-services lines came back without
+// `one_time_fees` while the other four kept it, so the Order Form printed a dash in the One-Time
+// Fees column for that row alone. The portal has the property -- four writes in the same call
+// proved it. The old guard was `message.includes(property) && /propert/i.test(message)`, which
+// matched any failure whose text happened to list the properties it was sent.
+const rejection = (status, message) => Object.assign(new Error(message), { code: status });
+
+test('a busy HubSpot is not mistaken for a missing property', () => {
+  const { isUnknownPropertyRejection } = _test;
+  // The shape that caused the bug: a rate limit whose body echoes the properties sent.
+  assert.equal(
+    isUnknownPropertyRejection(
+      rejection(429, 'Too many requests. properties: one_time_fees, recurring_fees'),
+      'one_time_fees',
+    ),
+    false,
+  );
+  assert.equal(
+    isUnknownPropertyRejection(
+      rejection(502, 'Bad gateway while writing property one_time_fees'),
+      'one_time_fees',
+    ),
+    false,
+  );
+  // A genuine missing property still drops, or a portal without the custom fields loses its Deal.
+  assert.equal(
+    isUnknownPropertyRejection(
+      rejection(400, 'Property "one_time_fees" does not exist'),
+      'one_time_fees',
+    ),
+    true,
+  );
+  // Named, but for some other reason: not a licence to drop it.
+  assert.equal(
+    isUnknownPropertyRejection(
+      rejection(400, 'Value for property one_time_fees was too long'),
+      'one_time_fees',
+    ),
+    false,
+  );
+});
+
+test('a rate-limited line item create is retried whole, not degraded', async () => {
+  const { createLineItem } = _test;
+  const sent = [];
+  let calls = 0;
+  const client = {
+    crm: {
+      lineItems: {
+        basicApi: {
+          create: async ({ properties }) => {
+            calls += 1;
+            sent.push(properties);
+            if (calls === 1) {
+              throw rejection(429, 'Too many requests. properties: one_time_fees');
+            }
+            return { id: 'line-1' };
+          },
+        },
+      },
+    },
+  };
+  const properties = { price: '1760', one_time_fees: '1760', total_fees_for_term: '1760' };
+  const created = await createLineItem(client, properties, []);
+
+  assert.equal(created.id, 'line-1');
+  assert.equal(calls, 2, 'the transient failure must be retried');
+  assert.deepEqual(
+    sent[1],
+    properties,
+    'the retry must send the SAME properties -- dropping one is how a quote loses a fee column',
+  );
+});
+
+test('a genuinely missing property is still dropped so the Deal is not emptied', async () => {
+  const { createLineItem } = _test;
+  const sent = [];
+  const client = {
+    crm: {
+      lineItems: {
+        basicApi: {
+          create: async ({ properties }) => {
+            sent.push(properties);
+            if (properties.one_time_fees != null) {
+              throw rejection(400, 'Property "one_time_fees" does not exist');
+            }
+            return { id: 'line-2' };
+          },
+        },
+      },
+    },
+  };
+  const created = await createLineItem(
+    client,
+    { price: '1760', one_time_fees: '1760' },
+    [],
+  );
+  assert.equal(created.id, 'line-2');
+  assert.equal(sent.length, 2);
+  assert.equal(sent[1].one_time_fees, undefined);
+  assert.equal(sent[1].price, '1760', 'only the rejected field comes off');
+});

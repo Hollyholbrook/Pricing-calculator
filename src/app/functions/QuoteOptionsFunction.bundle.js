@@ -2665,25 +2665,42 @@ var OPTIONAL_CUSTOM_LINE_ITEM_PROPERTIES = [
   // bounds -- so it is not worth a failed create.
   "units"
 ];
+var errorStatus = (error) => Number(
+  error?.code ?? error?.status ?? error?.statusCode ?? error?.response?.status ?? error?.body?.status
+) || 0;
+var isTransientRejection = (error) => {
+  const status = errorStatus(error);
+  return status === 429 || status >= 500 && status < 600;
+};
 var isUnknownPropertyRejection = (error, property) => {
+  const status = errorStatus(error);
+  if (status && status !== 400) return false;
   const message = String(
     error?.body?.message || error?.response?.body?.message || error?.message || ""
   );
-  return message.includes(property) && /propert/i.test(message);
+  if (!message.includes(property)) return false;
+  return /does\s*n[o']?t\s+exist|doesn't exist|unknown|not\s+found|no\s+such|invalid\s+propert/i.test(
+    message
+  );
 };
-var createLineItem = async (client, properties, associations) => {
+var delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+var createLineItem = async (client, properties, associations, attempt = 0) => {
   try {
     return await client.crm.lineItems.basicApi.create({ properties, associations });
   } catch (error) {
+    if (isTransientRejection(error) && attempt < 3) {
+      await delay(400 * 2 ** attempt);
+      return createLineItem(client, properties, associations, attempt + 1);
+    }
     const rejected = OPTIONAL_CUSTOM_LINE_ITEM_PROPERTIES.find(
       (property) => properties[property] != null && isUnknownPropertyRejection(error, property)
     );
     if (rejected) {
       const { [rejected]: unused, ...withoutRejected } = properties;
-      console.warn(
-        `Nylas pricing: this portal has no ${rejected} Line Item property. Creating the line item without it.`
+      console.error(
+        `Nylas pricing: HubSpot rejected ${rejected} as a Line Item property this portal does not have. Creating the line item WITHOUT it -- that field will be blank on the quote. Rejection: ${String(error?.body?.message || error?.message || error)}`
       );
-      return createLineItem(client, withoutRejected, associations);
+      return createLineItem(client, withoutRejected, associations, attempt);
     }
     if (!properties.hs_product_id || !isProductBundleRejection(error)) throw error;
     const { hs_product_id: bundledProductId, ...withoutProduct } = properties;
@@ -2860,8 +2877,9 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
       templateId,
       [{ associationCategory: "HUBSPOT_DEFINED", associationTypeId: 286 }]
     );
-    await Promise.all(
-      lineItems.map(async (item) => {
+    await inBatches(
+      lineItems,
+      async (item) => {
         const created = await createLineItem(
           client,
           hubSpotLineItemProperties(item.properties),
@@ -2873,7 +2891,7 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
           [createAssociation(quote.id, 68)]
         );
         createdLineItemIds.push(String(created.id));
-      })
+      }
     );
     const [contactIds, companyIds] = await Promise.all([
       associatedIds(client, "deals", dealId, "contacts", 10),
@@ -3107,6 +3125,8 @@ exports.main = async (context) => {
 };
 exports._test = Object.freeze({
   associatedIds,
+  createLineItem,
+  isUnknownPropertyRejection,
   deleteOption,
   lockLiveCalculation,
   autoRenewalProperties,

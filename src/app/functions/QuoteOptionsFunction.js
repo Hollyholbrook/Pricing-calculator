@@ -896,28 +896,75 @@ const OPTIONAL_CUSTOM_LINE_ITEM_PROPERTIES = [
   'units',
 ];
 
+const errorStatus = (error) =>
+  Number(
+    error?.code ??
+      error?.status ??
+      error?.statusCode ??
+      error?.response?.status ??
+      error?.body?.status,
+  ) || 0;
+
+// HubSpot being busy, not HubSpot refusing the data. A 429 or a 5xx says "try again", and the one
+// thing that must never happen in response to it is dropping a field: the retry below then writes
+// a permanently incomplete line item because of a hiccup that would have cleared on its own.
+const isTransientRejection = (error) => {
+  const status = errorStatus(error);
+  return status === 429 || (status >= 500 && status < 600);
+};
+
+// Whether HubSpot is saying this portal HAS NO SUCH PROPERTY, as opposed to any other error that
+// happens to mention it.
+//
+// This used to be `message.includes(property) && /propert/i.test(message)`, which matched almost
+// any failure whose text listed the properties it was sent -- including a transient one. It fired
+// on exactly one of five identical professional-services line items on the 2026-08-28 quote: that
+// line was created without `one_time_fees` while the other four kept it, so the Order Form printed
+// a dash in the One-Time Fees column for one row and the right number for the rest. The portal
+// plainly HAS the property; four writes proved it in the same call.
+//
+// Now it needs a 400 (a missing property is a validation error, never a 429 or a 5xx) AND a phrase
+// that actually means "unknown". Anything else falls through to the transient retry or is rethrown,
+// so a real failure is loud instead of a quietly incomplete quote.
 const isUnknownPropertyRejection = (error, property) => {
+  const status = errorStatus(error);
+  if (status && status !== 400) return false;
   const message = String(
     error?.body?.message || error?.response?.body?.message || error?.message || '',
   );
-  return message.includes(property) && /propert/i.test(message);
+  if (!message.includes(property)) return false;
+  return /does\s*n[o']?t\s+exist|doesn't exist|unknown|not\s+found|no\s+such|invalid\s+propert/i.test(
+    message,
+  );
 };
 
-const createLineItem = async (client, properties, associations) => {
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// `attempt` counts transient retries only, never property drops -- a portal missing several
+// optional properties still recurses as far as it needs to.
+const createLineItem = async (client, properties, associations, attempt = 0) => {
   try {
     return await client.crm.lineItems.basicApi.create({ properties, associations });
   } catch (error) {
+    // Wait it out before considering anything a refusal. The quote's line items are created
+    // concurrently -- a dozen at once -- which is exactly where a rate limit shows up, and where
+    // one call failing among identical siblings is the tell that it was never about the data.
+    if (isTransientRejection(error) && attempt < 3) {
+      await delay(400 * 2 ** attempt);
+      return createLineItem(client, properties, associations, attempt + 1);
+    }
     const rejected = OPTIONAL_CUSTOM_LINE_ITEM_PROPERTIES.find(
       (property) =>
         properties[property] != null && isUnknownPropertyRejection(error, property),
     );
     if (rejected) {
       const { [rejected]: unused, ...withoutRejected } = properties;
-      console.warn(
-        `Nylas pricing: this portal has no ${rejected} Line Item property. ` +
-          'Creating the line item without it.',
+      console.error(
+        `Nylas pricing: HubSpot rejected ${rejected} as a Line Item property this portal does ` +
+          'not have. Creating the line item WITHOUT it -- that field will be blank on the quote. ' +
+          `Rejection: ${String(error?.body?.message || error?.message || error)}`,
       );
-      return createLineItem(client, withoutRejected, associations);
+      return createLineItem(client, withoutRejected, associations, attempt);
     }
     if (!properties.hs_product_id || !isProductBundleRejection(error)) throw error;
     const { hs_product_id: bundledProductId, ...withoutProduct } = properties;
@@ -1186,8 +1233,12 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
     // Record each id as soon as it exists. Collecting them from Promise.all only records them
     // when every create succeeds, so the rollback below archived nothing in exactly the case it
     // was written for and leaked orphaned quote line items on every failed attempt.
-    await Promise.all(
-      lineItems.map(async (item) => {
+    // Batched, not one Promise.all over every line. Thirteen simultaneous creates is what made a
+    // rate limit likely in the first place, and the Deal sync has always batched -- this path was
+    // the odd one out. inBatches keeps the same concurrency ceiling as everywhere else.
+    await inBatches(
+      lineItems,
+      async (item) => {
         const created = await createLineItem(
           client,
           hubSpotLineItemProperties(item.properties),
@@ -1199,7 +1250,7 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
           [createAssociation(quote.id, 68)],
         );
         createdLineItemIds.push(String(created.id));
-      }),
+      },
     );
 
     const [contactIds, companyIds] = await Promise.all([
@@ -1463,6 +1514,8 @@ exports.main = async (context) => {
 
 exports._test = Object.freeze({
   associatedIds,
+  createLineItem,
+  isUnknownPropertyRejection,
   deleteOption,
   lockLiveCalculation,
   autoRenewalProperties,
