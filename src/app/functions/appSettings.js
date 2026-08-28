@@ -19,6 +19,24 @@ const defaultPricingPolicy = () => ({
   creditCardMaximumInvoice: 25_000,
   salesDirectorDiscountMax: 0.1,
   headSalesDiscountMax: 0.3,
+  // RENEWAL APPROVAL. Configurable rather than hard-coded, like every other threshold here --
+  // who signs off on a concession is a policy that changes without the code changing. Holly,
+  // 2026-08-28.
+  //
+  // On a renewal, a discount above renewalDiscountApprovalMin routes to renewalApprovalTier and
+  // the size-based Sales Director / Head of Sales / Finance ladder does NOT apply: renewals have
+  // one approver for discounts. Set renewalDiscountApprovalMin above 0 to allow a small renewal
+  // discount without sign-off, or set renewalApprovalTier to 'finance' etc. to route elsewhere.
+  renewalApprovalTier: 'ccso',
+  renewalDiscountApprovalMin: 0,
+  // Renewals skip the NON-discount approvals: the Enterprise ARR minimum, the redlining ARR
+  // threshold, and the non-standard-terms escalation. Holly's call -- a renewal is expected to
+  // come in under the $25,000 new-business minimum, and that rule BLOCKS Lock in rather than
+  // merely requiring approval, so leaving it on would refuse every small renewal outright.
+  //
+  // The OAuth dependency check is NOT part of this and always applies: it is a validity rule --
+  // the add-on cannot function without a professional-services item -- not a commercial one.
+  renewalRelaxesNonDiscountApprovals: true,
   termDiscounts: { '12': 0, '24': 0.025, '36': 0.05 },
   paymentPremiums: {
     annual_in_advance: 0,
@@ -56,6 +74,15 @@ const defaultSettings = () => ({
   renewalPipelineIds: [],
   pricingPolicy: defaultPricingPolicy(),
 });
+
+// The tiers the card knows how to label. A tier it cannot label would render as a raw key on a
+// blocking banner, so an unknown one fails closed at save time rather than at quote time.
+const APPROVAL_TIERS = Object.freeze(['none', 'sales_director', 'head_sales', 'ccso', 'finance']);
+
+const requireApprovalTier = (value, field) => {
+  if (!APPROVAL_TIERS.includes(value)) throw new Error(`INVALID_SETTINGS:${field}`);
+  return value;
+};
 
 const requireNumber = (value, min, max, field) => {
   if (typeof value !== 'number' || !Number.isFinite(value) || value < min || value > max) {
@@ -103,6 +130,20 @@ const normalizePricingPolicy = (incoming) => {
       1,
       'salesDirectorDiscountMax',
     ),
+    renewalApprovalTier: requireApprovalTier(
+      value.renewalApprovalTier ?? defaults.renewalApprovalTier,
+      'renewalApprovalTier',
+    ),
+    renewalDiscountApprovalMin: requireNumber(
+      value.renewalDiscountApprovalMin ?? defaults.renewalDiscountApprovalMin,
+      0,
+      1,
+      'renewalDiscountApprovalMin',
+    ),
+    renewalRelaxesNonDiscountApprovals:
+      typeof value.renewalRelaxesNonDiscountApprovals === 'boolean'
+        ? value.renewalRelaxesNonDiscountApprovals
+        : defaults.renewalRelaxesNonDiscountApprovals,
     headSalesDiscountMax: requireNumber(
       value.headSalesDiscountMax ?? defaults.headSalesDiscountMax,
       0,
@@ -396,7 +437,9 @@ const isDealAllowed = (settings, dealType, pipelineId) => {
 };
 
 module.exports = {
+  APPROVAL_TIERS,
   accountIdFromContext,
+  dealCategory,
   defaultPricingPolicy,
   defaultSettings,
   isDealAllowed,

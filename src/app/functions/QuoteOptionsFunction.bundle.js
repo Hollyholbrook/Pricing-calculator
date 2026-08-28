@@ -485,23 +485,42 @@ var require_calculator = __commonJS({
         nonRenewalNoticeDate: formatDate(noticeDate)
       };
     };
-    var buildApproval = (input, largestDiscretionaryDiscount, committedArr, hasOauthDependencyFailure, activeRules = rules) => {
+    var buildApproval = (input, largestDiscretionaryDiscount, committedArr, hasOauthDependencyFailure, activeRules = rules, dealCategory2 = "new_business") => {
       const reasons = [];
       const blockingReasons = [];
       let tier = "none";
       const percentLabel = (value) => `${round(value * 100, 2)}%`;
       const currencyLabel = (value) => `$${round(value, 2).toLocaleString("en-US")}`;
-      if (largestDiscretionaryDiscount > 0 && largestDiscretionaryDiscount <= activeRules.salesDirectorDiscountMax) {
+      const isRenewal = dealCategory2 === "renewal";
+      if (isRenewal) {
+        if (largestDiscretionaryDiscount > activeRules.renewalDiscountApprovalMin) {
+          tier = activeRules.renewalApprovalTier;
+          reasons.push(
+            activeRules.renewalDiscountApprovalMin > 0 ? `Renewal discount is greater than ${percentLabel(activeRules.renewalDiscountApprovalMin)}.` : "Renewal includes a discretionary discount."
+          );
+        }
+        if (hasOauthDependencyFailure) {
+          blockingReasons.push("OAUTH_REQUIRES_PROFESSIONAL_SERVICES");
+          reasons.push("Turnkey Verified OAuth requires at least one professional-services item.");
+        }
+        if (activeRules.renewalRelaxesNonDiscountApprovals) {
+          if (input.redliningRequested) {
+            reasons.push("Customer-requested redlines require Legal approval.");
+          }
+          return { tier, reasons, blockingReasons };
+        }
+      }
+      if (!isRenewal && largestDiscretionaryDiscount > 0 && largestDiscretionaryDiscount <= activeRules.salesDirectorDiscountMax) {
         tier = "sales_director";
         reasons.push(
           `Discretionary discount is greater than 0% and no more than ${percentLabel(activeRules.salesDirectorDiscountMax)}.`
         );
-      } else if (largestDiscretionaryDiscount > activeRules.salesDirectorDiscountMax && largestDiscretionaryDiscount <= activeRules.headSalesDiscountMax) {
+      } else if (!isRenewal && largestDiscretionaryDiscount > activeRules.salesDirectorDiscountMax && largestDiscretionaryDiscount <= activeRules.headSalesDiscountMax) {
         tier = "head_sales";
         reasons.push(
           `Discretionary discount is greater than ${percentLabel(activeRules.salesDirectorDiscountMax)} and no more than ${percentLabel(activeRules.headSalesDiscountMax)}.`
         );
-      } else if (largestDiscretionaryDiscount > activeRules.headSalesDiscountMax) {
+      } else if (!isRenewal && largestDiscretionaryDiscount > activeRules.headSalesDiscountMax) {
         tier = "finance";
         reasons.push(
           `Discretionary discount is greater than ${percentLabel(activeRules.headSalesDiscountMax)}.`
@@ -554,6 +573,12 @@ var require_calculator = __commonJS({
       creditCardMaximumInvoice: pricingPolicy.creditCardMaximumInvoice ?? rules.creditCardMaximumInvoice,
       salesDirectorDiscountMax: pricingPolicy.salesDirectorDiscountMax ?? 0.1,
       headSalesDiscountMax: pricingPolicy.headSalesDiscountMax ?? 0.3,
+      // Renewal approval, configurable in Settings. The merge here is an explicit allow-list, not a
+      // spread, so a key that is not named here is accepted, validated, normalized -- and then
+      // silently ignored. These three have to be listed or the settings do nothing.
+      renewalApprovalTier: pricingPolicy.renewalApprovalTier ?? "ccso",
+      renewalDiscountApprovalMin: pricingPolicy.renewalDiscountApprovalMin ?? 0,
+      renewalRelaxesNonDiscountApprovals: pricingPolicy.renewalRelaxesNonDiscountApprovals ?? true,
       termRules: rules.termRules.map((rule) => ({
         ...rule,
         discount: pricingPolicy.termDiscounts?.[String(rule.months)] ?? rule.discount
@@ -580,7 +605,7 @@ var require_calculator = __commonJS({
         annualAmount: pricingPolicy.addOnAnnualAmounts?.[rule.key] ?? rule.annualAmount
       }))
     });
-    var calculateQuote2 = (rawInput, pricingPolicy = {}, settingsVersion = 0) => {
+    var calculateQuote2 = (rawInput, pricingPolicy = {}, settingsVersion = 0, dealCategory2 = "new_business") => {
       const activeRules = buildActiveRules(pricingPolicy);
       const input = normalizeInput(rawInput, activeRules);
       const termRule = activeRules.termRules.find(({ months }) => months === input.termMonths);
@@ -732,7 +757,8 @@ var require_calculator = __commonJS({
         largestDiscretionaryDiscount,
         committedArr,
         hasOauthDependencyFailure,
-        activeRules
+        activeRules,
+        dealCategory2
       );
       const legacyGuardrails = [];
       if (largestDiscretionaryDiscount > activeRules.headSalesDiscountMax && input.termMonths > 12) {
@@ -1697,6 +1723,24 @@ var require_appSettings = __commonJS({
       creditCardMaximumInvoice: 25e3,
       salesDirectorDiscountMax: 0.1,
       headSalesDiscountMax: 0.3,
+      // RENEWAL APPROVAL. Configurable rather than hard-coded, like every other threshold here --
+      // who signs off on a concession is a policy that changes without the code changing. Holly,
+      // 2026-08-28.
+      //
+      // On a renewal, a discount above renewalDiscountApprovalMin routes to renewalApprovalTier and
+      // the size-based Sales Director / Head of Sales / Finance ladder does NOT apply: renewals have
+      // one approver for discounts. Set renewalDiscountApprovalMin above 0 to allow a small renewal
+      // discount without sign-off, or set renewalApprovalTier to 'finance' etc. to route elsewhere.
+      renewalApprovalTier: "ccso",
+      renewalDiscountApprovalMin: 0,
+      // Renewals skip the NON-discount approvals: the Enterprise ARR minimum, the redlining ARR
+      // threshold, and the non-standard-terms escalation. Holly's call -- a renewal is expected to
+      // come in under the $25,000 new-business minimum, and that rule BLOCKS Lock in rather than
+      // merely requiring approval, so leaving it on would refuse every small renewal outright.
+      //
+      // The OAuth dependency check is NOT part of this and always applies: it is a validity rule --
+      // the add-on cannot function without a professional-services item -- not a commercial one.
+      renewalRelaxesNonDiscountApprovals: true,
       termDiscounts: { "12": 0, "24": 0.025, "36": 0.05 },
       paymentPremiums: {
         annual_in_advance: 0,
@@ -1733,6 +1777,11 @@ var require_appSettings = __commonJS({
       renewalPipelineIds: [],
       pricingPolicy: defaultPricingPolicy()
     });
+    var APPROVAL_TIERS = Object.freeze(["none", "sales_director", "head_sales", "ccso", "finance"]);
+    var requireApprovalTier = (value, field) => {
+      if (!APPROVAL_TIERS.includes(value)) throw new Error(`INVALID_SETTINGS:${field}`);
+      return value;
+    };
     var requireNumber = (value, min, max, field) => {
       if (typeof value !== "number" || !Number.isFinite(value) || value < min || value > max) {
         throw new Error(`INVALID_SETTINGS:${field}`);
@@ -1771,6 +1820,17 @@ var require_appSettings = __commonJS({
           1,
           "salesDirectorDiscountMax"
         ),
+        renewalApprovalTier: requireApprovalTier(
+          value.renewalApprovalTier ?? defaults.renewalApprovalTier,
+          "renewalApprovalTier"
+        ),
+        renewalDiscountApprovalMin: requireNumber(
+          value.renewalDiscountApprovalMin ?? defaults.renewalDiscountApprovalMin,
+          0,
+          1,
+          "renewalDiscountApprovalMin"
+        ),
+        renewalRelaxesNonDiscountApprovals: typeof value.renewalRelaxesNonDiscountApprovals === "boolean" ? value.renewalRelaxesNonDiscountApprovals : defaults.renewalRelaxesNonDiscountApprovals,
         headSalesDiscountMax: requireNumber(
           value.headSalesDiscountMax ?? defaults.headSalesDiscountMax,
           0,
@@ -2011,7 +2071,7 @@ var require_appSettings = __commonJS({
         return crypto2.timingSafeEqual(Buffer.from(expected), Buffer.from(actual));
       });
     };
-    var dealCategory = (settings, dealType, pipelineId) => {
+    var dealCategory2 = (settings, dealType, pipelineId) => {
       if (settings.renewalPipelineIds.includes(pipelineId)) return "renewal";
       if (settings.newBusinessPipelineIds.includes(pipelineId)) return "new_business";
       const normalized = String(dealType || "").toLowerCase().replace(/[^a-z]/g, "");
@@ -2021,11 +2081,13 @@ var require_appSettings = __commonJS({
       return "unsupported";
     };
     var isDealAllowed2 = (settings, dealType, pipelineId) => {
-      const category = dealCategory(settings, dealType, pipelineId);
+      const category = dealCategory2(settings, dealType, pipelineId);
       return category === "new_business" && settings.allowNewBusiness || category === "renewal" && settings.allowRenewals;
     };
     module2.exports = {
+      APPROVAL_TIERS,
       accountIdFromContext: accountIdFromContext2,
+      dealCategory: dealCategory2,
       defaultPricingPolicy,
       defaultSettings,
       isDealAllowed: isDealAllowed2,
@@ -2051,7 +2113,8 @@ var {
   readDealPipelines,
   readSettings,
   saveSettings,
-  userIdFromContext
+  userIdFromContext,
+  dealCategory
 } = require_appSettings();
 var {
   buildDealLineItems,
@@ -2307,7 +2370,12 @@ var calculateAndSaveOption = async (client, dealId, state, parameters, settings)
   if (!incoming || typeof incoming !== "object" || Array.isArray(incoming)) {
     throw new Error("INVALID_OPTION");
   }
-  const result = calculateQuote(incoming.input, settings.pricingPolicy, settings.version);
+  const result = calculateQuote(
+    incoming.input,
+    settings.pricingPolicy,
+    settings.version,
+    dealCategory(settings, state.dealType, state.pipelineId)
+  );
   console.log("Nylas pricing calculate: calculation completed.");
   const existingIndex = incoming.id ? state.document.options.findIndex(({ id }) => id === incoming.id) : -1;
   if (existingIndex === -1 && state.document.options.length >= MAX_OPTIONS) {
@@ -2527,7 +2595,12 @@ var chooseOption = async (client, dealId, state, parameters, settings) => {
   };
 };
 var lockLiveCalculation = async (client, dealId, state, parameters, portalId, settings) => {
-  const result = calculateQuote(parameters.input, settings.pricingPolicy, settings.version);
+  const result = calculateQuote(
+    parameters.input,
+    settings.pricingPolicy,
+    settings.version,
+    dealCategory(settings, state.dealType, state.pipelineId)
+  );
   if (result.blockingReasons.length > 0) throw new Error("OPTION_BLOCKED");
   if (result.requiresBankTransfer && parameters.paymentMethod !== "ach") {
     console.warn(
@@ -3208,7 +3281,12 @@ exports.main = async (context) => {
     if (action === "preview") {
       return response(200, {
         success: true,
-        previewResult: calculateQuote(parameters.input, settings.pricingPolicy, settings.version)
+        previewResult: calculateQuote(
+          parameters.input,
+          settings.pricingPolicy,
+          settings.version,
+          dealCategory(settings, state.dealType, state.pipelineId)
+        )
       });
     }
     if (action === "lock_live") {

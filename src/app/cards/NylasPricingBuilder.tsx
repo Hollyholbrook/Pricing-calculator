@@ -652,6 +652,10 @@ const approvalLabel = (value?: string) =>
     none: "No approval",
     sales_director: "Sales Director",
     head_sales: "Head of Sales",
+    // Renewals route discounts here instead of the size-based ladder. Configurable in Settings --
+    // renewalApprovalTier -- so this map has to cover every tier the settings allow, or a banner
+    // renders a raw key like "ccso" at a rep.
+    ccso: "CCSO",
     finance: "Finance",
   })[value || "none"] ||
   value ||

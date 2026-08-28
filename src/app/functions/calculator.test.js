@@ -692,3 +692,119 @@ test('the OAuth add-on dependency reads the same single source', () => {
   });
   assert.equal(withOne.blockingReasons.includes('OAUTH_REQUIRES_PROFESSIONAL_SERVICES'), false);
 });
+
+// Renewals route discounts to their own approver, configurable in Settings.
+//
+// Holly, 2026-08-28: a discount entered in the renewals flow needs CCSO approval, and the
+// size-based Sales Director / Head of Sales / Finance ladder does not apply to renewals. Every
+// value is a setting, because who signs off on a concession is policy, not arithmetic.
+const renewalInput = (extra = {}) => ({
+  startDate: '2026-09-01',
+  termMonths: 12,
+  paymentFrequency: 'annual_in_advance',
+  volumes: {
+    connect_ca: 6_000,
+    calendar_ca: 0,
+    notetaker_bot_hours: 0,
+    agent_accounts: 0,
+    agent_email_thousands: 0,
+    agent_storage_gb: 0,
+    agent_bandwidth_gb: 0,
+  },
+  supportLevel: 'basic',
+  onboardingPackage: 'none',
+  addOns: [],
+  professionalServices: [],
+  discretionaryDiscount: 0,
+  autoRenewal: true,
+  renewalTermMonths: 12,
+  nonRenewalNoticeDays: 60,
+  redliningRequested: false,
+  nonStandardTerms: false,
+  specialTerms: '',
+  ...extra,
+});
+
+test('a discount on a renewal routes to the CCSO, not the size ladder', () => {
+  for (const discount of [0.05, 0.2, 0.45]) {
+    const renewal = calculateQuote(renewalInput({ discretionaryDiscount: discount }), {}, 0, 'renewal');
+    assert.equal(
+      renewal.approvalTierRequired,
+      'ccso',
+      `${discount * 100}% on a renewal must go to the CCSO, not a size-based tier`,
+    );
+  }
+  // No discount, no approval.
+  assert.equal(calculateQuote(renewalInput(), {}, 0, 'renewal').approvalTierRequired, 'none');
+});
+
+test('new business still uses the size ladder', () => {
+  const tier = (d) =>
+    calculateQuote(renewalInput({ discretionaryDiscount: d }), {}, 0, 'new_business')
+      .approvalTierRequired;
+  assert.equal(tier(0.05), 'sales_director');
+  assert.equal(tier(0.2), 'head_sales');
+  assert.equal(tier(0.45), 'finance');
+  // And the default category is new business, so nothing changes for existing callers.
+  assert.equal(
+    calculateQuote(renewalInput({ discretionaryDiscount: 0.05 })).approvalTierRequired,
+    'sales_director',
+  );
+});
+
+test('the renewal approver and threshold come from Settings', () => {
+  const policy = { renewalApprovalTier: 'finance', renewalDiscountApprovalMin: 0.1 };
+  // Under the configured floor: no approval at all.
+  assert.equal(
+    calculateQuote(renewalInput({ discretionaryDiscount: 0.05 }), policy, 0, 'renewal')
+      .approvalTierRequired,
+    'none',
+  );
+  // Over it: the configured approver, not the hard-coded one.
+  assert.equal(
+    calculateQuote(renewalInput({ discretionaryDiscount: 0.15 }), policy, 0, 'renewal')
+      .approvalTierRequired,
+    'finance',
+  );
+});
+
+test('renewals skip the non-discount approvals that block new business', () => {
+  // Far below the $25,000 Enterprise minimum. On new business this BLOCKS Lock in; a renewal is
+  // expected to come in under it, so leaving that on would refuse every small renewal outright.
+  const small = renewalInput({ volumes: { ...renewalInput().volumes, connect_ca: 10 } });
+  const asNew = calculateQuote(small, {}, 0, 'new_business');
+  assert.ok(asNew.blockingReasons.includes('BELOW_ENTERPRISE_MINIMUM'));
+
+  const asRenewal = calculateQuote(small, {}, 0, 'renewal');
+  assert.deepEqual(asRenewal.blockingReasons, [], 'a small renewal must not be blocked');
+  assert.equal(asRenewal.approvalTierRequired, 'none');
+
+  // Redlining below the ARR threshold: blocks new business, not renewals.
+  const redlined = { ...small, redliningRequested: true };
+  assert.ok(
+    calculateQuote(redlined, {}, 0, 'new_business').blockingReasons.includes(
+      'REDLINING_BELOW_THRESHOLD',
+    ),
+  );
+  assert.deepEqual(calculateQuote(redlined, {}, 0, 'renewal').blockingReasons, []);
+  // The Legal note survives, because it informs rather than gates.
+  assert.ok(
+    calculateQuote(redlined, {}, 0, 'renewal').approvalReasons.some((r) => /Legal/.test(r)),
+  );
+
+  // Non-standard terms are NOT asserted here: the option is retired and normalizeInput strips it,
+  // so it escalates nothing on either category. The renewal branch skips its check anyway; there
+  // is just no way to reach it from an input, and a test that pretended otherwise would be
+  // asserting against a fixture rather than against behaviour.
+});
+
+test('the OAuth dependency still blocks a renewal, because it is a validity rule', () => {
+  // Turnkey Verified OAuth with no professional-services item cannot function. That is not a
+  // commercial approval and is deliberately NOT relaxed for renewals.
+  const broken = renewalInput({ addOns: ['verified_oauth'], professionalServices: [] });
+  assert.ok(
+    calculateQuote(broken, {}, 0, 'renewal').blockingReasons.includes(
+      'OAUTH_REQUIRES_PROFESSIONAL_SERVICES',
+    ),
+  );
+});

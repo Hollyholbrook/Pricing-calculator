@@ -11,6 +11,7 @@ const {
   readSettings,
   saveSettings,
   userIdFromContext,
+  dealCategory,
 } = require('./appSettings');
 const {
   buildDealLineItems,
@@ -426,7 +427,12 @@ const calculateAndSaveOption = async (client, dealId, state, parameters, setting
     throw new Error('INVALID_OPTION');
   }
 
-  const result = calculateQuote(incoming.input, settings.pricingPolicy, settings.version);
+  const result = calculateQuote(
+    incoming.input,
+    settings.pricingPolicy,
+    settings.version,
+    dealCategory(settings, state.dealType, state.pipelineId),
+  );
   console.log('Nylas pricing calculate: calculation completed.');
   const existingIndex = incoming.id
     ? state.document.options.findIndex(({ id }) => id === incoming.id)
@@ -684,7 +690,12 @@ const lockLiveCalculation = async (
   portalId,
   settings,
 ) => {
-  const result = calculateQuote(parameters.input, settings.pricingPolicy, settings.version);
+  const result = calculateQuote(
+    parameters.input,
+    settings.pricingPolicy,
+    settings.version,
+    dealCategory(settings, state.dealType, state.pipelineId),
+  );
   if (result.blockingReasons.length > 0) throw new Error('OPTION_BLOCKED');
   // Credit card is not permitted above the invoice limit -- ACH/Bank Transfer (wire) is required.
   //
@@ -1700,7 +1711,12 @@ exports.main = async (context) => {
     if (action === 'preview') {
       return response(200, {
         success: true,
-        previewResult: calculateQuote(parameters.input, settings.pricingPolicy, settings.version),
+        previewResult: calculateQuote(
+          parameters.input,
+          settings.pricingPolicy,
+          settings.version,
+          dealCategory(settings, state.dealType, state.pipelineId),
+        ),
       });
     }
     if (action === 'lock_live') {
