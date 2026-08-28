@@ -1301,6 +1301,11 @@ const OptionEditor = ({
   // until it is chosen, rather than the card silently switching the method for them. A quietly
   // changed payment method is not something anyone would notice on a $250,000 order form.
   const requiresBankTransfer = previewResult?.requiresBankTransfer === true;
+  // A discount without a stated reason cannot be locked in. Holly, 2026-08-28. The reason is what
+  // the approver reads and what the Deal keeps as the record of why a concession was given, so an
+  // empty one makes the approval trail worthless. Whitespace does not count.
+  const discountReasonMissing = hasAnyDiscount && discountReason.trim() === "";
+
   const bankTransferNotSelected =
     requiresBankTransfer && paymentMethod !== BANK_TRANSFER_METHOD;
 
@@ -1685,10 +1690,17 @@ const OptionEditor = ({
                   placeholder="Why is this discount being given?"
                   onChange={(value) => onDiscountReasonChange(String(value))}
                 />
-                <Text variant="microcopy">
-                  Recorded on the Deal for approval. Appears only because a
-                  discount has been entered.
-                </Text>
+                {discountReasonMissing ? (
+                  <Text variant="microcopy" format={{ fontWeight: "bold" }}>
+                    Required. A discount cannot be locked in without a reason —
+                    this is what the approver reads.
+                  </Text>
+                ) : (
+                  <Text variant="microcopy">
+                    Recorded on the Deal for approval. Appears only because a
+                    discount has been entered.
+                  </Text>
+                )}
               </Flex>
             )}
           </>
@@ -1758,6 +1770,9 @@ const OptionEditor = ({
         <Alert title={approvalBannerTitle} variant={approvalBannerVariant}>
           {[
             ...previewResult.blockingReasons,
+            ...(discountReasonMissing
+              ? ["A discount reason is required before this can be locked in."]
+              : []),
             ...previewResult.approvalReasons,
           ].join(" · ") || "This configuration can be locked in as priced."}
         </Alert>
@@ -1792,7 +1807,10 @@ const OptionEditor = ({
             // The server rejects an over-long title with a generic INVALID_QUOTE_CONTENT, after
             // the Deal line items have already been replaced. Blocking here keeps the field's own
             // message as the only thing the rep has to read.
-            quoteTitleTooLong
+            quoteTitleTooLong ||
+            // Refused server-side too, before any write. Stopped here as well so the rep gets the
+            // field's own message rather than a generic failure.
+            discountReasonMissing
           }
         >
           {/* One label, always. It used to read "Update existing config" when the configuration

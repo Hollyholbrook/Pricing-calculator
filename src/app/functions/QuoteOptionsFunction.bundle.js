@@ -2137,6 +2137,7 @@ var SAFE_ERRORS = Object.freeze({
   INVALID_OPTION: "The quote option contains invalid or incomplete information.",
   INVALID_QUOTE_CONTENT: "The quote display choices are invalid or incomplete.",
   LINE_ITEM_SYNC_FAILED: "HubSpot could not replace the Deal line items. Review the Deal before trying again.",
+  DISCOUNT_REASON_REQUIRED: "A discount reason is required when any discount is applied. Add one and try again.",
   OPTION_BLOCKED: "This option has blocking policy issues and cannot be selected.",
   PAYMENT_METHOD_REQUIRES_BANK_TRANSFER: "Credit card is not permitted on an invoice above the limit. Set Payment Method to Bank transfer / ACH before locking in.",
   OPTION_NOT_FOUND: "The selected quote option could not be found.",
@@ -2526,6 +2527,12 @@ var lockLiveCalculation = async (client, dealId, state, parameters, portalId, se
       `Nylas pricing: refused Lock in -- largest invoice ${result.largestInvoiceAmount} exceeds the ${result.creditCardMaximumInvoice} credit card limit and payment method was "${parameters.paymentMethod || "unset"}".`
     );
     throw new Error("PAYMENT_METHOD_REQUIRES_BANK_TRANSFER");
+  }
+  if (result.largestDiscretionaryDiscount > 0 && String(parameters.discountReason || "").trim() === "") {
+    console.warn(
+      `Nylas pricing: refused Lock in -- a discount of ${result.largestDiscretionaryDiscount} was entered with no discount reason.`
+    );
+    throw new Error("DISCOUNT_REASON_REQUIRED");
   }
   const input = normalizeStoredInput(parameters.input, settings.pricingPolicy);
   const liveOption = {

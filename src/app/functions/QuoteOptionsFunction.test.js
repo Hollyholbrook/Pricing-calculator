@@ -664,3 +664,75 @@ test('an absent or junk flag never archives', async () => {
   assert.equal(await _test.archiveSupersededQuote(client, undefined, '222'), null);
   assert.deepEqual(archived, []);
 });
+
+// A discount cannot be locked in without a reason.
+//
+// The reason is what the approver reads and what the Deal keeps as the record of why a concession
+// was given. Holly, 2026-08-28. Enforced on the server as well as the card, because the card is
+// not the only way in -- and ABOVE every write, because syncDealLineItems archives the Deal's line
+// items before it creates replacements.
+const discountedInput = (extra = {}) => ({
+  startDate: '2026-09-01',
+  termMonths: 12,
+  paymentFrequency: 'monthly_in_advance',
+  volumes: {
+    connect_ca: 100,
+    calendar_ca: 0,
+    notetaker_bot_hours: 0,
+    agent_accounts: 0,
+    agent_email_thousands: 0,
+    agent_storage_gb: 0,
+    agent_bandwidth_gb: 0,
+  },
+  supportLevel: 'premium',
+  onboardingPackage: 'strategic',
+  addOns: ['privacy_filter'],
+  professionalServices: ['gtm_review'],
+  discretionaryDiscount: 0,
+  autoRenewal: true,
+  renewalTermMonths: 12,
+  nonRenewalNoticeDays: 60,
+  redliningRequested: false,
+  nonStandardTerms: false,
+  specialTerms: '',
+  ...extra,
+});
+
+test('every discount surface is caught by the reason requirement', () => {
+  // The guard tests result.largestDiscretionaryDiscount, so what matters is that a discount on
+  // ANY surface raises it -- not just the deal-wide one.
+  const surfaces = {
+    'deal-wide': { discretionaryDiscount: 0.1 },
+    product: { productDiscounts: { connect_ca: 0.6 } },
+    'add-on': { addOnDiscounts: { privacy_filter: 0.5 } },
+    support: { supportDiscount: 0.2 },
+    onboarding: { onboardingDiscount: 0.3 },
+    'professional services': { professionalServicesDiscount: 0.4 },
+  };
+  for (const [name, extra] of Object.entries(surfaces)) {
+    const result = calculateQuote(discountedInput(extra));
+    assert.ok(
+      result.largestDiscretionaryDiscount > 0,
+      `a ${name} discount must raise largestDiscretionaryDiscount or the guard misses it`,
+    );
+  }
+  assert.equal(calculateQuote(discountedInput()).largestDiscretionaryDiscount, 0);
+});
+
+test('the discount reason guard runs before anything is written', () => {
+  const source = require('node:fs').readFileSync(
+    require('node:path').join(__dirname, 'QuoteOptionsFunction.js'),
+    'utf8',
+  );
+  const lock = source.slice(source.indexOf('const lockLiveCalculation'));
+  const guard = lock.indexOf("throw new Error('DISCOUNT_REASON_REQUIRED')");
+  const firstWrite = lock.indexOf('await syncDealLineItems(');
+  assert.ok(guard > 0, 'the guard must exist');
+  assert.ok(firstWrite > 0, 'the line item sync must be findable');
+  assert.ok(
+    guard < firstWrite,
+    'the guard must run BEFORE syncDealLineItems, which archives before it creates',
+  );
+  // Whitespace is not a reason.
+  assert.match(source, /String\(parameters\.discountReason \|\| ''\)\.trim\(\) === ''/);
+});

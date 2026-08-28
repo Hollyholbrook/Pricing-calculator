@@ -194,6 +194,8 @@ const SAFE_ERRORS = Object.freeze({
   INVALID_OPTION: 'The quote option contains invalid or incomplete information.',
   INVALID_QUOTE_CONTENT: 'The quote display choices are invalid or incomplete.',
   LINE_ITEM_SYNC_FAILED: 'HubSpot could not replace the Deal line items. Review the Deal before trying again.',
+  DISCOUNT_REASON_REQUIRED:
+    'A discount reason is required when any discount is applied. Add one and try again.',
   OPTION_BLOCKED: 'This option has blocking policy issues and cannot be selected.',
   PAYMENT_METHOD_REQUIRES_BANK_TRANSFER:
     'Credit card is not permitted on an invoice above the limit. Set Payment Method to ' +
@@ -694,6 +696,28 @@ const lockLiveCalculation = async (
         `credit card limit and payment method was "${parameters.paymentMethod || 'unset'}".`,
     );
     throw new Error('PAYMENT_METHOD_REQUIRES_BANK_TRANSFER');
+  }
+  // A discount without a stated reason cannot be locked in. Holly, 2026-08-28.
+  //
+  // The reason is what the approver reads and what the Deal keeps as the record of why a
+  // concession was given -- an empty one makes the approval trail worthless, and it is the field
+  // nobody fills in unless something stops them.
+  //
+  // largestDiscretionaryDiscount is the max across every discount surface -- products, add-ons,
+  // support, onboarding and professional services -- so this catches a discount anywhere, not
+  // just the deal-wide one. Verified against each surface individually.
+  //
+  // Same position rule as the guard above: this is still ABOVE every write. The card blocks the
+  // button too, but the card is not the only way in.
+  if (
+    result.largestDiscretionaryDiscount > 0 &&
+    String(parameters.discountReason || '').trim() === ''
+  ) {
+    console.warn(
+      'Nylas pricing: refused Lock in -- a discount of ' +
+        `${result.largestDiscretionaryDiscount} was entered with no discount reason.`,
+    );
+    throw new Error('DISCOUNT_REASON_REQUIRED');
   }
   // Never carry the raw card input forward. It can hold human labels the CATALOG cannot key on,
   // duplicate professional-services entries, and — worst — redline text the rep already retracted
