@@ -811,3 +811,51 @@ test('the tier properties are allowed through and are droppable', () => {
     assert.equal(optional.has(property), true, `${property} must be droppable`);
   }
 });
+
+// proposed_rate on the charge lines too, not only the metered ones.
+//
+// Redundant in a strict sense -- a charge line has quantity 1, so HubSpot derives the net from
+// price minus discount and prints it itself. Sent anyway so one template column can bind to one
+// property and be right on every row, instead of reading blank on drawdown, support, add-ons,
+// onboarding and professional services. Holly asked for this on 2026-08-28.
+test('every line that carries a price also carries proposed_rate', () => {
+  const selected = option();
+  const items = buildDealLineItems(selected);
+  const priced = items.filter((item) => item.properties.price != null);
+  assert.ok(priced.length >= 10, `expected the charge lines too, got ${priced.length}`);
+
+  for (const item of priced) {
+    const rate = item.properties.proposed_rate;
+    assert.ok(rate != null, `${item.key} carries a price but no proposed_rate`);
+    // The three fields have to agree to the cent, or the quote contradicts itself: the rate column
+    // would state one number while the money columns are computed from another.
+    const net = Number(item.properties.price) - Number(item.properties.discount || 0);
+    assert.equal(
+      Math.round(net * 100) / 100,
+      Math.round(Number(rate) * 100) / 100,
+      `${item.key}: proposed_rate must equal price minus discount`,
+    );
+  }
+
+  // Named explicitly rather than inferred from the loop, so this fails if a builder stops
+  // producing one of them rather than silently checking fewer lines.
+  for (const key of [
+    'subscription:nylas_enterprise',
+    'support:full',
+    'addon:enterprise_accelerator',
+    'onboarding:quick_launch_plus',
+  ]) {
+    const item = items.find((line) => line.key === key);
+    assert.ok(item, `${key} must be built`);
+    assert.ok(item.properties.proposed_rate != null, `${key} must carry proposed_rate`);
+  }
+
+  // The fixture discounts, so at least one charge line must show a real list-to-net gap.
+  assert.ok(
+    priced.some(
+      (item) =>
+        !String(item.key).startsWith('metered:') && Number(item.properties.discount || 0) > 0,
+    ),
+    'a discounted charge line is needed or this proves nothing',
+  );
+});

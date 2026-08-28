@@ -311,12 +311,28 @@ const baseManagedProperties = ({ option, key, component, product, source }) => (
 const priceProperties = (price, listPrice) => {
   if (price == null) return {};
   const net = round(price, 2);
+  // proposed_rate on EVERY line that carries a price, not only the metered ones. On a charge line
+  // HubSpot can already work the net out for itself -- quantity is 1, so `price` minus `discount`
+  // is what it prints in its own Net price column -- so this is strictly redundant there. It is
+  // sent anyway so that ONE template column can be bound to ONE property and be correct on every
+  // row. Without it, a Proposed Rate column spanning all line items reads blank on the drawdown,
+  // support, add-on, onboarding and professional-services rows. Holly, 2026-08-28.
+  //
+  // Rounded to 2, which is exactly `price` minus `discount` as sent below -- both are rounded
+  // before the subtraction, so the three fields agree to the cent by construction rather than by
+  // luck. The metered lines override this afterwards with their full-precision per-unit rate,
+  // which is what a rate column needs and what a currency amount does not.
+  //
   // No discount to state when nothing was given away. Guard on a positive gap rather than
   // inequality: floating point can leave a sub-cent difference on an undiscounted line.
-  if (listPrice == null) return { price: String(net) };
+  if (listPrice == null) return { price: String(net), proposed_rate: String(net) };
   const list = round(listPrice, 2);
-  if (list - net < 0.01) return { price: String(net) };
-  return { price: String(list), discount: String(round(list - net, 2)) };
+  if (list - net < 0.01) return { price: String(net), proposed_rate: String(net) };
+  return {
+    price: String(list),
+    discount: String(round(list - net, 2)),
+    proposed_rate: String(net),
+  };
 };
 
 // billingPeriodsPerYear defaults to the payment schedule, but a line can override it. The seven

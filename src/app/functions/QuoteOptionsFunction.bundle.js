@@ -1085,10 +1085,14 @@ var require_lineItemModel = __commonJS({
     var priceProperties = (price, listPrice) => {
       if (price == null) return {};
       const net = round(price, 2);
-      if (listPrice == null) return { price: String(net) };
+      if (listPrice == null) return { price: String(net), proposed_rate: String(net) };
       const list = round(listPrice, 2);
-      if (list - net < 0.01) return { price: String(net) };
-      return { price: String(list), discount: String(round(list - net, 2)) };
+      if (list - net < 0.01) return { price: String(net), proposed_rate: String(net) };
+      return {
+        price: String(list),
+        discount: String(round(list - net, 2)),
+        proposed_rate: String(net)
+      };
     };
     var recurringProperties = ({
       option,
