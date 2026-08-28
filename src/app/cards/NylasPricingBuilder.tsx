@@ -236,6 +236,9 @@ interface ServerlessBody {
   productLibrary?: ProductLibraryReport;
   discountReason?: string;
   quoteTemplates?: { id: string; name: string }[];
+  contacts?: { id: string; label: string }[];
+  contactSource?: "deal" | "company" | "none";
+  dealContactIds?: string[];
   defaultQuoteTemplateId?: string;
   dealName?: string;
 }
@@ -743,11 +746,30 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
   // Defaults to FALSE: every lock creates a new quote, and throwing the previous one away is a
   // deliberate choice the rep makes, not a side effect of clicking the button.
   const [replaceExistingQuote, setReplaceExistingQuote] = useState(false);
+  // The contact that goes on the Quote. HubSpot requires one on a CPQ quote, and a Deal without
+  // one produced a quote HubSpot rejected with a message that blamed the template.
+  const [contacts, setContacts] = useState<{ id: string; label: string }[]>([]);
+  const [contactSource, setContactSource] = useState<
+    "deal" | "company" | "none"
+  >("none");
+  const [contactId, setContactId] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [unsupportedDeal, setUnsupportedDeal] = useState(false);
 
   const updateFromBody = (body: ServerlessBody) => {
     if (body.dealName) setDealName(body.dealName);
+    if (body.contacts) {
+      setContacts(body.contacts);
+      setContactSource(body.contactSource || "none");
+      // Preselect the Deal's contact when there is exactly one -- the common case, and the rep
+      // should not have to confirm what is already true. With several, or with company contacts
+      // as the fallback, the choice is theirs.
+      setContactId((current) => {
+        if (current !== "") return current;
+        const dealContacts = body.dealContactIds || [];
+        return dealContacts.length === 1 ? String(dealContacts[0]) : "";
+      });
+    }
     // Restore the stored discount reason. Only when the box is still untouched, so a later
     // response cannot overwrite what the rep is in the middle of typing.
     //
@@ -909,6 +931,7 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
         paymentMethod,
         discountReason,
         replaceExistingQuote,
+        contactId,
       });
       // Every lock creates a NEW quote -- generation is unconditional, because the hash-based
       // reuse it replaced is what let a stale quote come back rendered with the old template.
@@ -995,6 +1018,10 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
         quoteTitleTooLong={quoteTitleTooLong}
         onQuoteTitleChange={setQuoteTitle}
         onInputChange={updateInput}
+        contacts={contacts}
+        contactSource={contactSource}
+        contactId={contactId}
+        onContactChange={setContactId}
         replaceExistingQuote={replaceExistingQuote}
         onReplaceExistingQuoteChange={setReplaceExistingQuote}
         onPreview={previewQuote}
@@ -1019,6 +1046,10 @@ const OptionEditor = ({
   quoteTitleTooLong,
   onQuoteTitleChange,
   onInputChange,
+  contacts,
+  contactSource,
+  contactId,
+  onContactChange,
   replaceExistingQuote,
   onReplaceExistingQuoteChange,
   onPreview,
@@ -1041,6 +1072,10 @@ const OptionEditor = ({
     field: K,
     value: QuoteInput[K],
   ) => void;
+  contacts: { id: string; label: string }[];
+  contactSource: "deal" | "company" | "none";
+  contactId: string;
+  onContactChange: (value: string) => void;
   replaceExistingQuote: boolean;
   onReplaceExistingQuoteChange: (checked: boolean) => void;
   onPreview: (input: QuoteInput) => Promise<QuoteResult>;
@@ -1371,6 +1406,9 @@ const OptionEditor = ({
   // the approver reads and what the Deal keeps as the record of why a concession was given, so an
   // empty one makes the approval trail worthless. Whitespace does not count.
   const discountReasonMissing = hasAnyDiscount && discountReason.trim() === "";
+  // HubSpot requires a Contact on a CPQ quote. Refused server-side too, but blocked here so the
+  // rep reads "choose a contact" rather than a 400 that blames the quote template.
+  const contactMissing = contactId === "";
 
   const bankTransferNotSelected =
     requiresBankTransfer && paymentMethod !== BANK_TRANSFER_METHOD;
@@ -1385,7 +1423,8 @@ const OptionEditor = ({
   useEffect(() => {
     if (bankTransferNotSelected) onPaymentMethodChange(BANK_TRANSFER_METHOD);
   }, [bankTransferNotSelected, onPaymentMethodChange]);
-  const lockBlocked = approvalBlocked || discountReasonMissing;
+  const lockBlocked =
+    approvalBlocked || discountReasonMissing || contactMissing;
   const approvalBannerVariant = lockBlocked
     ? "error"
     : previewResult?.approvalTierRequired === "none"
@@ -1816,6 +1855,37 @@ const OptionEditor = ({
           )}
         </Flex>
       )}
+      {/* The Quote's contact. HubSpot lists Contact as a REQUIRED association on a CPQ quote, and
+          the app used to send whatever the Deal happened to have -- so a Deal with none produced a
+          quote HubSpot refused, with an error that named the template instead. Holly, 2026-08-28. */}
+      <Flex direction="column" gap="xs">
+        <Select
+          label="Quote Contact"
+          name="quote_contact"
+          value={contactId}
+          options={[
+            { value: "", label: "Choose a contact…" },
+            ...contacts.map(({ id, label }) => ({ value: id, label })),
+          ]}
+          onChange={(value) => onContactChange(String(value ?? ""))}
+        />
+        {contacts.length === 0 ? (
+          <Text variant="microcopy" format={{ fontWeight: "bold" }}>
+            No contacts found on this Deal or its Company. Associate a contact
+            in HubSpot, then reload this card.
+          </Text>
+        ) : contactSource === "company" ? (
+          <Text variant="microcopy">
+            This Deal has no contact, so these are the Company&apos;s contacts.
+            The one you choose is added to the Deal when you lock in.
+          </Text>
+        ) : (
+          <Text variant="microcopy">
+            Goes on the Quote. HubSpot requires a contact on every quote.
+          </Text>
+        )}
+      </Flex>
+
       {/* The approval state sits with the action it gates, not up in the header: a blocking
           reason is only actionable next to the button it stops. */}
       {previewResult && (
@@ -1825,6 +1895,7 @@ const OptionEditor = ({
             ...(discountReasonMissing
               ? ["A discount reason is required before this can be locked in."]
               : []),
+            ...(contactMissing ? ["A contact is required on the Quote."] : []),
             ...previewResult.approvalReasons,
           ].join(" · ") || "This configuration can be locked in as priced."}
         </Alert>
@@ -1862,7 +1933,8 @@ const OptionEditor = ({
             quoteTitleTooLong ||
             // Refused server-side too, before any write. Stopped here as well so the rep gets the
             // field's own message rather than a generic failure.
-            discountReasonMissing
+            discountReasonMissing ||
+            contactMissing
           }
         >
           {/* One label, always. It used to read "Update existing config" when the configuration

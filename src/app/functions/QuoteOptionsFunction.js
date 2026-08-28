@@ -197,6 +197,9 @@ const SAFE_ERRORS = Object.freeze({
   LINE_ITEM_SYNC_FAILED: 'HubSpot could not replace the Deal line items. Review the Deal before trying again.',
   DISCOUNT_REASON_REQUIRED:
     'A discount reason is required when any discount is applied. Add one and try again.',
+  QUOTE_CONTACT_REQUIRED:
+    'A contact is required on the Quote. Choose one on the pricing card, or associate a contact ' +
+    'with this Deal.',
   OPTION_BLOCKED: 'This option has blocking policy issues and cannot be selected.',
   PAYMENT_METHOD_REQUIRES_BANK_TRANSFER:
     'Credit card is not permitted on an invoice above the limit. Set Payment Method to ' +
@@ -801,6 +804,8 @@ const lockLiveCalculation = async (
       // Strict === true so anything absent, malformed or truthy-but-not-boolean means "keep it".
       // The destructive reading must be the one that has to be asked for.
       replaceExistingQuote: parameters.replaceExistingQuote === true,
+      // The contact the rep picked on the card. Required on a CPQ quote; see generateQuote.
+      contactId: parameters.contactId,
     },
     portalId,
     settings,
@@ -1203,6 +1208,73 @@ const offeredQuoteTemplates = (templates, settings) => {
 const defaultQuoteTemplateFor = (settings) =>
   settings?.defaultQuoteTemplateId || configuredQuoteTemplateId();
 
+// The contacts a rep may put on the quote.
+//
+// HubSpot lists Contact as a REQUIRED association on a CPQ quote, and the old code associated
+// whatever the Deal happened to have -- so a Deal with no contact produced a quote with none, which
+// HubSpot rejects with a message that blames the template. Making the choice explicit is what stops
+// that. Holly, 2026-08-28.
+//
+// Deal contacts first. When the Deal has none, fall back to the contacts on its COMPANY, so the rep
+// can pick one rather than being told to go and associate it somewhere else first.
+const quoteContactOptions = async (client, dealId) => {
+  const readContacts = async (ids) => {
+    if (ids.length === 0) return [];
+    try {
+      const read = await client.crm.contacts.batchApi.read({
+        inputs: ids.map((id) => ({ id: String(id) })),
+        properties: ['firstname', 'lastname', 'email'],
+        idProperty: undefined,
+      });
+      return (read?.results || []).map((contact) => {
+        const first = contact?.properties?.firstname || '';
+        const last = contact?.properties?.lastname || '';
+        const email = contact?.properties?.email || '';
+        const name = `${first} ${last}`.trim();
+        return {
+          id: String(contact.id),
+          // Never blank: a nameless option is unpickable. Email, then the id, as fallbacks.
+          label: name && email ? `${name} (${email})` : name || email || `Contact ${contact.id}`,
+        };
+      });
+    } catch (error) {
+      console.warn(
+        'Nylas pricing: could not read contact details.',
+        safeProviderDiagnostics(error, 'read_quote_contacts'),
+      );
+      return ids.map((id) => ({ id: String(id), label: `Contact ${id}` }));
+    }
+  };
+
+  try {
+    const dealContactIds = await associatedIds(client, 'deals', dealId, 'contacts', 25);
+    if (dealContactIds.length > 0) {
+      return { contacts: await readContacts(dealContactIds), source: 'deal', dealContactIds };
+    }
+    const companyIds = await associatedIds(client, 'deals', dealId, 'companies', 1);
+    if (!companyIds[0]) return { contacts: [], source: 'none', dealContactIds: [] };
+    const companyContactIds = await associatedIds(
+      client,
+      'companies',
+      companyIds[0],
+      'contacts',
+      50,
+    );
+    return {
+      contacts: await readContacts(companyContactIds),
+      source: 'company',
+      dealContactIds: [],
+    };
+  } catch (error) {
+    // The picker is a convenience over a requirement -- never let it stop the card loading.
+    console.warn(
+      'Nylas pricing: could not list quote contacts.',
+      safeProviderDiagnostics(error, 'list_quote_contacts'),
+    );
+    return { contacts: [], source: 'none', dealContactIds: [] };
+  }
+};
+
 const usableQuoteTemplates = async (client) => {
   const templates = [];
   let after;
@@ -1542,10 +1614,40 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
       },
     );
 
-    const [contactIds, companyIds] = await Promise.all([
+    const [dealContactIds, companyIds] = await Promise.all([
       associatedIds(client, 'deals', dealId, 'contacts', 10),
       associatedIds(client, 'deals', dealId, 'companies', 1),
     ]);
+    // The rep's choice wins; the Deal's own contacts are the fallback for a configuration saved
+    // before the picker existed. HubSpot lists Contact as REQUIRED on a CPQ quote, so a quote with
+    // none is rejected -- with a message that blames the template, which is what made the
+    // 2026-08-28 failure so hard to read.
+    const chosenContactId = String(parameters.contactId || '');
+    const contactIds = chosenContactId ? [chosenContactId] : dealContactIds;
+    if (contactIds.length === 0) throw new Error('QUOTE_CONTACT_REQUIRED');
+
+    // A contact picked from the COMPANY is not on the Deal yet. Put it there: "make sure there's a
+    // contact on the deal" is the point of the picker, and a quote whose contact is absent from its
+    // own Deal is the same missing association one step later. createDefault rather than a typed
+    // id -- the default deal-to-contact association is exactly the standard one, and guessing a
+    // type id is how the units incident started.
+    if (chosenContactId && !dealContactIds.includes(chosenContactId)) {
+      try {
+        await client.crm.associations.v4.basicApi.createDefault(
+          'deals',
+          String(dealId),
+          'contacts',
+          chosenContactId,
+        );
+      } catch (error) {
+        // Not fatal: the quote can still carry the contact. Say so rather than failing the lock.
+        console.warn(
+          `Nylas pricing: could not associate contact ${chosenContactId} to deal ${dealId}. ` +
+            `${String(error?.body?.message || error?.message || error)}`,
+        );
+      }
+    }
+
     await Promise.all(
       contactIds.map((contactId) =>
         client.crm.associations.v4.basicApi.create(
@@ -1725,6 +1827,7 @@ exports.main = async (context) => {
         ...stateResponse(state),
         quoteTemplates: offeredQuoteTemplates(await usableQuoteTemplates(client), settings),
         defaultQuoteTemplateId: defaultQuoteTemplateFor(settings),
+        ...(await quoteContactOptions(client, dealId)),
         // The card shows this as the Quote title placeholder, so a rep who leaves the field
         // blank can see the name the quote will actually get rather than being surprised by it.
         dealName: state.dealName,

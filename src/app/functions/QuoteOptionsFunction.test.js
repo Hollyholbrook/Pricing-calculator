@@ -1012,3 +1012,43 @@ test('the template picker is narrowed by Settings, and never left empty', () => 
   assert.match(fn.slice(0, 900), /if \(enabled\.length === 0\) return templates;/);
   assert.match(fn.slice(0, 900), /if \(narrowed\.length === 0\) \{/);
 });
+
+// A Quote must carry a Contact, and the rep chooses which.
+//
+// HubSpot lists Contact as a REQUIRED association on a CPQ quote. The app used to associate
+// whatever the Deal happened to have -- an empty list was silently a no-op -- so a Deal with no
+// contact produced a quote HubSpot refused with "One or more associations are invalid", an error
+// that named the quote TEMPLATE and sent us looking in the wrong place for an evening.
+test('the quote contact is required, chosen, and added to the Deal when it comes from the Company', () => {
+  const source = require('node:fs').readFileSync(
+    require('node:path').join(__dirname, 'QuoteOptionsFunction.js'),
+    'utf8',
+  );
+
+  // Refused before the quote is created, with a message that says what to do.
+  assert.match(source, /if \(contactIds\.length === 0\) throw new Error\('QUOTE_CONTACT_REQUIRED'\)/);
+  assert.match(source, /QUOTE_CONTACT_REQUIRED:\s*\n\s*'A contact is required on the Quote/);
+
+  // The rep's choice wins; the Deal's own contacts remain the fallback for a configuration saved
+  // before the picker existed.
+  assert.match(source, /const contactIds = chosenContactId \? \[chosenContactId\] : dealContactIds;/);
+
+  // A contact picked from the COMPANY is put on the Deal -- that is the point of the picker.
+  assert.match(
+    source,
+    /if \(chosenContactId && !dealContactIds\.includes\(chosenContactId\)\)/,
+    'a company contact must be associated to the Deal',
+  );
+  // createDefault, not a guessed type id.
+  assert.match(source, /associations\.v4\.basicApi\.createDefault\(\s*'deals',/);
+  // ...and failing to do so must not fail the lock: the quote can still carry the contact.
+  const block = source.slice(source.indexOf("if (chosenContactId && !dealContactIds"));
+  assert.match(block.slice(0, 900), /catch \(error\) \{\s*\n\s*\/\/[\s\S]*?console\.warn\(/);
+
+  // Deal contacts first, Company contacts only as a fallback.
+  const options = source.slice(source.indexOf('const quoteContactOptions'));
+  assert.match(options.slice(0, 2500), /if \(dealContactIds\.length > 0\) \{[\s\S]*?source: 'deal'/);
+  assert.match(options.slice(0, 2500), /source: 'company'/);
+  // A nameless option is unpickable, so a label is always produced.
+  assert.match(options.slice(0, 2500), /name \|\| email \|\| `Contact \$\{contact\.id\}`/);
+});

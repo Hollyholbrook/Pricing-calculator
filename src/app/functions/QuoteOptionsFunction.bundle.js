@@ -2232,6 +2232,7 @@ var SAFE_ERRORS = Object.freeze({
   INVALID_QUOTE_CONTENT: "The quote display choices are invalid or incomplete.",
   LINE_ITEM_SYNC_FAILED: "HubSpot could not replace the Deal line items. Review the Deal before trying again.",
   DISCOUNT_REASON_REQUIRED: "A discount reason is required when any discount is applied. Add one and try again.",
+  QUOTE_CONTACT_REQUIRED: "A contact is required on the Quote. Choose one on the pricing card, or associate a contact with this Deal.",
   OPTION_BLOCKED: "This option has blocking policy issues and cannot be selected.",
   PAYMENT_METHOD_REQUIRES_BANK_TRANSFER: "Credit card is not permitted on an invoice above the limit. Set Payment Method to Bank transfer / ACH before locking in.",
   OPTION_NOT_FOUND: "The selected quote option could not be found.",
@@ -2686,7 +2687,9 @@ var lockLiveCalculation = async (client, dealId, state, parameters, portalId, se
       //
       // Strict === true so anything absent, malformed or truthy-but-not-boolean means "keep it".
       // The destructive reading must be the one that has to be asked for.
-      replaceExistingQuote: parameters.replaceExistingQuote === true
+      replaceExistingQuote: parameters.replaceExistingQuote === true,
+      // The contact the rep picked on the card. Required on a CPQ quote; see generateQuote.
+      contactId: parameters.contactId
     },
     portalId,
     settings
@@ -2952,6 +2955,61 @@ var offeredQuoteTemplates = (templates, settings) => {
   return narrowed;
 };
 var defaultQuoteTemplateFor = (settings) => settings?.defaultQuoteTemplateId || configuredQuoteTemplateId();
+var quoteContactOptions = async (client, dealId) => {
+  const readContacts = async (ids) => {
+    if (ids.length === 0) return [];
+    try {
+      const read = await client.crm.contacts.batchApi.read({
+        inputs: ids.map((id) => ({ id: String(id) })),
+        properties: ["firstname", "lastname", "email"],
+        idProperty: void 0
+      });
+      return (read?.results || []).map((contact) => {
+        const first = contact?.properties?.firstname || "";
+        const last = contact?.properties?.lastname || "";
+        const email = contact?.properties?.email || "";
+        const name = `${first} ${last}`.trim();
+        return {
+          id: String(contact.id),
+          // Never blank: a nameless option is unpickable. Email, then the id, as fallbacks.
+          label: name && email ? `${name} (${email})` : name || email || `Contact ${contact.id}`
+        };
+      });
+    } catch (error) {
+      console.warn(
+        "Nylas pricing: could not read contact details.",
+        safeProviderDiagnostics(error, "read_quote_contacts")
+      );
+      return ids.map((id) => ({ id: String(id), label: `Contact ${id}` }));
+    }
+  };
+  try {
+    const dealContactIds = await associatedIds(client, "deals", dealId, "contacts", 25);
+    if (dealContactIds.length > 0) {
+      return { contacts: await readContacts(dealContactIds), source: "deal", dealContactIds };
+    }
+    const companyIds = await associatedIds(client, "deals", dealId, "companies", 1);
+    if (!companyIds[0]) return { contacts: [], source: "none", dealContactIds: [] };
+    const companyContactIds = await associatedIds(
+      client,
+      "companies",
+      companyIds[0],
+      "contacts",
+      50
+    );
+    return {
+      contacts: await readContacts(companyContactIds),
+      source: "company",
+      dealContactIds: []
+    };
+  } catch (error) {
+    console.warn(
+      "Nylas pricing: could not list quote contacts.",
+      safeProviderDiagnostics(error, "list_quote_contacts")
+    );
+    return { contacts: [], source: "none", dealContactIds: [] };
+  }
+};
 var usableQuoteTemplates = async (client) => {
   const templates = [];
   let after;
@@ -3168,10 +3226,27 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
         await repairLineItemProperties(client, created.id, sent);
       }
     );
-    const [contactIds, companyIds] = await Promise.all([
+    const [dealContactIds, companyIds] = await Promise.all([
       associatedIds(client, "deals", dealId, "contacts", 10),
       associatedIds(client, "deals", dealId, "companies", 1)
     ]);
+    const chosenContactId = String(parameters.contactId || "");
+    const contactIds = chosenContactId ? [chosenContactId] : dealContactIds;
+    if (contactIds.length === 0) throw new Error("QUOTE_CONTACT_REQUIRED");
+    if (chosenContactId && !dealContactIds.includes(chosenContactId)) {
+      try {
+        await client.crm.associations.v4.basicApi.createDefault(
+          "deals",
+          String(dealId),
+          "contacts",
+          chosenContactId
+        );
+      } catch (error) {
+        console.warn(
+          `Nylas pricing: could not associate contact ${chosenContactId} to deal ${dealId}. ${String(error?.body?.message || error?.message || error)}`
+        );
+      }
+    }
     await Promise.all(
       contactIds.map(
         (contactId) => client.crm.associations.v4.basicApi.create(
@@ -3314,6 +3389,7 @@ exports.main = async (context) => {
         ...stateResponse(state),
         quoteTemplates: offeredQuoteTemplates(await usableQuoteTemplates(client), settings),
         defaultQuoteTemplateId: defaultQuoteTemplateFor(settings),
+        ...await quoteContactOptions(client, dealId),
         // The card shows this as the Quote title placeholder, so a rep who leaves the field
         // blank can see the name the quote will actually get rather than being surprised by it.
         dealName: state.dealName
