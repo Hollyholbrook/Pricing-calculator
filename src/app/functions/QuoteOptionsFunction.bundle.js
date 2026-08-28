@@ -2127,6 +2127,7 @@ var discountReasonProperties = (discountReason) => {
     pricing_discount_reason: discountReason.trim().slice(0, DISCOUNT_REASON_MAX_LENGTH)
   };
 };
+var QUOTE_ACCEPTANCE_METHOD = "clickwrap";
 var MAX_OPTIONS = 10;
 var MAX_PAYLOAD_LENGTH = 6e4;
 var SAFE_ERRORS = Object.freeze({
@@ -2861,13 +2862,17 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
   );
   const hash = contentHash(option, { ...content, templateId });
   let supersededQuoteId = "";
+  let dealOwnerId = "";
   try {
     const priorDeal = await client.crm.deals.basicApi.getById(String(dealId), [
-      "pricing_latest_quote_id"
+      "pricing_latest_quote_id",
+      "hubspot_owner_id"
     ]);
     supersededQuoteId = priorDeal?.properties?.pricing_latest_quote_id || "";
+    dealOwnerId = priorDeal?.properties?.hubspot_owner_id || "";
   } catch {
     supersededQuoteId = "";
+    dealOwnerId = "";
   }
   const lineItems = buildQuoteLineItems(option, content);
   let quote;
@@ -2901,7 +2906,23 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
         // cpq_template, and a quote must declare CPQ_QUOTE to be compatible with them. Without
         // it the quote defaults to the legacy model and HubSpot rejects the CPQ template it is
         // associated with.
-        hs_template_type: "CPQ_QUOTE"
+        hs_template_type: "CPQ_QUOTE",
+        // The seller is the DEAL OWNER, explicitly, not whoever clicked Lock in and not whatever
+        // the API defaults to. This used to be left unset on the reasoning that a quote inherits
+        // the owner from its associated deal -- a sentence from HubSpot's Quotes guide that was
+        // never checked against this portal. Holly, 2026-08-28: it has to be the deal owner, so
+        // it is set rather than hoped for.
+        //
+        // Omitted when the Deal has no owner: an empty string is not "no owner" to HubSpot.
+        ...dealOwnerId ? { hubspot_owner_id: dealOwnerId } : {},
+        // Acceptance method. HubSpot's Quotes guide documents three values -- clickwrap,
+        // esignature and print_and_sign -- and print_and_sign is THE DEFAULT. It is not inherited
+        // from the quote template, which is why every generated quote came out "Print and sign"
+        // while the saved template said otherwise.
+        //
+        // clickwrap is "accept without signature": it renders an accept button and, unlike the
+        // other two, does not require a signer contact associated to the quote.
+        hs_acceptance_method: QUOTE_ACCEPTANCE_METHOD
       },
       associations: []
     });

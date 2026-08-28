@@ -573,3 +573,42 @@ test('a failed archive does not fail the Lock in', async () => {
   // and a leftover draft is untidy rather than wrong.
   assert.equal(await _test.archiveSupersededQuote(client, '111', '222'), null);
 });
+
+// The quote is created with the deal owner as seller, and set to accept without a signature.
+//
+// print_and_sign is the API's DEFAULT and is not inherited from the quote template, which is why
+// every generated quote came out "Print and sign" while the saved template said otherwise.
+test('a generated quote carries the deal owner and the clickwrap acceptance method', () => {
+  const source = require('node:fs').readFileSync(
+    require('node:path').join(__dirname, 'QuoteOptionsFunction.js'),
+    'utf8',
+  );
+  // Read off the source rather than the built object: generateQuote needs a whole portal to run,
+  // and what matters here is that the two properties are on the create call at all.
+  const create = source.match(
+    /quote = await client\.crm\.quotes\.basicApi\.create\(\{([\s\S]*?)\n      \},/,
+  );
+  assert.ok(create, 'the quote create call must be findable');
+  const body = create[1];
+
+  assert.match(body, /hubspot_owner_id: dealOwnerId/, 'the seller must be the deal owner');
+  assert.match(
+    body,
+    /hs_acceptance_method: QUOTE_ACCEPTANCE_METHOD/,
+    'the acceptance method must be set, or HubSpot defaults it to print_and_sign',
+  );
+  // Guarded, because an empty string is not "no owner" to HubSpot.
+  assert.match(body, /\.\.\.\(dealOwnerId \? \{ hubspot_owner_id/);
+
+  // One of the three values HubSpot documents. clickwrap is "accept without signature".
+  const method = source.match(/const QUOTE_ACCEPTANCE_METHOD = '([a-z_]+)';/);
+  assert.ok(method, 'the acceptance method must be a named constant');
+  assert.ok(
+    ['clickwrap', 'esignature', 'print_and_sign'].includes(method[1]),
+    `${method[1]} is not one of HubSpot's documented acceptance methods`,
+  );
+  assert.equal(method[1], 'clickwrap', 'Holly: quotes accept without a signature');
+
+  // The owner has to be read before the Deal update overwrites what we read alongside it.
+  assert.match(source, /'hubspot_owner_id',\n\s*\]\);/, 'the deal owner must be read');
+});

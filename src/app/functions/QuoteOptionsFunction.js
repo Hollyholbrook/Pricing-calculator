@@ -165,15 +165,24 @@ const discountReasonProperties = (discountReason) => {
   };
 };
 
-// The seller on the quote is deliberately NOT set here.
+// The seller on the quote IS set, to the Deal owner. See generateQuote.
 //
-// HubSpot's Quotes guide: "A quote inherits values from the associated deal, including the owner
-// and currency." The seller is meant to be the Deal owner, and that is what inheritance already
-// gives -- so writing sender properties, or setting hubspot_owner_id to whoever clicked, would
-// override correct behaviour with something worse.
+// This comment used to say the opposite: that a quote inherits the owner from its associated deal
+// per HubSpot's Quotes guide, so writing it would override correct behaviour with something worse.
+// That was a documented sentence taken on faith and never checked against this portal. Superseded
+// 2026-08-28 -- hubspot_owner_id is now read from the Deal and written explicitly.
+//
+// Still NOT set: the hs_sender_* block, which is what the Seller section actually prints. If it
+// does not follow the owner, populate hs_sender_firstname/_lastname/_email from the Owners API --
+// but look at a generated quote first rather than sending six unverified properties.
 //
 // The card briefly sent context.user for this. That was removed rather than left dormant: it put
 // the signed-in user's name and email into a request that had no use for them.
+
+// "Accept without signature" on the quote. One of clickwrap | esignature | print_and_sign, per
+// HubSpot's Quotes guide. Named rather than inlined because it is a business choice, not a
+// mechanic: changing it changes what the customer is asked to do.
+const QUOTE_ACCEPTANCE_METHOD = 'clickwrap';
 
 const MAX_OPTIONS = 10;
 const MAX_PAYLOAD_LENGTH = 60_000;
@@ -1205,13 +1214,17 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
   // Read before anything is written, because updateDealProperties below overwrites it. Tolerant
   // of a portal without the property: this is cleanup, not part of producing a correct quote.
   let supersededQuoteId = '';
+  let dealOwnerId = '';
   try {
     const priorDeal = await client.crm.deals.basicApi.getById(String(dealId), [
       'pricing_latest_quote_id',
+      'hubspot_owner_id',
     ]);
     supersededQuoteId = priorDeal?.properties?.pricing_latest_quote_id || '';
+    dealOwnerId = priorDeal?.properties?.hubspot_owner_id || '';
   } catch {
     supersededQuoteId = '';
+    dealOwnerId = '';
   }
 
   // Built before the try so PRODUCT_MAPPING_REQUIRED fails before a quote record exists.
@@ -1250,6 +1263,22 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
         // it the quote defaults to the legacy model and HubSpot rejects the CPQ template it is
         // associated with.
         hs_template_type: 'CPQ_QUOTE',
+        // The seller is the DEAL OWNER, explicitly, not whoever clicked Lock in and not whatever
+        // the API defaults to. This used to be left unset on the reasoning that a quote inherits
+        // the owner from its associated deal -- a sentence from HubSpot's Quotes guide that was
+        // never checked against this portal. Holly, 2026-08-28: it has to be the deal owner, so
+        // it is set rather than hoped for.
+        //
+        // Omitted when the Deal has no owner: an empty string is not "no owner" to HubSpot.
+        ...(dealOwnerId ? { hubspot_owner_id: dealOwnerId } : {}),
+        // Acceptance method. HubSpot's Quotes guide documents three values -- clickwrap,
+        // esignature and print_and_sign -- and print_and_sign is THE DEFAULT. It is not inherited
+        // from the quote template, which is why every generated quote came out "Print and sign"
+        // while the saved template said otherwise.
+        //
+        // clickwrap is "accept without signature": it renders an accept button and, unlike the
+        // other two, does not require a signer contact associated to the quote.
+        hs_acceptance_method: QUOTE_ACCEPTANCE_METHOD,
       },
       associations: [],
     });
