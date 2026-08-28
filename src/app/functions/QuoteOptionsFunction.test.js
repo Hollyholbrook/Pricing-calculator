@@ -736,3 +736,30 @@ test('the discount reason guard runs before anything is written', () => {
   // Whitespace is not a reason.
   assert.match(source, /String\(parameters\.discountReason \|\| ''\)\.trim\(\) === ''/);
 });
+
+// The stored discount reason must come back to the card.
+//
+// It was write-only -- sent on Lock in, written to pricing_discount_reason, never returned.
+// Harmless while the field was optional. The moment a reason became REQUIRED (2026-08-28), every
+// card reload emptied the box and disabled Lock in until the rep retyped a reason the Deal already
+// had. The requirement and the read-back have to ship together.
+test('the deal read returns the stored discount reason', () => {
+  const source = require('node:fs').readFileSync(
+    require('node:path').join(__dirname, 'QuoteOptionsFunction.js'),
+    'utf8',
+  );
+  // Asked for in the read...
+  const read = source.match(/'pricing_quote_content_hash',[\s\S]{0,400}?\]\);/);
+  assert.ok(read, 'the deal property read must be findable');
+  assert.match(
+    read[0],
+    /'pricing_discount_reason',/,
+    'pricing_discount_reason must be requested, or the read returns it as undefined',
+  );
+  // ...and handed back to the card.
+  assert.match(
+    source,
+    /discountReason: deal\.properties\.pricing_discount_reason \|\| '',/,
+    'the read must return discountReason to the card',
+  );
+});

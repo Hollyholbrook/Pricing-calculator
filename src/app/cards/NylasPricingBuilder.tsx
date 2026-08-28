@@ -234,6 +234,7 @@ interface ServerlessBody {
   templateName?: string;
   previewResult?: QuoteResult;
   productLibrary?: ProductLibraryReport;
+  discountReason?: string;
   quoteTemplates?: { id: string; name: string }[];
   defaultQuoteTemplateId?: string;
   dealName?: string;
@@ -741,6 +742,17 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
 
   const updateFromBody = (body: ServerlessBody) => {
     if (body.dealName) setDealName(body.dealName);
+    // Restore the stored discount reason. Only when the box is still untouched, so a later
+    // response cannot overwrite what the rep is in the middle of typing.
+    //
+    // This field was write-only until 2026-08-28 -- sent on Lock in, stored on the Deal, never
+    // read back. Harmless while it was optional; the moment a reason became REQUIRED, every reload
+    // emptied the box and disabled Lock in until the rep retyped a reason the Deal already had.
+    if (body.discountReason) {
+      setDiscountReason((current) =>
+        current === "" ? body.discountReason || "" : current,
+      );
+    }
     // Restore the last locked configuration, once, on the initial load.
     //
     // Lock in persists the live option, so a reload can bring the rep back to what they had rather

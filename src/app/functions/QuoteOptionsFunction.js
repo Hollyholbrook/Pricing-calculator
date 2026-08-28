@@ -362,6 +362,7 @@ const readDealState = async (client, dealId) => {
       'pricing_latest_quote_url',
       'pricing_quote_content_hash',
       'pricing_line_item_sync_status',
+      'pricing_discount_reason',
       'dealname',
     ]);
     // A Deal response with no properties bag turned every downstream read into a TypeError that
@@ -378,6 +379,11 @@ const readDealState = async (client, dealId) => {
       latestQuoteId: deal.properties.pricing_latest_quote_id || null,
       latestQuoteUrl: deal.properties.pricing_latest_quote_url || null,
       quoteContentHash: deal.properties.pricing_quote_content_hash || null,
+      // Read back so the card can restore it. It used to be write-only -- sent on Lock in, stored
+      // on the Deal, never returned -- which was harmless while the field was optional. It stopped
+      // being harmless the moment a discount reason became REQUIRED: every reload emptied the box
+      // and disabled Lock in until the rep retyped a reason the Deal already had.
+      discountReason: deal.properties.pricing_discount_reason || '',
       lineItemSyncStatus: deal.properties.pricing_line_item_sync_status || 'not_started',
       dealName: deal.properties.dealname || 'Nylas Enterprise',
     };
