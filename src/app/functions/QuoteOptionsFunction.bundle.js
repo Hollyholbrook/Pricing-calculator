@@ -216,8 +216,10 @@ var require_pricingRules = __commonJS({
         {
           key: "verified_oauth",
           label: "Turnkey Verified OAuth Projects",
-          annualAmount: 5e3,
-          requiresProfessionalServices: true
+          annualAmount: 5e3
+          // requiresProfessionalServices removed 2026-08-28, Holly: this add-on no longer depends on a
+          // professional-services item, and a quote without one is no longer blocked. The enforcement
+          // in calculator.js went with it. Recoverable from git if the dependency ever comes back.
         }
       ]
     });
@@ -485,7 +487,7 @@ var require_calculator = __commonJS({
         nonRenewalNoticeDate: formatDate(noticeDate)
       };
     };
-    var buildApproval = (input, largestDiscretionaryDiscount, committedArr, hasOauthDependencyFailure, activeRules = rules, dealCategory2 = "new_business") => {
+    var buildApproval = (input, largestDiscretionaryDiscount, committedArr, activeRules = rules, dealCategory2 = "new_business") => {
       const reasons = [];
       const blockingReasons = [];
       let tier = "none";
@@ -535,10 +537,6 @@ var require_calculator = __commonJS({
       }
       if (input.redliningRequested) {
         reasons.push("Customer-requested redlines require Legal approval.");
-      }
-      if (hasOauthDependencyFailure) {
-        blockingReasons.push("OAUTH_REQUIRES_PROFESSIONAL_SERVICES");
-        reasons.push("Turnkey Verified OAuth requires at least one professional-services item.");
       }
       return { tier, reasons, blockingReasons };
     };
@@ -734,7 +732,6 @@ var require_calculator = __commonJS({
       const recurringInvoiceAmount = recurringPerPeriod;
       const largestInvoiceAmount = Math.max(firstInvoiceAmount, recurringInvoiceAmount);
       const requiresBankTransfer = activeRules.creditCardMaximumInvoice != null && largestInvoiceAmount > activeRules.creditCardMaximumInvoice;
-      const hasOauthDependencyFailure = input.addOns.includes("verified_oauth") && input.psItemCount === 0;
       const effectiveDiscounts = [
         ...Object.entries(input.productDiscounts).filter(([key]) => input.volumes[key] > 0).map(([, discount]) => discount),
         ...Object.entries(input.addOnDiscounts).filter(([key]) => input.addOns.includes(key)).map(([, discount]) => discount),
@@ -747,7 +744,6 @@ var require_calculator = __commonJS({
         input,
         largestDiscretionaryDiscount,
         committedArr,
-        hasOauthDependencyFailure,
         activeRules,
         dealCategory2
       );
@@ -758,7 +754,6 @@ var require_calculator = __commonJS({
       if (committedArr < activeRules.minimumCommittedArr) {
         legacyGuardrails.push("FINANCE_APPROVAL_BELOW_MINIMUM");
       }
-      if (hasOauthDependencyFailure) legacyGuardrails.push("BLOCKED_OAUTH_REQUIRES_PS");
       const dates = calculateDates(input);
       const result = {
         schemaVersion: rules.schemaVersion,

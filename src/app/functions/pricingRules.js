@@ -209,7 +209,9 @@ module.exports = Object.freeze({
       key: 'verified_oauth',
       label: 'Turnkey Verified OAuth Projects',
       annualAmount: 5_000,
-      requiresProfessionalServices: true,
+      // requiresProfessionalServices removed 2026-08-28, Holly: this add-on no longer depends on a
+      // professional-services item, and a quote without one is no longer blocked. The enforcement
+      // in calculator.js went with it. Recoverable from git if the dependency ever comes back.
     },
   ],
 });

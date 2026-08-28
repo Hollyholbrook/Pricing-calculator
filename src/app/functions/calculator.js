@@ -310,7 +310,6 @@ const buildApproval = (
   input,
   largestDiscretionaryDiscount,
   committedArr,
-  hasOauthDependencyFailure,
   activeRules = rules,
   dealCategory = 'new_business',
 ) => {
@@ -398,10 +397,13 @@ const buildApproval = (
   if (input.redliningRequested) {
     reasons.push('Customer-requested redlines require Legal approval.');
   }
-  if (hasOauthDependencyFailure) {
-    blockingReasons.push('OAUTH_REQUIRES_PROFESSIONAL_SERVICES');
-    reasons.push('Turnkey Verified OAuth requires at least one professional-services item.');
-  }
+  // REMOVED 2026-08-28, Holly: Turnkey Verified OAuth no longer requires a professional-services
+  // item, and a quote without one is no longer blocked. It used to push
+  // OAUTH_REQUIRES_PROFESSIONAL_SERVICES into blockingReasons, which refused Lock in outright.
+  //
+  // Deleted rather than downgraded to a warning: an approval reason nobody acts on is noise, and
+  // the requiresProfessionalServices flag it read has been removed from pricingRules too, so
+  // nothing is left half-wired for someone to switch back on by accident.
 
   return { tier, reasons, blockingReasons };
 };
@@ -644,8 +646,6 @@ const calculateQuote = (
   const requiresBankTransfer =
     activeRules.creditCardMaximumInvoice != null &&
     largestInvoiceAmount > activeRules.creditCardMaximumInvoice;
-  const hasOauthDependencyFailure =
-    input.addOns.includes('verified_oauth') && input.psItemCount === 0;
   // Only discounts that actually move money count toward approval routing. A discount typed
   // against a product with no volume, an add-on that is not selected, or a $0 support/onboarding/
   // professional-services line changes no total, so it must not escalate the approval tier.
@@ -665,7 +665,6 @@ const calculateQuote = (
     input,
     largestDiscretionaryDiscount,
     committedArr,
-    hasOauthDependencyFailure,
     activeRules,
     dealCategory,
   );
@@ -677,7 +676,6 @@ const calculateQuote = (
   if (committedArr < activeRules.minimumCommittedArr) {
     legacyGuardrails.push('FINANCE_APPROVAL_BELOW_MINIMUM');
   }
-  if (hasOauthDependencyFailure) legacyGuardrails.push('BLOCKED_OAUTH_REQUIRES_PS');
 
   const dates = calculateDates(input);
   const result = {

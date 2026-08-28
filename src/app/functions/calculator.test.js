@@ -678,19 +678,26 @@ test('the OAuth add-on dependency reads the same single source', () => {
     onboardingPackage: 'none',
     addOns: ['verified_oauth'],
   };
-  // Turnkey Verified OAuth requires at least one professional-services item. That check used to
-  // read psItemCount too, so a stale count could block a valid deal or pass an invalid one.
+  // Turnkey Verified OAuth NO LONGER requires a professional-services item. Removed 2026-08-28 at
+  // Holly's instruction: a quote without one used to be blocked outright, and should not be.
+  //
+  // Asserted rather than deleted, because this blocked real quotes and a silent reintroduction
+  // would do so again. Both directions are checked: with services and without.
   const withNone = calculateQuote({ ...base, professionalServices: [], psItemCount: 3 });
-  assert.ok(
-    withNone.blockingReasons.includes('OAUTH_REQUIRES_PROFESSIONAL_SERVICES'),
-    'an inflated count must not satisfy the dependency',
+  assert.deepEqual(withNone.blockingReasons, [], 'OAuth without services must not be blocked');
+  assert.equal(
+    withNone.approvalReasons.some((reason) => /OAuth/i.test(reason)),
+    false,
+    'and it must not raise an approval reason either',
   );
   const withOne = calculateQuote({
     ...base,
     professionalServices: ['gtm_review'],
     psItemCount: 0,
   });
-  assert.equal(withOne.blockingReasons.includes('OAUTH_REQUIRES_PROFESSIONAL_SERVICES'), false);
+  assert.deepEqual(withOne.blockingReasons, []);
+  // The guardrail summary must not carry it either.
+  assert.equal(/OAUTH/i.test(String(withNone.guardrailSummary || '')), false);
 });
 
 // Renewals route discounts to their own approver, configurable in Settings.
@@ -850,13 +857,13 @@ test('renewals skip the non-discount approvals that block new business', () => {
   // asserting against a fixture rather than against behaviour.
 });
 
-test('the OAuth dependency still blocks a renewal, because it is a validity rule', () => {
-  // Turnkey Verified OAuth with no professional-services item cannot function. That is not a
-  // commercial approval and is deliberately NOT relaxed for renewals.
-  const broken = renewalInput({ addOns: ['verified_oauth'], professionalServices: [] });
-  assert.ok(
-    calculateQuote(broken, {}, 0, 'renewal').blockingReasons.includes(
-      'OAUTH_REQUIRES_PROFESSIONAL_SERVICES',
-    ),
-  );
+test('OAuth without professional services is not blocked on a renewal either', () => {
+  const noServices = renewalInput({ addOns: ['verified_oauth'], professionalServices: [] });
+  for (const category of ['new_business', 'renewal']) {
+    assert.deepEqual(
+      calculateQuote(noServices, {}, 0, category).blockingReasons,
+      [],
+      `${category}: the OAuth dependency is gone`,
+    );
+  }
 });
