@@ -1688,6 +1688,7 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
     const senderMissing = Object.entries(sender).filter(
       ([name]) => !finalized?.properties?.[name],
     );
+    let senderRepaired = false;
     if (senderMissing.length > 0) {
       console.error(
         `Nylas pricing: quote ${quote.id} did not keep ` +
@@ -1697,6 +1698,15 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
         await client.crm.quotes.basicApi.update(String(quote.id), {
           properties: Object.fromEntries(senderMissing),
         });
+        // Read back AGAIN. Three attempts at the Seller block have each looked correct in the code
+        // and come out blank on the quote, with no way to see which step produced nothing. This
+        // reports what HubSpot actually kept, and the card prints it on the confirmation --
+        // the same thing that ended the "which template did it use" guessing.
+        const after = await client.crm.quotes.basicApi.getById(
+          String(quote.id),
+          Object.keys(sender),
+        );
+        senderRepaired = Object.keys(sender).every((name) => after?.properties?.[name]);
       } catch (error) {
         console.error(
           `Nylas pricing: the Seller block could not be set on quote ${quote.id}. ` +
@@ -1729,6 +1739,14 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
     }
 
     return {
+      // What the Seller block actually resolved to, so a blank one is visible on the card rather
+      // than only in logs nobody can reach mid-call.
+      seller: {
+        ownerId: dealOwnerId || '',
+        sent: Object.keys(sender),
+        keptOnCreate: Object.keys(sender).filter((name) => Boolean(finalized?.properties?.[name])),
+        repaired: senderRepaired,
+      },
       quoteId: String(quote.id),
       quoteUrl,
       generatedAt,

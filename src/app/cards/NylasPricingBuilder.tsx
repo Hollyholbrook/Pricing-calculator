@@ -236,6 +236,12 @@ interface ServerlessBody {
   productLibrary?: ProductLibraryReport;
   discountReason?: string;
   quoteTemplates?: { id: string; name: string }[];
+  seller?: {
+    ownerId?: string;
+    sent?: string[];
+    keptOnCreate?: string[];
+    repaired?: boolean;
+  };
   contacts?: { id: string; label: string }[];
   contactSource?: "deal" | "company" | "none";
   dealContactIds?: string[];
@@ -650,6 +656,30 @@ const summaryTable = (result: QuoteResult, termMonths: number) => {
   );
 };
 
+// Reads the Seller failure modes apart in one line, printed on the lock confirmation.
+//
+// Three rounds went into "the seller contact isn't coming through" with no way to see WHICH step
+// produced nothing: a Deal with no owner, an owner whose record has no name or email, or HubSpot
+// accepting the hs_sender_* fields and not keeping them. The confirmation now says which.
+const sellerSummary = (seller?: {
+  ownerId?: string;
+  sent?: string[];
+  keptOnCreate?: string[];
+  repaired?: boolean;
+}) => {
+  if (!seller) return "not reported";
+  if (!seller.ownerId)
+    return "this Deal has no owner, so the quote has no seller";
+  const sent = seller.sent || [];
+  if (sent.length === 0)
+    return `owner ${seller.ownerId}, but no name or email could be read`;
+  const kept = seller.keptOnCreate || [];
+  if (kept.length === sent.length)
+    return `owner ${seller.ownerId}, set on create`;
+  if (seller.repaired) return `owner ${seller.ownerId}, set on a second write`;
+  return `owner ${seller.ownerId} — HubSpot did NOT keep ${sent.join(", ")}`;
+};
+
 const approvalLabel = (value?: string) =>
   ({
     none: "No approval",
@@ -950,9 +980,14 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
         // The template is named here because four rounds went into "it is using the wrong
         // template" with no way to see which one had actually been used. Now the confirmation
         // says so every time.
+        // The Seller line is here for the same reason the template is: three rounds went into
+        // "the seller contact isn't coming through" with no way to see WHICH step produced
+        // nothing -- an ownerless Deal, a failed owner lookup, or HubSpot ignoring the fields.
+        // Now the confirmation says, every time.
         message:
           `${body.lineItemCount || 0} calculated line items replaced the Deal line items. ` +
           `Template: ${body.templateName || body.templateId || "unknown"}. ` +
+          `Seller: ${sellerSummary(body.seller)}. ` +
           `The draft Quote is on the Deal's Quotes card.`,
         type: "success",
       });
@@ -1537,6 +1572,30 @@ const OptionEditor = ({
                 }
                 onChange={(value) => onPaymentMethodChange(String(value))}
               />
+              {/* The Quote's contact. HubSpot lists Contact as a REQUIRED association on a CPQ
+                  quote, and the app used to send whatever the Deal happened to have -- so a Deal
+                  with none produced a quote HubSpot refused, with an error that named the template
+                  instead. It belongs in Contract Basics with the other things that define the
+                  agreement, not down by the button. Holly, 2026-08-28. */}
+              <Flex direction="column" gap="flush">
+                <Select
+                  label="Contact for Quote"
+                  name="quote_contact"
+                  value={contactId}
+                  options={[
+                    { value: "", label: "Choose a contact…" },
+                    ...contacts.map(({ id, label }) => ({ value: id, label })),
+                  ]}
+                  description={
+                    contacts.length === 0
+                      ? "No contacts on this Deal or its Company. Associate one in HubSpot, then reload."
+                      : contactSource === "company"
+                        ? "This Deal has no contact, so these are the Company's. The one you choose is added to the Deal on lock in."
+                        : undefined
+                  }
+                  onChange={(value) => onContactChange(String(value ?? ""))}
+                />
+              </Flex>
               {/* onChange, not onInput: onInput fires per keystroke and would re-render the whole
                   card on every character. onChange commits on blur, which is what state wants. */}
               <Input
@@ -1855,37 +1914,6 @@ const OptionEditor = ({
           )}
         </Flex>
       )}
-      {/* The Quote's contact. HubSpot lists Contact as a REQUIRED association on a CPQ quote, and
-          the app used to send whatever the Deal happened to have -- so a Deal with none produced a
-          quote HubSpot refused, with an error that named the template instead. Holly, 2026-08-28. */}
-      <Flex direction="column" gap="xs">
-        <Select
-          label="Quote Contact"
-          name="quote_contact"
-          value={contactId}
-          options={[
-            { value: "", label: "Choose a contact…" },
-            ...contacts.map(({ id, label }) => ({ value: id, label })),
-          ]}
-          onChange={(value) => onContactChange(String(value ?? ""))}
-        />
-        {contacts.length === 0 ? (
-          <Text variant="microcopy" format={{ fontWeight: "bold" }}>
-            No contacts found on this Deal or its Company. Associate a contact
-            in HubSpot, then reload this card.
-          </Text>
-        ) : contactSource === "company" ? (
-          <Text variant="microcopy">
-            This Deal has no contact, so these are the Company&apos;s contacts.
-            The one you choose is added to the Deal when you lock in.
-          </Text>
-        ) : (
-          <Text variant="microcopy">
-            Goes on the Quote. HubSpot requires a contact on every quote.
-          </Text>
-        )}
-      </Flex>
-
       {/* The approval state sits with the action it gates, not up in the header: a blocking
           reason is only actionable next to the button it stops. */}
       {previewResult && (

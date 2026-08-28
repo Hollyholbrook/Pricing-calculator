@@ -3276,6 +3276,7 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
     const senderMissing = Object.entries(sender).filter(
       ([name]) => !finalized?.properties?.[name]
     );
+    let senderRepaired = false;
     if (senderMissing.length > 0) {
       console.error(
         `Nylas pricing: quote ${quote.id} did not keep [${senderMissing.map(([name]) => name).join(", ")}] from the create. Setting them now.`
@@ -3284,6 +3285,11 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
         await client.crm.quotes.basicApi.update(String(quote.id), {
           properties: Object.fromEntries(senderMissing)
         });
+        const after = await client.crm.quotes.basicApi.getById(
+          String(quote.id),
+          Object.keys(sender)
+        );
+        senderRepaired = Object.keys(sender).every((name) => after?.properties?.[name]);
       } catch (error) {
         console.error(
           `Nylas pricing: the Seller block could not be set on quote ${quote.id}. ${String(error?.body?.message || error?.message || error)}`
@@ -3303,6 +3309,14 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
       await archiveSupersededQuote(client, supersededQuoteId, quote.id);
     }
     return {
+      // What the Seller block actually resolved to, so a blank one is visible on the card rather
+      // than only in logs nobody can reach mid-call.
+      seller: {
+        ownerId: dealOwnerId || "",
+        sent: Object.keys(sender),
+        keptOnCreate: Object.keys(sender).filter((name) => Boolean(finalized?.properties?.[name])),
+        repaired: senderRepaired
+      },
       quoteId: String(quote.id),
       quoteUrl,
       generatedAt,
