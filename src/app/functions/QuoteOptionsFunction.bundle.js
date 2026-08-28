@@ -2745,6 +2745,39 @@ var createLineItem = async (client, properties, associations, attempt = 0) => {
     });
   }
 };
+var VERIFIED_LINE_ITEM_PROPERTIES = ["one_time_fees", "recurring_fees", "total_fees_for_term"];
+var repairLineItemProperties = async (client, createdId, sentProperties) => {
+  const expected = Object.fromEntries(
+    VERIFIED_LINE_ITEM_PROPERTIES.filter((name) => sentProperties[name] != null).map((name) => [
+      name,
+      String(sentProperties[name])
+    ])
+  );
+  if (Object.keys(expected).length === 0) return null;
+  try {
+    const stored = await client.crm.lineItems.basicApi.getById(
+      String(createdId),
+      Object.keys(expected)
+    );
+    const missing = Object.fromEntries(
+      Object.entries(expected).filter(([name]) => {
+        const value = stored?.properties?.[name];
+        return value == null || value === "";
+      })
+    );
+    if (Object.keys(missing).length === 0) return null;
+    console.error(
+      `Nylas pricing: line item ${createdId} was created WITHOUT [${Object.keys(missing).join(", ")}] even though they were sent. Patching them back.`
+    );
+    await client.crm.lineItems.basicApi.update(String(createdId), { properties: missing });
+    return Object.keys(missing);
+  } catch (error) {
+    console.warn(
+      `Nylas pricing: could not verify or repair line item ${createdId}. ${String(error?.body?.message || error?.message || error)}`
+    );
+    return null;
+  }
+};
 var syncDealLineItems = async (client, dealId, state, settings) => {
   const option = selectedOptionForDraft(state);
   assertCurrentSettings(option, settings);
@@ -2754,12 +2787,10 @@ var syncDealLineItems = async (client, dealId, state, settings) => {
     const existingIds = await associatedIds(client, "deals", dealId, "line_items", 1e3);
     await inBatches(existingIds, (id) => client.crm.lineItems.basicApi.archive(id));
     await inBatches(desired, async (item) => {
-      const created = await createLineItem(
-        client,
-        hubSpotLineItemProperties(item.properties),
-        [createAssociation(dealId, 20)]
-      );
+      const sent = hubSpotLineItemProperties(item.properties);
+      const created = await createLineItem(client, sent, [createAssociation(dealId, 20)]);
       createdIds.push(String(created.id));
+      await repairLineItemProperties(client, created.id, sent);
     });
     const syncedAt = (/* @__PURE__ */ new Date()).toISOString();
     await client.crm.deals.basicApi.update(dealId, {
@@ -3044,9 +3075,27 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
     }
     const finalized = await client.crm.quotes.basicApi.getById(String(quote.id), [
       "hs_quote_link",
-      "hs_status"
+      "hs_status",
+      ...Object.keys(sender)
     ]);
     const quoteUrl = finalized?.properties?.hs_quote_link || "";
+    const senderMissing = Object.entries(sender).filter(
+      ([name]) => !finalized?.properties?.[name]
+    );
+    if (senderMissing.length > 0) {
+      console.error(
+        `Nylas pricing: quote ${quote.id} did not keep [${senderMissing.map(([name]) => name).join(", ")}] from the create. Setting them now.`
+      );
+      try {
+        await client.crm.quotes.basicApi.update(String(quote.id), {
+          properties: Object.fromEntries(senderMissing)
+        });
+      } catch (error) {
+        console.error(
+          `Nylas pricing: the Seller block could not be set on quote ${quote.id}. ${String(error?.body?.message || error?.message || error)}`
+        );
+      }
+    }
     const generatedAt = (/* @__PURE__ */ new Date()).toISOString();
     await updateDealProperties(client, dealId, {
       pricing_latest_quote_id: String(quote.id),
@@ -3253,6 +3302,7 @@ exports.main = async (context) => {
 };
 exports._test = Object.freeze({
   archiveSupersededQuote,
+  repairLineItemProperties,
   senderProperties,
   associatedIds,
   createLineItem,

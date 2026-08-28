@@ -863,3 +863,99 @@ test('a failed superseded-quote read does not blank the deal owner', () => {
     'the swallow-everything catch must not come back',
   );
 });
+
+// A line item's fee properties are read back and repaired if HubSpot did not keep them.
+//
+// One professional-services line came back missing one_time_fees while four identical siblings
+// kept it, so the Order Form printed a dash and understated an $8,800 bundle by $1,760. Two
+// attempts to find the cause by reasoning failed. This stops reasoning: verify the write.
+const lineItemClient = (stored, { updateThrows = false, getThrows = false } = {}) => {
+  const patched = [];
+  return {
+    patched,
+    client: {
+      crm: {
+        lineItems: {
+          basicApi: {
+            getById: async (id) => {
+              if (getThrows) throw new Error('gone');
+              return { id, properties: stored };
+            },
+            update: async (id, body) => {
+              if (updateThrows) throw new Error('read-only');
+              patched.push({ id: String(id), ...body.properties });
+            },
+          },
+        },
+      },
+    },
+  };
+};
+
+const sentFees = {
+  price: '1760',
+  one_time_fees: '1760',
+  recurring_fees: '0',
+  total_fees_for_term: '1760',
+};
+
+test('a fee property HubSpot dropped is patched back', async () => {
+  // Exactly the observed shape: total_fees_for_term kept, one_time_fees missing.
+  const { client, patched } = lineItemClient({
+    one_time_fees: '',
+    recurring_fees: '0',
+    total_fees_for_term: '1760',
+  });
+  const repaired = await _test.repairLineItemProperties(client, 'li-1', sentFees);
+  assert.deepEqual(repaired, ['one_time_fees']);
+  assert.deepEqual(patched, [{ id: 'li-1', one_time_fees: '1760' }]);
+});
+
+test('a line item that kept everything is left alone', async () => {
+  const { client, patched } = lineItemClient({
+    one_time_fees: '1760',
+    recurring_fees: '0',
+    total_fees_for_term: '1760',
+  });
+  assert.equal(await _test.repairLineItemProperties(client, 'li-2', sentFees), null);
+  assert.deepEqual(patched, [], 'no write when nothing is missing');
+});
+
+test('only fee properties are verified, and only ones actually sent', async () => {
+  const { client, patched } = lineItemClient({ one_time_fees: '' });
+  // price is not a fee property; a metered line sends no fee properties at all.
+  assert.equal(await _test.repairLineItemProperties(client, 'li-3', { price: '1.36' }), null);
+  assert.deepEqual(patched, []);
+});
+
+test('a failed verify or repair never fails the lock', async () => {
+  const missing = { one_time_fees: '', recurring_fees: '0', total_fees_for_term: '1760' };
+  const read = lineItemClient(missing, { getThrows: true });
+  assert.equal(await _test.repairLineItemProperties(read.client, 'li-4', sentFees), null);
+  const write = lineItemClient(missing, { updateThrows: true });
+  assert.equal(await _test.repairLineItemProperties(write.client, 'li-5', sentFees), null);
+});
+
+test('the sync verifies every line item it creates', () => {
+  const source = require('node:fs').readFileSync(
+    require('node:path').join(__dirname, 'QuoteOptionsFunction.js'),
+    'utf8',
+  );
+  const sync = source.slice(source.indexOf('const syncDealLineItems'));
+  assert.match(
+    sync,
+    /createdIds\.push\(String\(created\.id\)\);\s*\n\s*\/\/[\s\S]{0,120}?await repairLineItemProperties\(client, created\.id, sent\);/,
+    'every created line item must be read back',
+  );
+});
+
+test('the quote Seller block is read back and set again if the create dropped it', () => {
+  const source = require('node:fs').readFileSync(
+    require('node:path').join(__dirname, 'QuoteOptionsFunction.js'),
+    'utf8',
+  );
+  // The read-back must ask for the sender fields, or "missing" is always true.
+  assert.match(source, /'hs_status',\s*\n\s*\.\.\.Object\.keys\(sender\),/);
+  assert.match(source, /const senderMissing = Object\.entries\(sender\)\.filter\(/);
+  assert.match(source, /await client\.crm\.quotes\.basicApi\.update\(String\(quote\.id\), \{/);
+});

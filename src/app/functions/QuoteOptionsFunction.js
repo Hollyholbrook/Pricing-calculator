@@ -1025,6 +1025,56 @@ const createLineItem = async (client, properties, associations, attempt = 0) => 
   }
 };
 
+// Check that the fee properties actually landed, and put back any that did not.
+//
+// Written because a single professional-services line came back missing `one_time_fees` while four
+// identical siblings kept it, so the Order Form printed a dash and understated an $8,800 bundle by
+// $1,760. Two attempts to find the cause by reasoning failed. This stops reasoning about it: the
+// write is read back, and anything missing is patched.
+//
+// Only the fee properties, and only when the value we sent is non-empty. A property the portal
+// genuinely does not have was already dropped deliberately by createLineItem, and re-sending it
+// here would just fail again -- so a repair that fails is logged once and left alone.
+//
+// Never fails the lock. By the time this runs the line items exist and the money on the Deal is
+// right; a missing display field is worth a warning, not a refused Lock in that empties the Deal.
+const VERIFIED_LINE_ITEM_PROPERTIES = ['one_time_fees', 'recurring_fees', 'total_fees_for_term'];
+
+const repairLineItemProperties = async (client, createdId, sentProperties) => {
+  const expected = Object.fromEntries(
+    VERIFIED_LINE_ITEM_PROPERTIES.filter((name) => sentProperties[name] != null).map((name) => [
+      name,
+      String(sentProperties[name]),
+    ]),
+  );
+  if (Object.keys(expected).length === 0) return null;
+  try {
+    const stored = await client.crm.lineItems.basicApi.getById(
+      String(createdId),
+      Object.keys(expected),
+    );
+    const missing = Object.fromEntries(
+      Object.entries(expected).filter(([name]) => {
+        const value = stored?.properties?.[name];
+        return value == null || value === '';
+      }),
+    );
+    if (Object.keys(missing).length === 0) return null;
+    console.error(
+      `Nylas pricing: line item ${createdId} was created WITHOUT ` +
+        `[${Object.keys(missing).join(', ')}] even though they were sent. Patching them back.`,
+    );
+    await client.crm.lineItems.basicApi.update(String(createdId), { properties: missing });
+    return Object.keys(missing);
+  } catch (error) {
+    console.warn(
+      `Nylas pricing: could not verify or repair line item ${createdId}. ` +
+        `${String(error?.body?.message || error?.message || error)}`,
+    );
+    return null;
+  }
+};
+
 const syncDealLineItems = async (client, dealId, state, settings) => {
   const option = selectedOptionForDraft(state);
   assertCurrentSettings(option, settings);
@@ -1034,12 +1084,11 @@ const syncDealLineItems = async (client, dealId, state, settings) => {
     const existingIds = await associatedIds(client, 'deals', dealId, 'line_items', 1_000);
     await inBatches(existingIds, (id) => client.crm.lineItems.basicApi.archive(id));
     await inBatches(desired, async (item) => {
-        const created = await createLineItem(
-          client,
-          hubSpotLineItemProperties(item.properties),
-          [createAssociation(dealId, 20)],
-        );
+        const sent = hubSpotLineItemProperties(item.properties);
+        const created = await createLineItem(client, sent, [createAssociation(dealId, 20)]);
         createdIds.push(String(created.id));
+        // Read back and repair rather than trust the write. See repairLineItemProperties.
+        await repairLineItemProperties(client, created.id, sent);
     });
 
     const syncedAt = new Date().toISOString();
@@ -1477,8 +1526,35 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
     const finalized = await client.crm.quotes.basicApi.getById(String(quote.id), [
       'hs_quote_link',
       'hs_status',
+      ...Object.keys(sender),
     ]);
     const quoteUrl = finalized?.properties?.hs_quote_link || '';
+    // The Seller block, checked rather than assumed.
+    //
+    // hs_sender_* was sent on the create above and the block still came out blank. Rather than
+    // guess again at which field family a CPQ quote reads, the created quote is read back: if the
+    // values are not on it, they are written a second time as an update. A create that silently
+    // ignores a property and an update that accepts it is a real HubSpot pattern, and this costs
+    // one call to find out instead of another round trip.
+    const senderMissing = Object.entries(sender).filter(
+      ([name]) => !finalized?.properties?.[name],
+    );
+    if (senderMissing.length > 0) {
+      console.error(
+        `Nylas pricing: quote ${quote.id} did not keep ` +
+          `[${senderMissing.map(([name]) => name).join(', ')}] from the create. Setting them now.`,
+      );
+      try {
+        await client.crm.quotes.basicApi.update(String(quote.id), {
+          properties: Object.fromEntries(senderMissing),
+        });
+      } catch (error) {
+        console.error(
+          `Nylas pricing: the Seller block could not be set on quote ${quote.id}. ` +
+            `${String(error?.body?.message || error?.message || error)}`,
+        );
+      }
+    }
     const generatedAt = new Date().toISOString();
     // Through updateDealProperties, not the API directly: pricing_quote_id is a name from the
     // portal's property list rather than a verified write, and an unknown property here would
@@ -1718,6 +1794,7 @@ exports.main = async (context) => {
 
 exports._test = Object.freeze({
   archiveSupersededQuote,
+  repairLineItemProperties,
   senderProperties,
   associatedIds,
   createLineItem,
