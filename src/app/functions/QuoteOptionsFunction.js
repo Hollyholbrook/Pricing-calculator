@@ -1217,6 +1217,36 @@ const defaultQuoteTemplateFor = (settings) =>
 //
 // Deal contacts first. When the Deal has none, fall back to the contacts on its COMPANY, so the rep
 // can pick one rather than being told to go and associate it somewhere else first.
+// What the Seller block on the LIVE quote actually contains.
+//
+// Read on every card load rather than reported once at lock time: the card calls reloadPage()
+// straight after the confirmation alert, so a message printed there is gone before it can be read.
+// Three rounds of "the seller contact isn't coming through" produced no usable evidence for
+// exactly that reason. This survives the reload, because it re-reads the quote.
+const latestQuoteSeller = async (client, quoteId) => {
+  if (!quoteId) return null;
+  const fields = ['hs_sender_firstname', 'hs_sender_lastname', 'hs_sender_email'];
+  try {
+    const quote = await client.crm.quotes.basicApi.getById(String(quoteId), [
+      ...fields,
+      'hubspot_owner_id',
+    ]);
+    const stored = fields.filter((name) => Boolean(quote?.properties?.[name]));
+    return {
+      quoteId: String(quoteId),
+      ownerId: quote?.properties?.hubspot_owner_id || '',
+      storedFields: stored,
+      email: quote?.properties?.hs_sender_email || '',
+    };
+  } catch (error) {
+    console.warn(
+      `Nylas pricing: could not read the seller block on quote ${quoteId}. ` +
+        `${String(error?.body?.message || error?.message || error)}`,
+    );
+    return null;
+  }
+};
+
 const quoteContactOptions = async (client, dealId) => {
   const readContacts = async (ids) => {
     if (ids.length === 0) return [];
@@ -1846,6 +1876,7 @@ exports.main = async (context) => {
         quoteTemplates: offeredQuoteTemplates(await usableQuoteTemplates(client), settings),
         defaultQuoteTemplateId: defaultQuoteTemplateFor(settings),
         ...(await quoteContactOptions(client, dealId)),
+        latestQuoteSeller: await latestQuoteSeller(client, state.latestQuoteId),
         // The card shows this as the Quote title placeholder, so a rep who leaves the field
         // blank can see the name the quote will actually get rather than being surprised by it.
         dealName: state.dealName,

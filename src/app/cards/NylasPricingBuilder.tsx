@@ -242,6 +242,12 @@ interface ServerlessBody {
     keptOnCreate?: string[];
     repaired?: boolean;
   };
+  latestQuoteSeller?: {
+    quoteId: string;
+    ownerId: string;
+    storedFields: string[];
+    email: string;
+  } | null;
   contacts?: { id: string; label: string }[];
   contactSource?: "deal" | "company" | "none";
   dealContactIds?: string[];
@@ -783,11 +789,20 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
     "deal" | "company" | "none"
   >("none");
   const [contactId, setContactId] = useState("");
+  const [latestQuoteSeller, setLatestQuoteSeller] = useState<{
+    quoteId: string;
+    ownerId: string;
+    storedFields: string[];
+    email: string;
+  } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [unsupportedDeal, setUnsupportedDeal] = useState(false);
 
   const updateFromBody = (body: ServerlessBody) => {
     if (body.dealName) setDealName(body.dealName);
+    if (body.latestQuoteSeller !== undefined) {
+      setLatestQuoteSeller(body.latestQuoteSeller);
+    }
     if (body.contacts) {
       setContacts(body.contacts);
       setContactSource(body.contactSource || "none");
@@ -1053,6 +1068,7 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
         quoteTitleTooLong={quoteTitleTooLong}
         onQuoteTitleChange={setQuoteTitle}
         onInputChange={updateInput}
+        latestQuoteSeller={latestQuoteSeller}
         contacts={contacts}
         contactSource={contactSource}
         contactId={contactId}
@@ -1081,6 +1097,7 @@ const OptionEditor = ({
   quoteTitleTooLong,
   onQuoteTitleChange,
   onInputChange,
+  latestQuoteSeller,
   contacts,
   contactSource,
   contactId,
@@ -1107,6 +1124,12 @@ const OptionEditor = ({
     field: K,
     value: QuoteInput[K],
   ) => void;
+  latestQuoteSeller: {
+    quoteId: string;
+    ownerId: string;
+    storedFields: string[];
+    email: string;
+  } | null;
   contacts: { id: string; label: string }[];
   contactSource: "deal" | "company" | "none";
   contactId: string;
@@ -1914,6 +1937,28 @@ const OptionEditor = ({
           )}
         </Flex>
       )}
+      {/* What the Seller block on the LIVE quote actually holds.
+          Read from the quote on every card load, not printed once at lock time -- the card reloads
+          straight after the confirmation alert, so a message there is gone before it can be read.
+          Three rounds of "the seller contact isn't coming through" produced no evidence for
+          exactly that reason. Remove this once the Seller block is confirmed working. */}
+      {latestQuoteSeller && (
+        <Alert
+          title="Seller on the latest Quote"
+          variant={
+            latestQuoteSeller.storedFields.length === 3 ? "success" : "warning"
+          }
+        >
+          {latestQuoteSeller.storedFields.length === 3
+            ? `Set: ${latestQuoteSeller.email}. If the Seller section still prints blank, the template is not rendering these fields.`
+            : latestQuoteSeller.ownerId === ""
+              ? "The Quote has no owner. Set a Deal owner, then lock in again."
+              : latestQuoteSeller.storedFields.length === 0
+                ? `Quote ${latestQuoteSeller.quoteId} has owner ${latestQuoteSeller.ownerId} but HubSpot kept none of hs_sender_firstname, hs_sender_lastname, hs_sender_email — so those are the wrong fields for this quote model.`
+                : `Quote ${latestQuoteSeller.quoteId} kept only ${latestQuoteSeller.storedFields.join(", ")}.`}
+        </Alert>
+      )}
+
       {/* The approval state sits with the action it gates, not up in the header: a blocking
           reason is only actionable next to the button it stops. */}
       {previewResult && (
