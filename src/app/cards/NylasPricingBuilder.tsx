@@ -1110,6 +1110,47 @@ const OptionEditor = ({
     (option.input.onboardingDiscount || 0) > 0 ||
     (option.input.professionalServicesDiscount || 0) > 0 ||
     (option.input.discretionaryDiscount || 0) > 0;
+  // WHICH discounts, by name. hasAnyDiscount only says "somewhere", and "somewhere" sent a rep
+  // hunting a long form for a field they were sure they had not touched. Naming them turns
+  // "why is this required" into "because Notetaker is at 15%". Holly, 2026-08-28.
+  //
+  // A discount on a product with NO committed volume is flagged as such -- those fields became
+  // editable earlier the same day, so a rate negotiated on a product nobody is buying yet is a
+  // real entry sitting in an otherwise empty row, and it is the easiest one to lose track of.
+  const asPercent = (value: number) => `${Math.round(value * 100)}%`;
+  const discountedItems: string[] = [
+    ...products
+      .filter(({ key }) => (option.input.productDiscounts?.[key] || 0) > 0)
+      .map(
+        ({ key, label }) =>
+          `${label} ${asPercent(option.input.productDiscounts?.[key] || 0)}` +
+          ((option.input.volumes[key] || 0) > 0 ? "" : " (no volume)"),
+      ),
+    ...addOnOptions
+      .filter(
+        ({ value }) => (option.input.addOnDiscounts?.[String(value)] || 0) > 0,
+      )
+      .map(
+        ({ value, label }) =>
+          `${label} ${asPercent(option.input.addOnDiscounts?.[String(value)] || 0)}`,
+      ),
+    ...((option.input.supportDiscount || 0) > 0
+      ? [`Support ${asPercent(option.input.supportDiscount || 0)}`]
+      : []),
+    ...((option.input.onboardingDiscount || 0) > 0
+      ? [`Onboarding ${asPercent(option.input.onboardingDiscount || 0)}`]
+      : []),
+    ...((option.input.professionalServicesDiscount || 0) > 0
+      ? [
+          `Professional Services ${asPercent(
+            option.input.professionalServicesDiscount || 0,
+          )}`,
+        ]
+      : []),
+    ...((option.input.discretionaryDiscount || 0) > 0
+      ? [`Deal-wide ${asPercent(option.input.discretionaryDiscount || 0)}`]
+      : []),
+  ];
   const discountPreview = (
     listAmount: number | undefined,
     discount: number,
@@ -1775,6 +1816,11 @@ const OptionEditor = ({
             placeholder="Why is this discount being given?"
             onChange={(value) => onDiscountReasonChange(String(value))}
           />
+          {/* Which discounts, by name, so "there are no discounts" can be checked rather than
+              argued with. */}
+          <Text variant="microcopy">
+            Discounts applied: {discountedItems.join(" · ")}
+          </Text>
           {discountReasonMissing ? (
             <Text variant="microcopy" format={{ fontWeight: "bold" }}>
               Required. A discount cannot be locked in without a reason — this
