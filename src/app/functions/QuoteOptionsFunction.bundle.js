@@ -1130,6 +1130,24 @@ var require_lineItemModel = __commonJS({
       ...priceProperties(price, listPrice),
       ...description ? { description: String(description).slice(0, 5e3) } : {}
     });
+    var graduatedTierProperties = (line) => {
+      const tiers = line.proposedBandRates;
+      if (!tiers || tiers.length === 0) return {};
+      return {
+        hs_pricing_model: "graduated",
+        hs_tier_ranges: JSON.stringify(
+          tiers.map(
+            ({ lower, upper }) => upper == null ? { start: lower } : { start: lower, end: upper - 1 }
+          )
+        ),
+        hs_tier_prices: JSON.stringify(
+          tiers.map(({ rate }, index) => ({ index, price: round(rate, 2) }))
+        ),
+        // Without this the printed table reads "0 - 50" with no stated unit. Taken from the product's
+        // own unit of measure rather than hardcoded, so it stays right if the band unit ever changes.
+        units: line.unitOfMeasure
+      };
+    };
     var buildMeteredLines = (option, source) => {
       const items = option.result.lines.slice().sort(
         (left, right) => productOrderIndex(left.productKey) - productOrderIndex(right.productKey)
@@ -1197,7 +1215,19 @@ var require_lineItemModel = __commonJS({
               } : {},
               source
             }),
-            monthly_unit_price: String(line.billingUnitRate),
+            // The adjusted tier table, on graduated lines only. Empty on every flat line, which
+            // carries price/discount instead.
+            ...isGraduated ? graduatedTierProperties(line) : {},
+            // The AGREED (net) monthly rate, as its own field. `price` carries the LIST rate and
+            // `discount` the concession, so the net is already derivable as price - discount --
+            // but the standard quote template cannot do arithmetic across two columns, so the
+            // Order Form needs the answer stored rather than computed. Custom property, created in
+            // the portal 2026-08-27 as "Proposed Rate"; HubSpot fixed the internal name at
+            // `proposed_rate`, so that is the name here.
+            //
+            // NOT a per-tier rate on Agent Email: that line is graduated, so this is a blended
+            // figure across four tiers and the Order Form's tier table still needs hs_tier_prices.
+            proposed_rate: String(line.billingUnitRate),
             // The monthly committed average, as data rather than the prose it used to sit in.
             // quantity stays 0 so these lines still contribute nothing to the Deal total -- the
             // committed money is carried by the drawdown fee, not by these rate-schedule lines.
@@ -2569,16 +2599,28 @@ var HUBSPOT_LINE_ITEM_PROPERTIES = /* @__PURE__ */ new Set([
   "hs_product_id",
   "quantity",
   "price",
-  "monthly_unit_price",
   "discount",
   "description",
   // 'product_category' deliberately omitted: it is not a HubSpot-defined Line Item property, so
   // in a portal that never had it created every create fails with a 400 and the sync collapses.
   "units",
+  // Tiered pricing, sent on the graduated Agent Email line only. HubSpot-defined and documented on
+  // line items, but gated on a Revenue Hub subscription, so they are droppable below: a portal
+  // without Revenue Hub must fall back to the product's own tiers, not fail the create.
+  "hs_pricing_model",
+  "hs_tier_ranges",
+  "hs_tier_prices",
   // Custom, not HubSpot-defined: it carries the monthly committed volume for each metered product,
   // which used to be stated in prose in the description. A portal that never created it rejects
   // the whole create, so createLineItem retries without it rather than failing the sync.
   "committed_quantity",
+  // The agreed (net) monthly rate on each metered line -- the "Proposed Rate" the Order Form's
+  // rate column should print, rather than `price`, which is deliberately the list rate. Custom,
+  // so it is dropped and retried like the others. It used to be named monthly_unit_price here,
+  // which was never a property in this portal: it rode in the allow-list from the initial commit
+  // and was never in the drop list, so any portal missing it would have failed every create --
+  // and because the sync archives before it creates, emptied the Deal.
+  "proposed_rate",
   // The Contract Summary's fee columns, carried on every line that holds money. Custom, like
   // committed_quantity, so they are dropped and retried if a portal does not have them.
   "one_time_fees",
@@ -2606,9 +2648,18 @@ var isProductBundleRejection = (error) => {
 };
 var OPTIONAL_CUSTOM_LINE_ITEM_PROPERTIES = [
   "committed_quantity",
+  "proposed_rate",
   "one_time_fees",
   "recurring_fees",
-  "total_fees_for_term"
+  "total_fees_for_term",
+  // Revenue Hub gated rather than custom. Dropping these degrades to the product's own tier table,
+  // which is the behaviour before this change: visibly unadjusted, but a quote rather than nothing.
+  "hs_pricing_model",
+  "hs_tier_ranges",
+  "hs_tier_prices",
+  // Never verified against this portal's Line Item schema. Cosmetic -- it labels the tier table's
+  // bounds -- so it is not worth a failed create.
+  "units"
 ];
 var isUnknownPropertyRejection = (error, property) => {
   const message = String(

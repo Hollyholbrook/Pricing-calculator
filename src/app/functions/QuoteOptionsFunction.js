@@ -813,16 +813,28 @@ const HUBSPOT_LINE_ITEM_PROPERTIES = new Set([
   'hs_product_id',
   'quantity',
   'price',
-  'monthly_unit_price',
   'discount',
   'description',
   // 'product_category' deliberately omitted: it is not a HubSpot-defined Line Item property, so
   // in a portal that never had it created every create fails with a 400 and the sync collapses.
   'units',
+  // Tiered pricing, sent on the graduated Agent Email line only. HubSpot-defined and documented on
+  // line items, but gated on a Revenue Hub subscription, so they are droppable below: a portal
+  // without Revenue Hub must fall back to the product's own tiers, not fail the create.
+  'hs_pricing_model',
+  'hs_tier_ranges',
+  'hs_tier_prices',
   // Custom, not HubSpot-defined: it carries the monthly committed volume for each metered product,
   // which used to be stated in prose in the description. A portal that never created it rejects
   // the whole create, so createLineItem retries without it rather than failing the sync.
   'committed_quantity',
+  // The agreed (net) monthly rate on each metered line -- the "Proposed Rate" the Order Form's
+  // rate column should print, rather than `price`, which is deliberately the list rate. Custom,
+  // so it is dropped and retried like the others. It used to be named monthly_unit_price here,
+  // which was never a property in this portal: it rode in the allow-list from the initial commit
+  // and was never in the drop list, so any portal missing it would have failed every create --
+  // and because the sync archives before it creates, emptied the Deal.
+  'proposed_rate',
   // The Contract Summary's fee columns, carried on every line that holds money. Custom, like
   // committed_quantity, so they are dropped and retried if a portal does not have them.
   'one_time_fees',
@@ -862,16 +874,26 @@ const isProductBundleRejection = (error) => {
   return /product bundle/i.test(message) || /could not hydrate/i.test(message);
 };
 
-// Custom Line Item properties, none of them HubSpot-defined. In a portal where one was never
-// created, naming it returns 400 and -- because the sync archives first and creates second --
-// takes every line item on the Deal with it. Each is useful but none is worth that, so a create
-// rejected over one of these drops it and retries. The retry is recursive, so a portal missing
-// several of them still ends up with a line item rather than an empty Deal.
+// Line Item properties this portal may not accept -- either custom ones that were never created,
+// or HubSpot-defined ones behind a subscription this portal does not have. In both cases naming the
+// property returns 400 and -- because the sync archives first and creates second -- takes every
+// line item on the Deal with it. Each is useful but none is worth that, so a create rejected over
+// one of these drops it and retries. The retry is recursive, so a portal missing several of them
+// still ends up with a line item rather than an empty Deal.
 const OPTIONAL_CUSTOM_LINE_ITEM_PROPERTIES = [
   'committed_quantity',
+  'proposed_rate',
   'one_time_fees',
   'recurring_fees',
   'total_fees_for_term',
+  // Revenue Hub gated rather than custom. Dropping these degrades to the product's own tier table,
+  // which is the behaviour before this change: visibly unadjusted, but a quote rather than nothing.
+  'hs_pricing_model',
+  'hs_tier_ranges',
+  'hs_tier_prices',
+  // Never verified against this portal's Line Item schema. Cosmetic -- it labels the tier table's
+  // bounds -- so it is not worth a failed create.
+  'units',
 ];
 
 const isUnknownPropertyRejection = (error, property) => {

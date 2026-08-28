@@ -1392,7 +1392,6 @@ const OptionEditor = ({
           const line = previewResult?.lines.find(
             ({ productKey }) => productKey === product.key,
           );
-          const quoted = (option.input.volumes[product.key] || 0) > 0;
           return (
             <Fragment key={product.key}>
               <TableRow>
@@ -1437,9 +1436,18 @@ const OptionEditor = ({
                     max={100}
                     precision={0}
                     formatStyle="percentage"
-                    // A discount on a product with no committed volume changes no total, so it
-                    // is disabled rather than silently accepted.
-                    readOnly={!quoted}
+                    // Editable whether or not volume is committed. The old rule -- read-only
+                    // until the product had volume -- was reasoned from totals: a discount on an
+                    // uncommitted product moves no money, so accepting one looked like a silent
+                    // no-op. That was wrong about what these lines are for. Every product in the
+                    // bundle reaches the quote as a rate schedule, committed or not, and the rate
+                    // it prints is the rate the customer draws down at if they ever use it. So a
+                    // negotiated rate on a product with no committed volume is a real term of the
+                    // deal, and the rep had no way to enter it.
+                    //
+                    // It is not cosmetic: at zero volume the calculator prices from the entry
+                    // band, and the discount multiplies that -- so proposed_rate, and the rate
+                    // printed on the Order Form, both move. Holly, 2026-08-27.
                     onChange={(value) =>
                       onInputChange("productDiscounts", {
                         ...(option.input.productDiscounts ||

@@ -627,3 +627,187 @@ test("every metered line carries this deal's rate, not the product library's fla
     );
   }
 });
+
+// "Proposed Rate" -- the agreed (net) monthly rate, stored rather than derived.
+//
+// Shane's review: the Order Form printed $0.62 on Notetaker where the agreed rate was $0.56. The
+// number was never missing -- `price` is the LIST rate and `discount` the concession, deliberately,
+// so that the concession stays visible -- but the standard quote template cannot subtract one
+// column from another, so the net has to exist as a field of its own.
+//
+// This carried the name `monthly_unit_price` from the initial commit and no test at all, which is
+// how it reached a customer-facing quote as a field that was never a property in the portal.
+test('every metered line carries proposed_rate, and it agrees with price minus discount', () => {
+  const selected = option();
+  const metered = buildDealLineItems(selected).filter((item) =>
+    String(item.key).startsWith('metered:'),
+  );
+  assert.equal(metered.length, 7, 'all seven metered products must appear');
+
+  for (const item of metered) {
+    const rate = item.properties.proposed_rate;
+    assert.ok(rate != null, `${item.key} must carry proposed_rate`);
+    assert.ok(Number.isFinite(Number(rate)), `${item.key} proposed_rate must be a number`);
+
+    // Agent Email is graduated: no price is sent, because one blended figure would collapse four
+    // tiers into one. proposed_rate is still written, but there is nothing to reconcile it against.
+    if (item.properties.price == null) continue;
+
+    const net = Number(item.properties.price) - Number(item.properties.discount || 0);
+    assert.equal(
+      Math.round(net * 100) / 100,
+      Math.round(Number(rate) * 100) / 100,
+      `${item.key}: proposed_rate must equal price minus discount to the cent`,
+    );
+  }
+
+  // The fixture discounts by 10%, so at least one line must actually exercise the gap -- otherwise
+  // this passes vacuously against list == net, which is the failure mode that let the original
+  // metered-price bug through.
+  assert.ok(
+    metered.some((item) => Number(item.properties.discount || 0) > 0),
+    'the fixture must include a discounted metered line or this proves nothing',
+  );
+});
+
+// Both layers, because the property is custom and the sync archives before it creates: it has to
+// be allowed through, and it has to be droppable if a portal never created it.
+test('proposed_rate is allowed through and is droppable', () => {
+  const source = require('node:fs').readFileSync(
+    require('node:path').join(__dirname, 'QuoteOptionsFunction.js'),
+    'utf8',
+  );
+  const names = (block) =>
+    new Set(
+      block
+        .split('\n')
+        .filter((line) => !line.trim().startsWith('//'))
+        .flatMap((line) => [...line.matchAll(/'([^']+)'/g)].map(([, name]) => name)),
+    );
+
+  const allowed = source.match(/const HUBSPOT_LINE_ITEM_PROPERTIES = new Set\(\[([\s\S]*?)^\]\);/m);
+  assert.ok(allowed, 'HUBSPOT_LINE_ITEM_PROPERTIES must be findable');
+  assert.equal(names(allowed[1]).has('proposed_rate'), true, 'proposed_rate must be allowed');
+  assert.equal(
+    names(allowed[1]).has('monthly_unit_price'),
+    false,
+    'monthly_unit_price was never a property in this portal and must not be sent',
+  );
+
+  const optional = source.match(
+    /const OPTIONAL_CUSTOM_LINE_ITEM_PROPERTIES = \[([\s\S]*?)^\];/m,
+  );
+  assert.ok(optional, 'OPTIONAL_CUSTOM_LINE_ITEM_PROPERTIES must be findable');
+  assert.equal(
+    names(optional[1]).has('proposed_rate'),
+    true,
+    'a portal without proposed_rate must degrade, not empty the Deal',
+  );
+});
+
+// Agent Email's adjusted tier table.
+//
+// The defect: HubSpot renders a graduated line's tier table from the PRODUCT when the line item
+// carries no tiers of its own, and the product holds the raw rate card -- no term discount, no
+// payment premium, no discretionary discount. On a 12-month monthly-in-advance deal that prints
+// $1.00/$0.75/$0.35/$0.25 on a contract the customer is actually billed $1.08/$0.81/$0.38/$0.27
+// under. 8% understated, in a signed document.
+const emailOption = (discretionaryDiscount = 0) => {
+  const input = {
+    ...option().input,
+    termMonths: 12,
+    paymentFrequency: 'monthly_in_advance',
+    volumes: { ...option().input.volumes, agent_email_thousands: 75 },
+    discretionaryDiscount,
+  };
+  return { id: 'option-1', name: 'Preferred', input, result: calculateQuote(input) };
+};
+
+const emailLine = (selected) => {
+  const item = buildDealLineItems(selected).find((line) =>
+    String(line.key).includes('agent_email'),
+  );
+  assert.ok(item, 'the Agent Email line must exist');
+  return item.properties;
+};
+
+test('the Agent Email line carries its own adjusted tiers, in thousands', () => {
+  const properties = emailLine(emailOption());
+
+  assert.equal(properties.hs_pricing_model, 'graduated');
+
+  // Bands are [0,50) [50,100) [100,500) [500,null) in thousands, exclusive upper.
+  // HubSpot's `end` is INCLUSIVE, so it is upper - 1, and the last tier omits `end`.
+  assert.deepEqual(JSON.parse(properties.hs_tier_ranges), [
+    { start: 0, end: 49 },
+    { start: 50, end: 99 },
+    { start: 100, end: 499 },
+    { start: 500 },
+  ]);
+
+  // 12 months (no term discount) monthly in advance (+8%): the workbook's additive adjustment.
+  assert.deepEqual(JSON.parse(properties.hs_tier_prices), [
+    { index: 0, price: 1.08 },
+    { index: 1, price: 0.81 },
+    { index: 2, price: 0.38 },
+    { index: 3, price: 0.27 },
+  ]);
+
+  // These are the PRODUCT's rates, which is exactly what must no longer reach the quote.
+  const printed = JSON.parse(properties.hs_tier_prices).map(({ price }) => price);
+  assert.notDeepEqual(printed, [1, 0.75, 0.35, 0.25], 'unadjusted rates reached the quote');
+
+  // HubSpot derives a tiered line's price from the tiers; sending `price` too is documented as
+  // wrong, and a single blended figure would collapse four tiers into one.
+  assert.equal(properties.price, undefined, 'a tiered line must not carry a flat price');
+
+  assert.equal(properties.units, '1,000 emails', 'the tier bounds need their unit stated');
+});
+
+test('the discretionary discount is baked into each Agent Email tier', () => {
+  const list = JSON.parse(emailLine(emailOption(0)).hs_tier_prices).map((t) => t.price);
+  const net = JSON.parse(emailLine(emailOption(0.1)).hs_tier_prices).map((t) => t.price);
+
+  assert.deepEqual(net, [0.97, 0.73, 0.34, 0.24]);
+  for (const [index, price] of net.entries()) {
+    assert.ok(price < list[index], `tier ${index} must be discounted, got ${price}`);
+  }
+});
+
+test('flat metered lines carry no tier properties', () => {
+  const flat = buildDealLineItems(emailOption()).filter(
+    (item) => String(item.key).startsWith('metered:') && !String(item.key).includes('agent_email'),
+  );
+  assert.equal(flat.length, 6);
+  for (const item of flat) {
+    for (const property of ['hs_pricing_model', 'hs_tier_ranges', 'hs_tier_prices']) {
+      assert.equal(item.properties[property], undefined, `${item.key} leaked ${property}`);
+    }
+    assert.ok(item.properties.price != null, `${item.key} must still carry a flat price`);
+  }
+});
+
+test('the tier properties are allowed through and are droppable', () => {
+  const source = require('node:fs').readFileSync(
+    require('node:path').join(__dirname, 'QuoteOptionsFunction.js'),
+    'utf8',
+  );
+  const names = (block) =>
+    new Set(
+      block
+        .split('\n')
+        .filter((line) => !line.trim().startsWith('//'))
+        .flatMap((line) => [...line.matchAll(/'([^']+)'/g)].map(([, name]) => name)),
+    );
+  const allowed = names(
+    source.match(/const HUBSPOT_LINE_ITEM_PROPERTIES = new Set\(\[([\s\S]*?)^\]\);/m)[1],
+  );
+  const optional = names(
+    source.match(/const OPTIONAL_CUSTOM_LINE_ITEM_PROPERTIES = \[([\s\S]*?)^\];/m)[1],
+  );
+  // Revenue Hub gated: a portal without it must fall back to the product's tiers, not lose the Deal.
+  for (const property of ['hs_pricing_model', 'hs_tier_ranges', 'hs_tier_prices', 'units']) {
+    assert.equal(allowed.has(property), true, `${property} must be allowed`);
+    assert.equal(optional.has(property), true, `${property} must be droppable`);
+  }
+});

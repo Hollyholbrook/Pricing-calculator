@@ -368,6 +368,58 @@ const oneTimeProperties = ({ option, key, component, product, price, listPrice, 
 });
 
 
+// HubSpot renders a graduated line item's tier table from the LINE ITEM's own tiers when they are
+// present, and falls back to the product's when they are not. Ours have to be present.
+//
+// The product's tiers are the raw rate card -- no term discount, no payment premium, no
+// discretionary discount. A quote built on them states rates the customer is not billed at: 8%
+// below the real rate on a 12-month monthly-in-advance deal. That is a discrepancy in a signed
+// document, not a display preference, which is why this is worth the risk of writing tier
+// properties at all.
+//
+// Confirmed against the CRM line items guide: line items support the same tiered pricing model as
+// products, either inherited via hs_product_id or set directly here, and `price` must NOT be sent
+// alongside them because the price is derived from the tiers. The caller already omits price on
+// graduated lines.
+//
+// UNITS -- everything here is in THOUSANDS of emails. Holly, 2026-08-27. HubSpot multiplies
+// quantity by the tier price, so the range bounds and the price must share one unit. Thousands is
+// the unit the product is sold in ("Agent Accounts - Per 1,000 Emails Sent") and the unit the
+// workbook's rate card is written in. Expressing the ranges in single emails would force the tier
+// price to $0.00108, which renders as $0.00 at HubSpot's two-decimal currency precision -- a quote
+// stating a zero rate for a product that bills.
+//
+// BOUNDS -- pricingRules bands carry an EXCLUSIVE upper; HubSpot's `end` is INCLUSIVE, so `end` is
+// `upper - 1`. That is only safe because volumes are integers (requireInteger in calculator.js);
+// with a fractional volume this would leave an unpriced gap between tiers. The last tier omits
+// `end` entirely to mean open-ended.
+//
+// PRICES -- proposedBandRates already carries the discretionary discount baked into each tier,
+// which is what Holly asked for. So unlike the flat metered lines, where `price` is the list rate
+// and `discount` the concession, a graduated line shows the agreed rate only. A tiered line cannot
+// express both, and the rate the customer is billed at is the one that has to be right.
+//
+// `index` is the POSITION in hs_tier_ranges, not a tier number. Both arrays are built from the
+// same list in the same order, so position and index agree by construction rather than by luck.
+const graduatedTierProperties = (line) => {
+  const tiers = line.proposedBandRates;
+  if (!tiers || tiers.length === 0) return {};
+  return {
+    hs_pricing_model: 'graduated',
+    hs_tier_ranges: JSON.stringify(
+      tiers.map(({ lower, upper }) =>
+        upper == null ? { start: lower } : { start: lower, end: upper - 1 },
+      ),
+    ),
+    hs_tier_prices: JSON.stringify(
+      tiers.map(({ rate }, index) => ({ index, price: round(rate, 2) })),
+    ),
+    // Without this the printed table reads "0 - 50" with no stated unit. Taken from the product's
+    // own unit of measure rather than hardcoded, so it stays right if the band unit ever changes.
+    units: line.unitOfMeasure,
+  };
+};
+
 // Every product in the bundle appears on every quote, committed or not. A product with no volume
 // still has a rate the customer would draw down at if they used it, and the drawdown fee they are
 // paying covers all of them -- so leaving the unused ones off made the quote look like a narrower
@@ -450,7 +502,19 @@ const buildMeteredLines = (option, source) => {
               : {}),
             source,
           }),
-          monthly_unit_price: String(line.billingUnitRate),
+          // The adjusted tier table, on graduated lines only. Empty on every flat line, which
+          // carries price/discount instead.
+          ...(isGraduated ? graduatedTierProperties(line) : {}),
+          // The AGREED (net) monthly rate, as its own field. `price` carries the LIST rate and
+          // `discount` the concession, so the net is already derivable as price - discount --
+          // but the standard quote template cannot do arithmetic across two columns, so the
+          // Order Form needs the answer stored rather than computed. Custom property, created in
+          // the portal 2026-08-27 as "Proposed Rate"; HubSpot fixed the internal name at
+          // `proposed_rate`, so that is the name here.
+          //
+          // NOT a per-tier rate on Agent Email: that line is graduated, so this is a blended
+          // figure across four tiers and the Order Form's tier table still needs hs_tier_prices.
+          proposed_rate: String(line.billingUnitRate),
           // The monthly committed average, as data rather than the prose it used to sit in.
           // quantity stays 0 so these lines still contribute nothing to the Deal total -- the
           // committed money is carried by the drawdown fee, not by these rate-schedule lines.
