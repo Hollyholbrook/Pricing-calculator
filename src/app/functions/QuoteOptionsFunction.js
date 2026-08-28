@@ -1481,9 +1481,10 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
     await inBatches(
       lineItems,
       async (item) => {
+        const sent = hubSpotLineItemProperties(item.properties);
         const created = await createLineItem(
           client,
-          hubSpotLineItemProperties(item.properties),
+          sent,
           // 68, not 67. Association type ids are directional: 67 is defined FROM the quote
           // (0-14) TO the line item, but this association is declared on the line item's own
           // create call, so the "from" side is the line item (0-8). HubSpot rejected it with
@@ -1492,6 +1493,13 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
           [createAssociation(quote.id, 68)],
         );
         createdLineItemIds.push(String(created.id));
+        // Read back and repair, exactly as the Deal sync does.
+        //
+        // THE QUOTE HAS ITS OWN LINE ITEMS -- separate records from the Deal's, created here. The
+        // printed Order Form renders from THESE. When the verify-and-repair was added it went on
+        // the Deal sync only, so the surface the customer actually reads was still unchecked and a
+        // dropped `one_time_fees` still printed as a dash. 2026-08-28.
+        await repairLineItemProperties(client, created.id, sent);
       },
     );
 

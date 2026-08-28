@@ -3036,9 +3036,10 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
     await inBatches(
       lineItems,
       async (item) => {
+        const sent = hubSpotLineItemProperties(item.properties);
         const created = await createLineItem(
           client,
-          hubSpotLineItemProperties(item.properties),
+          sent,
           // 68, not 67. Association type ids are directional: 67 is defined FROM the quote
           // (0-14) TO the line item, but this association is declared on the line item's own
           // create call, so the "from" side is the line item (0-8). HubSpot rejected it with
@@ -3047,6 +3048,7 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
           [createAssociation(quote.id, 68)]
         );
         createdLineItemIds.push(String(created.id));
+        await repairLineItemProperties(client, created.id, sent);
       }
     );
     const [contactIds, companyIds] = await Promise.all([

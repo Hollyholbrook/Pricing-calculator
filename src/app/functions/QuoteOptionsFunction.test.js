@@ -936,6 +936,25 @@ test('a failed verify or repair never fails the lock', async () => {
   assert.equal(await _test.repairLineItemProperties(write.client, 'li-5', sentFees), null);
 });
 
+test('BOTH surfaces verify every line item they create', () => {
+  // The quote has its OWN line items, separate records from the Deal's, and the printed Order Form
+  // renders from those. The verify-and-repair originally went on the Deal sync only, so the
+  // surface the customer actually reads stayed unchecked and a dropped one_time_fees still printed
+  // as a dash. Both loops, or the fix is decorative.
+  const source = require('node:fs').readFileSync(
+    require('node:path').join(__dirname, 'QuoteOptionsFunction.js'),
+    'utf8',
+  );
+  const calls = source.match(/await repairLineItemProperties\(client, created\.id, sent\);/g) || [];
+  assert.equal(calls.length, 2, 'the Deal sync AND the quote line item loop must both verify');
+
+  const dealLoop = source.slice(source.indexOf('const syncDealLineItems'));
+  assert.match(dealLoop.slice(0, 2000), /await repairLineItemProperties\(/, 'Deal sync verifies');
+
+  const quoteLoop = source.slice(source.indexOf('The quote owns its line items'));
+  assert.match(quoteLoop.slice(0, 4000), /await repairLineItemProperties\(/, 'quote loop verifies');
+});
+
 test('the sync verifies every line item it creates', () => {
   const source = require('node:fs').readFileSync(
     require('node:path').join(__dirname, 'QuoteOptionsFunction.js'),
