@@ -1289,23 +1289,52 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
 
   // Read before anything is written, because updateDealProperties below overwrites it. Tolerant
   // of a portal without the property: this is cleanup, not part of producing a correct quote.
+  // TWO SEPARATE READS, deliberately. They were one, and that was a mistake: pricing_latest_quote_id
+  // is a custom property this portal may not have, and a single catch meant a failure reading it
+  // silently produced an empty OWNER as well -- a blank Seller block with no error anywhere.
+  // Unrelated lookups do not share a failure. 2026-08-28.
   let supersededQuoteId = '';
-  let dealOwnerId = '';
   try {
     const priorDeal = await client.crm.deals.basicApi.getById(String(dealId), [
       'pricing_latest_quote_id',
-      'hubspot_owner_id',
     ]);
     supersededQuoteId = priorDeal?.properties?.pricing_latest_quote_id || '';
-    dealOwnerId = priorDeal?.properties?.hubspot_owner_id || '';
-  } catch {
-    supersededQuoteId = '';
-    dealOwnerId = '';
+  } catch (error) {
+    console.warn(
+      `Nylas pricing: could not read pricing_latest_quote_id on deal ${dealId}. ` +
+        `${String(error?.body?.message || error?.message || error)}`,
+    );
+  }
+
+  let dealOwnerId = '';
+  try {
+    const ownerRead = await client.crm.deals.basicApi.getById(String(dealId), [
+      'hubspot_owner_id',
+    ]);
+    dealOwnerId = ownerRead?.properties?.hubspot_owner_id || '';
+  } catch (error) {
+    console.warn(
+      `Nylas pricing: could not read hubspot_owner_id on deal ${dealId}. ` +
+        `${String(error?.body?.message || error?.message || error)}`,
+    );
+  }
+  // Said out loud, because three rounds went by with a blank Seller block and no way to tell WHICH
+  // step produced nothing -- an ownerless Deal, an unreadable owner, or the right properties on the
+  // wrong quote model. `hs project logs` now answers that in one line.
+  if (!dealOwnerId) {
+    console.warn(
+      `Nylas pricing: deal ${dealId} has no hubspot_owner_id. The quote will carry no owner and ` +
+        'no Seller contact.',
+    );
   }
 
   // Resolved before the try for the same reason as the line items: a failure here must not leave a
   // half-made quote behind. senderProperties never throws, so this is belt and braces.
   const sender = await senderProperties(client, dealOwnerId);
+  console.info(
+    `Nylas pricing: quote seller resolved -- owner=${dealOwnerId || 'NONE'} ` +
+      `fields=[${Object.keys(sender).join(', ') || 'NONE'}]`,
+  );
 
   // Built before the try so PRODUCT_MAPPING_REQUIRED fails before a quote record exists.
   const lineItems = buildQuoteLineItems(option, content);

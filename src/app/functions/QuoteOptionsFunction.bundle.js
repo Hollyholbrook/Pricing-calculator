@@ -2907,19 +2907,36 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
   );
   const hash = contentHash(option, { ...content, templateId });
   let supersededQuoteId = "";
-  let dealOwnerId = "";
   try {
     const priorDeal = await client.crm.deals.basicApi.getById(String(dealId), [
-      "pricing_latest_quote_id",
-      "hubspot_owner_id"
+      "pricing_latest_quote_id"
     ]);
     supersededQuoteId = priorDeal?.properties?.pricing_latest_quote_id || "";
-    dealOwnerId = priorDeal?.properties?.hubspot_owner_id || "";
-  } catch {
-    supersededQuoteId = "";
-    dealOwnerId = "";
+  } catch (error) {
+    console.warn(
+      `Nylas pricing: could not read pricing_latest_quote_id on deal ${dealId}. ${String(error?.body?.message || error?.message || error)}`
+    );
+  }
+  let dealOwnerId = "";
+  try {
+    const ownerRead = await client.crm.deals.basicApi.getById(String(dealId), [
+      "hubspot_owner_id"
+    ]);
+    dealOwnerId = ownerRead?.properties?.hubspot_owner_id || "";
+  } catch (error) {
+    console.warn(
+      `Nylas pricing: could not read hubspot_owner_id on deal ${dealId}. ${String(error?.body?.message || error?.message || error)}`
+    );
+  }
+  if (!dealOwnerId) {
+    console.warn(
+      `Nylas pricing: deal ${dealId} has no hubspot_owner_id. The quote will carry no owner and no Seller contact.`
+    );
   }
   const sender = await senderProperties(client, dealOwnerId);
+  console.info(
+    `Nylas pricing: quote seller resolved -- owner=${dealOwnerId || "NONE"} fields=[${Object.keys(sender).join(", ") || "NONE"}]`
+  );
   const lineItems = buildQuoteLineItems(option, content);
   let quote;
   const createdLineItemIds = [];

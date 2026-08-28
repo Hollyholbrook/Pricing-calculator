@@ -832,3 +832,34 @@ test('the quote create carries the sender properties', () => {
   const createLine = source.indexOf('quote = await client.crm.quotes.basicApi.create(');
   assert.ok(senderLine > 0 && senderLine < createLine);
 });
+
+// Two unrelated reads must not share a failure.
+//
+// The owner read was bundled into the same try/catch as pricing_latest_quote_id -- a custom
+// property this portal may not have. A failure reading that one silently produced an empty OWNER
+// too, so the Seller block came out blank with no error anywhere. 2026-08-28.
+test('a failed superseded-quote read does not blank the deal owner', () => {
+  const source = require('node:fs').readFileSync(
+    require('node:path').join(__dirname, 'QuoteOptionsFunction.js'),
+    'utf8',
+  );
+  const generate = source.slice(source.indexOf('const generateQuote'));
+  const supersededRead = generate.indexOf("'pricing_latest_quote_id',");
+  const ownerRead = generate.indexOf("'hubspot_owner_id',");
+  assert.ok(supersededRead > 0 && ownerRead > 0, 'both reads must exist');
+
+  // They must be separate getById calls, not one shared list.
+  const between = generate.slice(supersededRead, ownerRead);
+  assert.match(
+    between,
+    /catch \(error\)[\s\S]*?getById/,
+    'the owner must be read in its own call, after its own catch',
+  );
+
+  // And a silent catch is what hid this for three rounds.
+  assert.doesNotMatch(
+    generate.slice(0, ownerRead + 200),
+    /\} catch \{\s*\n\s*supersededQuoteId = '';/,
+    'the swallow-everything catch must not come back',
+  );
+});
