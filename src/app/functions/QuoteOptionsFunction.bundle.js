@@ -2961,12 +2961,14 @@ var latestQuoteSeller = async (client, quoteId) => {
   try {
     const quote = await client.crm.quotes.basicApi.getById(String(quoteId), [
       ...fields,
-      "hubspot_owner_id"
+      "hubspot_owner_id",
+      "hs_quote_owner_id"
     ]);
     const stored = fields.filter((name) => Boolean(quote?.properties?.[name]));
     return {
       quoteId: String(quoteId),
       ownerId: quote?.properties?.hubspot_owner_id || "",
+      senderId: quote?.properties?.hs_quote_owner_id || "",
       storedFields: stored,
       email: quote?.properties?.hs_sender_email || ""
     };
@@ -3205,7 +3207,21 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
         // it is set rather than hoped for.
         //
         // Omitted when the Deal has no owner: an empty string is not "no owner" to HubSpot.
-        ...dealOwnerId ? { hubspot_owner_id: dealOwnerId } : {},
+        ...dealOwnerId ? {
+          hubspot_owner_id: dealOwnerId,
+          // hs_quote_owner_id is HubSpot's "Quote sender", a DIFFERENT property from
+          // hubspot_owner_id ("Quote owner"). Untried until now, and the last documented
+          // candidate: on 2026-08-28 quote 42562905272 was confirmed to carry
+          // hubspot_owner_id 1512537839 while keeping NONE of hs_sender_firstname,
+          // hs_sender_lastname or hs_sender_email -- HubSpot accepted those writes and
+          // discarded them, so they are not what a CPQ quote reads.
+          //
+          // The theory this tests: a CPQ quote derives its Seller Contact from the SENDER,
+          // and the hs_sender_* block is either derived from it or is legacy-only. The card's
+          // Seller banner reports whether this sticks, so the next round is evidence rather
+          // than another guess.
+          hs_quote_owner_id: dealOwnerId
+        } : {},
         // The Seller block the customer reads. The owner above is the CRM record's owner; these
         // three are what the quote actually prints. Both are needed.
         ...sender,

@@ -598,7 +598,11 @@ test('a generated quote carries the deal owner and the clickwrap acceptance meth
     'the acceptance method must be set, or HubSpot defaults it to print_and_sign',
   );
   // Guarded, because an empty string is not "no owner" to HubSpot.
-  assert.match(body, /\.\.\.\(dealOwnerId \? \{ hubspot_owner_id/);
+  assert.match(body, /\.\.\.\(dealOwnerId\s*\n?\s*\?\s*\{/);
+  // hs_quote_owner_id is HubSpot's "Quote sender", a DIFFERENT property from hubspot_owner_id.
+  // Quote 42562905272 proved hs_sender_* is accepted and discarded on this quote model, so the
+  // sender id is the remaining documented candidate and must actually be sent.
+  assert.match(body, /hs_quote_owner_id: dealOwnerId,/, 'the quote sender must be set');
 
   // One of the three values HubSpot documents. clickwrap is "accept without signature".
   const method = source.match(/const QUOTE_ACCEPTANCE_METHOD = '([a-z_]+)';/);

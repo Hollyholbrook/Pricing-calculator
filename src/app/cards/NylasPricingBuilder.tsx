@@ -245,6 +245,7 @@ interface ServerlessBody {
   latestQuoteSeller?: {
     quoteId: string;
     ownerId: string;
+    senderId: string;
     storedFields: string[];
     email: string;
   } | null;
@@ -792,6 +793,7 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
   const [latestQuoteSeller, setLatestQuoteSeller] = useState<{
     quoteId: string;
     ownerId: string;
+    senderId: string;
     storedFields: string[];
     email: string;
   } | null>(null);
@@ -1127,6 +1129,7 @@ const OptionEditor = ({
   latestQuoteSeller: {
     quoteId: string;
     ownerId: string;
+    senderId: string;
     storedFields: string[];
     email: string;
   } | null;
@@ -1953,9 +1956,11 @@ const OptionEditor = ({
             ? `Set: ${latestQuoteSeller.email}. If the Seller section still prints blank, the template is not rendering these fields.`
             : latestQuoteSeller.ownerId === ""
               ? "The Quote has no owner. Set a Deal owner, then lock in again."
-              : latestQuoteSeller.storedFields.length === 0
-                ? `Quote ${latestQuoteSeller.quoteId} has owner ${latestQuoteSeller.ownerId} but HubSpot kept none of hs_sender_firstname, hs_sender_lastname, hs_sender_email — so those are the wrong fields for this quote model.`
-                : `Quote ${latestQuoteSeller.quoteId} kept only ${latestQuoteSeller.storedFields.join(", ")}.`}
+              : `Quote ${latestQuoteSeller.quoteId} — owner ${latestQuoteSeller.ownerId}, sender ${
+                  latestQuoteSeller.senderId || "NOT KEPT"
+                }, sender fields kept: ${
+                  latestQuoteSeller.storedFields.join(", ") || "none"
+                }.`}
         </Alert>
       )}
 
