@@ -3,8 +3,10 @@ const test = require('node:test');
 
 const { calculateQuote } = require('./calculator');
 const {
+  _test: lineItemInternals,
   buildDealLineItems,
   buildQuoteLineItems,
+  netPrice,
   normalizeQuoteContent,
 } = require('./lineItemModel');
 
@@ -40,15 +42,79 @@ const option = () => {
   return { id: 'option-1', name: 'Preferred', input, result: calculateQuote(input) };
 };
 
+// Holly, 2026-08-31: "The discounts should be in % not dollars always." Stated as its own test
+// rather than only as a side effect of the reconciliation tests, so that a change back to a flat
+// amount fails loudly here with the reason attached.
+test('a concession is always a percentage and never a dollar amount', () => {
+  const selected = option();
+  const content = normalizeQuoteContent({});
+  const everyLine = [
+    ...buildDealLineItems(selected),
+    ...buildQuoteLineItems(selected, content),
+  ];
+  let discounted = 0;
+  for (const item of everyLine) {
+    assert.equal(
+      item.properties.discount,
+      undefined,
+      `${item.key} must not carry a flat dollar discount`,
+    );
+    const percentage = item.properties.hs_discount_percentage;
+    if (percentage == null) continue;
+    discounted += 1;
+    const value = Number(percentage);
+    assert.ok(
+      Number.isFinite(value) && value > 0 && value < 100,
+      `${item.key}: ${percentage} is not a usable discount percentage`,
+    );
+    // The reconstruction HubSpot performs. If the percentage does not reproduce proposed_rate to
+    // the cent, the quote's rate column and its money columns disagree -- the exact objection the
+    // old flat-amount approach was chosen to avoid, so it has to be proven, not assumed.
+    assert.equal(
+      netPrice(item.properties),
+      Math.round(Number(item.properties.proposed_rate) * 100) / 100,
+      `${item.key}: the percentage must reproduce proposed_rate to the cent`,
+    );
+  }
+  // Otherwise this passes vacuously on a fixture where nothing was discounted.
+  assert.ok(discounted > 0, 'the fixture must discount something or this proves nothing');
+});
+
+// The awkward cases, direct against the helper. Support is priced as a share of platform ARR, so
+// its effective concession is not the round number the rep typed -- 15% entered, 23.41...% out --
+// and a percentage rounded to 2 decimals against a five-figure base drifts by tens of cents. The
+// helper is required to widen precision until the cent is exact, and to stay legible when it can.
+test('a discount percentage keeps the cent exact and stays legible when it can', () => {
+  const { discountPercentageFor } = lineItemInternals;
+  assert.equal(discountPercentageFor(100, 85), 15, 'a round concession stays round');
+  assert.equal(discountPercentageFor(0.2, 0.18), 10, 'and does so at rate-sized numbers');
+  assert.equal(discountPercentageFor(100, 100), 0, 'no concession is 0, not null');
+  assert.equal(discountPercentageFor(0, 0), null, 'nothing to express against a zero list price');
+  for (const [list, net] of [
+    [22257.88, 20032.1],
+    [13457.31, 10306.44],
+    [1.7, 1.3599],
+    [99999.99, 76543.21],
+    [3.33, 2.22],
+  ]) {
+    const percentage = discountPercentageFor(list, net);
+    assert.equal(
+      Math.round(list * (1 - percentage / 100) * 100) / 100,
+      Math.round(net * 100) / 100,
+      `${list} -> ${net} at ${percentage}% must land on the same cent`,
+    );
+  }
+});
+
 test('Deal line items reconcile to the approved calculation', () => {
   const selected = option();
   const items = buildDealLineItems(selected);
   // An absent price means "use the product default" and always sits on a quantity-0 rate
   // schedule line, so it contributes nothing either way.
-  // Net of `discount`: `price` is the LIST price on any discounted line, so this is what HubSpot
-  // will actually bill, which is the number that has to reconcile to the calculation.
-  const lineAmount = ({ price, quantity, discount }) =>
-    price == null ? 0 : (Number(price) - Number(discount || 0)) * Number(quantity);
+  // Net of the discount PERCENTAGE: `price` is the LIST price on any discounted line, so this is
+  // what HubSpot will actually bill, which is the number that has to reconcile to the calculation.
+  const lineAmount = (properties) =>
+    properties.price == null ? 0 : netPrice(properties) * Number(properties.quantity);
   const recurring = items
     .filter(({ properties }) => properties.recurringbillingfrequency)
     .reduce((sum, { properties }) => sum + lineAmount(properties), 0);
@@ -139,15 +205,9 @@ test('Deal line items reconcile to the approved calculation', () => {
   // chargeable amount. At 20032.10 a quarter the year comes to 80128.40. The invoice is right and
   // the calculator's figure is the theoretical one; the gap is at most half a cent per payment.
   // Net of the discount: on a discounted deal `price` is the LIST per-payment figure and the
-  // concession sits in `discount`, so what the customer pays is the difference.
-  // Rounded: subtracting two cent-precise decimals in binary floating point leaves residue
-  // (22257.88 - 2225.78 came out as 20032.100000000002).
-  const drawdownPrice =
-    Math.round(
-      (Number(recurringItems[0].properties.price) -
-        Number(recurringItems[0].properties.discount || 0)) *
-        100,
-    ) / 100;
+  // concession is a PERCENTAGE off it, so what the customer pays is what netPrice works out.
+  // Read through netPrice rather than restated here, so the representation lives in one file.
+  const drawdownPrice = netPrice(recurringItems[0].properties);
   const perPayment = selected.result.proposedPlatformArr / selected.result.paymentsPerYear;
   assert.equal(drawdownPrice, Math.round((perPayment + Number.EPSILON) * 100) / 100);
   assert.ok(
@@ -204,9 +264,14 @@ test('every bundle product appears even with no commitment or discount', () => {
     'an undiscounted line still carries this deal rate, not the product default',
   );
   assert.equal(
-    uncommitted.properties.discount,
+    uncommitted.properties.hs_discount_percentage,
     undefined,
     'and no discount, because none was given',
+  );
+  assert.equal(
+    uncommitted.properties.discount,
+    undefined,
+    'and never a dollar concession -- discounts are percentages',
   );
 
   // Agent Email is the one exception: it is graduated, and the product carries its four tiers.
@@ -310,10 +375,10 @@ test('itemized Quote line items reconcile to recurring and one-time totals', () 
   }));
   // An absent price means "use the product default" and always sits on a quantity-0 rate
   // schedule line, so it contributes nothing either way.
-  // Net of `discount`: `price` is the LIST price on any discounted line, so this is what HubSpot
-  // will actually bill, which is the number that has to reconcile to the calculation.
-  const lineAmount = ({ price, quantity, discount }) =>
-    price == null ? 0 : (Number(price) - Number(discount || 0)) * Number(quantity);
+  // Net of the discount PERCENTAGE: `price` is the LIST price on any discounted line, so this is
+  // what HubSpot will actually bill, which is the number that has to reconcile to the calculation.
+  const lineAmount = (properties) =>
+    properties.price == null ? 0 : netPrice(properties) * Number(properties.quantity);
   const recurring = items
     .filter(({ properties }) => properties.recurringbillingfrequency)
     .reduce((sum, { properties }) => sum + lineAmount(properties), 0);
@@ -592,12 +657,16 @@ test("every metered line carries this deal's rate, not the product library's fla
     'Email + Calendar quotes at $1.76, not the library $1.60',
   );
 
-  // Discounted lines keep Holly's model: `price` is the LIST rate and `discount` the concession,
-  // so HubSpot's net is the proposed rate. Shane expected $0.56 per bot hour.
+  // Discounted lines keep Holly's model: `price` is the LIST rate and the concession is stated
+  // separately -- as a PERCENTAGE -- so HubSpot's net is the proposed rate. Shane expected $0.56.
   const notetaker = priceOf('notetaker_bot_hours');
-  assert.ok(Number(notetaker.discount) > 0, 'the concession is stated separately');
+  assert.ok(
+    Number(notetaker.hs_discount_percentage) > 0,
+    'the concession is stated separately, as a percentage',
+  );
+  assert.equal(notetaker.discount, undefined, 'and never as a dollar amount');
   assert.equal(
-    Math.round((Number(notetaker.price) - Number(notetaker.discount)) * 100) / 100,
+    Math.round(netPrice(notetaker) * 100) / 100,
     0.56,
     'Notetaker nets to the proposed $0.56',
   );
@@ -637,7 +706,7 @@ test("every metered line carries this deal's rate, not the product library's fla
 //
 // This carried the name `monthly_unit_price` from the initial commit and no test at all, which is
 // how it reached a customer-facing quote as a field that was never a property in the portal.
-test('every metered line carries proposed_rate, and it agrees with price minus discount', () => {
+test('every metered line carries proposed_rate, and it agrees with the discounted price', () => {
   const selected = option();
   const metered = buildDealLineItems(selected).filter((item) =>
     String(item.key).startsWith('metered:'),
@@ -653,11 +722,11 @@ test('every metered line carries proposed_rate, and it agrees with price minus d
     // tiers into one. proposed_rate is still written, but there is nothing to reconcile it against.
     if (item.properties.price == null) continue;
 
-    const net = Number(item.properties.price) - Number(item.properties.discount || 0);
+    const net = netPrice(item.properties);
     assert.equal(
       Math.round(net * 100) / 100,
       Math.round(Number(rate) * 100) / 100,
-      `${item.key}: proposed_rate must equal price minus discount to the cent`,
+      `${item.key}: proposed_rate must equal the discounted price to the cent`,
     );
   }
 
@@ -665,7 +734,7 @@ test('every metered line carries proposed_rate, and it agrees with price minus d
   // this passes vacuously against list == net, which is the failure mode that let the original
   // metered-price bug through.
   assert.ok(
-    metered.some((item) => Number(item.properties.discount || 0) > 0),
+    metered.some((item) => Number(item.properties.hs_discount_percentage || 0) > 0),
     'the fixture must include a discounted metered line or this proves nothing',
   );
 });
@@ -710,7 +779,7 @@ test('proposed_rate is allowed through and is droppable', () => {
 // The defect: HubSpot renders a graduated line's tier table from the PRODUCT when the line item
 // carries no tiers of its own, and the product holds the raw rate card -- no term discount, no
 // payment premium, no discretionary discount. On a 12-month monthly-in-advance deal that prints
-// $1.00/$0.75/$0.35/$0.25 on a contract the customer is actually billed $1.08/$0.81/$0.38/$0.27
+// $1.00/$0.70/$0.35/$0.25 on a contract the customer is actually billed $1.08/$0.76/$0.38/$0.27
 // under. 8% understated, in a signed document.
 const emailOption = (discretionaryDiscount = 0) => {
   const input = {
@@ -750,14 +819,14 @@ test('the Agent Email line carries its own adjusted tiers, in thousands', () => 
   // 12 months (no term discount) monthly in advance (+8%): the workbook's additive adjustment.
   assert.deepEqual(JSON.parse(properties.hs_tier_prices), [
     { index: 0, price: 1.08 },
-    { index: 1, price: 0.81 },
+    { index: 1, price: 0.76 },
     { index: 2, price: 0.38 },
     { index: 3, price: 0.27 },
   ]);
 
   // These are the PRODUCT's rates, which is exactly what must no longer reach the quote.
   const printed = JSON.parse(properties.hs_tier_prices).map(({ price }) => price);
-  assert.notDeepEqual(printed, [1, 0.75, 0.35, 0.25], 'unadjusted rates reached the quote');
+  assert.notDeepEqual(printed, [1, 0.7, 0.35, 0.25], 'unadjusted rates reached the quote');
 
   // HubSpot derives a tiered line's price from the tiers; sending `price` too is documented as
   // wrong, and a single blended figure would collapse four tiers into one.
@@ -773,7 +842,7 @@ test('the discretionary discount is baked into each Agent Email tier', () => {
   const list = JSON.parse(emailLine(emailOption(0)).hs_tier_prices).map((t) => t.price);
   const net = JSON.parse(emailLine(emailOption(0.1)).hs_tier_prices).map((t) => t.price);
 
-  assert.deepEqual(net, [0.97, 0.73, 0.34, 0.24]);
+  assert.deepEqual(net, [0.97, 0.68, 0.34, 0.24]);
   for (const [index, price] of net.entries()) {
     assert.ok(price < list[index], `tier ${index} must be discounted, got ${price}`);
   }
@@ -835,11 +904,11 @@ test('every line that carries a price also carries proposed_rate', () => {
     assert.ok(rate != null, `${item.key} carries a price but no proposed_rate`);
     // The three fields have to agree to the cent, or the quote contradicts itself: the rate column
     // would state one number while the money columns are computed from another.
-    const net = Number(item.properties.price) - Number(item.properties.discount || 0);
+    const net = netPrice(item.properties);
     assert.equal(
       Math.round(net * 100) / 100,
       Math.round(Number(rate) * 100) / 100,
-      `${item.key}: proposed_rate must equal price minus discount`,
+      `${item.key}: proposed_rate must equal the discounted price`,
     );
   }
 
@@ -860,7 +929,8 @@ test('every line that carries a price also carries proposed_rate', () => {
   assert.ok(
     priced.some(
       (item) =>
-        !String(item.key).startsWith('metered:') && Number(item.properties.discount || 0) > 0,
+        !String(item.key).startsWith('metered:') &&
+        Number(item.properties.hs_discount_percentage || 0) > 0,
     ),
     'a discounted charge line is needed or this proves nothing',
   );

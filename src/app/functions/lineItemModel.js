@@ -48,6 +48,14 @@ const CATALOG = Object.freeze({
     name: 'Agent Accounts - GB / Bandwidth',
     category: 'Platform',
   },
+  // The Enterprise add-on. 'Accelerator Package' (46102266003) is the PRO ANNUAL product and is
+  // not what an Enterprise contract buys -- see pricingRules.addOnRules.
+  shared_oauth_app: {
+    id: '34548719650',
+    name: 'Add-On: Shared Google OAuth App',
+    category: 'Add-Ons',
+  },
+  // Deprecated, kept so a stored quote that still carries this key can be priced and re-billed.
   enterprise_accelerator: {
     id: '46102266003',
     name: 'Accelerator Package',
@@ -109,6 +117,10 @@ const CATALOG = Object.freeze({
     name: 'Notification & Webhook Best Practices',
     category: 'Professional Services',
   },
+  // The MRD's sixth professional service, Ad-hoc Expert Consultation, has a HubSpot product --
+  // 47446779731, Professional Services, $2,000, created 2026-08-31 -- but no entry here yet.
+  // Everything in CATALOG must have a local price to compare against, and the six-item bundle
+  // price is still TBD. Add this entry and the rate-card rows together, not separately.
 });
 
 const PRESENTATIONS = Object.freeze(['itemized_products', 'subscription_summary']);
@@ -163,11 +175,10 @@ const FEE_TOTAL_PROPERTIES = Object.freeze({
 const carriesFees = (key) => !String(key).startsWith('metered:');
 
 const feeTotals = (item, option) => {
-  const price = Number(item.properties.price);
-  if (!Number.isFinite(price)) return null;
   // Net of the discount. `price` is now the LIST price on any discounted line, so reading it
   // alone would report list amounts in the fee columns and overstate every total.
-  const net = price - Number(item.properties.discount || 0);
+  const net = netPrice(item.properties);
+  if (net == null) return null;
   const amount = net * Number(item.properties.quantity || 0);
   // A line is recurring exactly when it carries a billing frequency -- the same test the Contract
   // Summary and the reconciliation test use.
@@ -298,6 +309,42 @@ const baseManagedProperties = ({ option, key, component, product, source }) => (
   nylas_line_item_source: source,
 });
 
+// A discount is a PERCENTAGE on every line, never a dollar amount. Holly, 2026-08-31: "The
+// discounts should be in % not dollars always." A rep, a customer and a finance reviewer reading
+// the quote all compare concessions across lines, and "12%" is comparable where "$1,843.20" is not.
+//
+// This replaces a flat `discount` amount. The old comment argued for dollars because list-minus-net
+// is exact to the cent by construction while a rounded percentage drifts -- true of a percentage
+// rounded to two decimals, which is why this does not round to two. It takes the SMALLEST precision
+// that reconstructs the net exactly to the cent, so the common cases stay legible ("15%", not
+// "15.000000%") and the awkward ones -- support at 23.41...% of platform ARR -- keep their cents.
+const DISCOUNT_PRECISIONS = [2, 4, 6, 8, 10];
+
+const discountPercentageFor = (list, net) => {
+  if (!(list > 0)) return null;
+  const exact = ((list - net) / list) * 100;
+  for (const decimals of DISCOUNT_PRECISIONS) {
+    const candidate = round(exact, decimals);
+    // The reconstruction HubSpot itself performs: net = price x (1 - pct/100), to the cent.
+    if (round(list * (1 - candidate / 100), 2) === round(net, 2)) return candidate;
+  }
+  return round(exact, DISCOUNT_PRECISIONS[DISCOUNT_PRECISIONS.length - 1]);
+};
+
+// The one place that knows how a discount is expressed on a line item. Everything that needs a net
+// -- fee totals, the reconciliation tests -- goes through this, so the representation can change in
+// exactly one file. `discount` is still honoured on the way IN so that line items written by an
+// earlier build, before this changed, still report the right totals rather than list amounts.
+const netPrice = (properties = {}) => {
+  const price = Number(properties.price);
+  if (!Number.isFinite(price)) return null;
+  const percentage = Number(properties.hs_discount_percentage);
+  if (Number.isFinite(percentage) && percentage !== 0) {
+    return round(price * (1 - percentage / 100), 2);
+  }
+  return round(price - Number(properties.discount || 0), 2);
+};
+
 // price + discount, expressed the way HubSpot models a discounted line.
 //
 // Sending only the net price hid the discount entirely: the quote showed the agreed rate with no
@@ -328,9 +375,11 @@ const priceProperties = (price, listPrice) => {
   if (listPrice == null) return { price: String(net), proposed_rate: String(net) };
   const list = round(listPrice, 2);
   if (list - net < 0.01) return { price: String(net), proposed_rate: String(net) };
+  const percentage = discountPercentageFor(list, net);
+  if (percentage == null) return { price: String(net), proposed_rate: String(net) };
   return {
     price: String(list),
-    discount: String(round(list - net, 2)),
+    hs_discount_percentage: String(percentage),
     proposed_rate: String(net),
   };
 };
@@ -771,9 +820,10 @@ const contentHash = (option, content) =>
 module.exports = {
   CATALOG,
   FEE_TOTAL_PROPERTIES,
-  _test: { feeTotals, withFeeTotals },
+  _test: { discountPercentageFor, feeTotals, withFeeTotals },
   buildDealLineItems,
   buildQuoteLineItems,
   contentHash,
+  netPrice,
   normalizeQuoteContent,
 };

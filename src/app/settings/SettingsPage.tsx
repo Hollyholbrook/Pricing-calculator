@@ -23,6 +23,7 @@ import {
 interface PricingPolicy {
   calculationMethod: "excel_compatible" | "rounded_unit_rate";
   minimumCommittedArr: number;
+  enforceMinimumCommittedArr: boolean;
   redliningMinimumArr: number;
   salesDirectorDiscountMax: number;
   headSalesDiscountMax: number;
@@ -86,71 +87,25 @@ interface SettingsBody {
   canEdit?: boolean;
   pipelines?: { id: string; label: string }[];
   quoteTemplates?: { id: string; name: string }[];
+  productRates?: ProductRateDescriptor[];
 }
 
 interface SettingsResult {
   body: SettingsBody;
 }
 
-const productRateSettings = [
-  {
-    key: "connect_ca",
-    label: "Connect — CA",
-    bands: [
-      "0–500",
-      "500–1K",
-      "1K–2K",
-      "2K–5K",
-      "5K–10K",
-      "10K–20K",
-      "20K–50K",
-      "50K–100K",
-      "100K–200K",
-      "200K–500K",
-      "500K–1.1M",
-      "1.1M+",
-    ],
-  },
-  {
-    key: "calendar_ca",
-    label: "Calendar Only — CA",
-    bands: [
-      "0–500",
-      "500–1K",
-      "1K–2K",
-      "2K–5K",
-      "5K–10K",
-      "10K–20K",
-      "20K–50K",
-      "50K–100K",
-      "100K–200K",
-      "200K–500K",
-      "500K–1.1M",
-      "1.1M+",
-    ],
-  },
-  {
-    key: "notetaker_bot_hours",
-    label: "Notetaker — Bot Hour",
-    bands: ["0–1K", "1K–2K", "2K–5K", "5K–10K", "10K+"],
-  },
-  { key: "agent_accounts", label: "Agent Accounts", bands: ["All Volume"] },
-  {
-    key: "agent_email_thousands",
-    label: "Agent Email — 1K Emails",
-    bands: ["0–50K", "50K–100K", "100K–500K", "500K+"],
-  },
-  {
-    key: "agent_storage_gb",
-    label: "Agent Storage — GB",
-    bands: ["All Volume"],
-  },
-  {
-    key: "agent_bandwidth_gb",
-    label: "Agent Bandwidth — GB",
-    bands: ["All Volume"],
-  },
-];
+// The product rows come from the SERVER, derived from pricingRules -- see productRateDescriptors.
+//
+// This file used to carry its own copy: seven product keys, seven labels, and every band boundary
+// spelled out ("0-500", "500-1K", ...). It happened to match, but nothing kept it matching, and a
+// band moved in pricingRules would have left the screen labelling the wrong boundary over the
+// right input. Holly, 2026-08-31: nothing hardcoded outside the settings and the product
+// information itself.
+interface ProductRateDescriptor {
+  key: string;
+  label: string;
+  bands: string[];
+}
 
 hubspot.extend<"settings">(() => <SettingsPage />);
 
@@ -164,6 +119,7 @@ const SettingsPage = () => {
   const [pipelines, setPipelines] = useState<{ id: string; label: string }[]>(
     [],
   );
+  const [productRates, setProductRates] = useState<ProductRateDescriptor[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -191,6 +147,7 @@ const SettingsPage = () => {
       setCanEdit(body.canEdit === true);
       setPipelines(body.pipelines || []);
       setQuoteTemplates(body.quoteTemplates || []);
+      setProductRates(body.productRates || []);
     } catch (requestError) {
       setError(
         requestError instanceof Error
@@ -474,12 +431,32 @@ const SettingsPage = () => {
       </Card>
 
       <Accordion title="Approval and Contract Guardrails" defaultOpen>
+        <Stack>
+          <Checkbox
+            name="enforce_minimum_arr"
+            checked={policy.enforceMinimumCommittedArr}
+            readOnly={!canEdit}
+            onChange={(checked) =>
+              setPolicy({ ...policy, enforceMinimumCommittedArr: checked })
+            }
+          >
+            Enforce the Enterprise Recurring Minimum
+          </Checkbox>
+          <Text variant="microcopy">
+            {policy.enforceMinimumCommittedArr
+              ? "A deal below the minimum escalates to Finance and cannot be locked in."
+              : "Off. Committed ARR below the minimum neither escalates nor blocks Lock in. The ARR to Allow Special Terms threshold is separate and still applies."}
+          </Text>
+        </Stack>
         <AutoGrid columnWidth={175} flexible gap="sm">
           <Money
             label="Enterprise Recurring Minimum"
             name="minimum_arr"
             value={policy.minimumCommittedArr}
-            disabled={!canEdit}
+            // The threshold is kept even while the rule is off, so turning it back on does not
+            // require remembering what the number was. Editable only when the rule is on, so the
+            // page cannot show an amount that looks live but is not.
+            disabled={!canEdit || !policy.enforceMinimumCommittedArr}
             onChange={(value) => setPolicyNumber("minimumCommittedArr", value)}
           />
           <Money
@@ -514,7 +491,7 @@ const SettingsPage = () => {
             Edit marginal monthly unit rates. Volume-band boundaries remain
             fixed to prevent overlapping or missing tiers.
           </Text>
-          {productRateSettings.map((product) => (
+          {productRates.map((product) => (
             <Accordion key={product.key} title={product.label}>
               <AutoGrid columnWidth={115} flexible gap="sm">
                 {product.bands.map((band, index) => (
@@ -711,7 +688,16 @@ const SettingsPage = () => {
               }
             />
             <Money
-              label="Enterprise Accelerator / Yr"
+              label="Shared OAuth App / Yr"
+              name="addon_shared_oauth"
+              value={policy.addOnAnnualAmounts.shared_oauth_app}
+              disabled={!canEdit}
+              onChange={(value) =>
+                setNestedNumber("addOnAnnualAmounts", "shared_oauth_app", value)
+              }
+            />
+            <Money
+              label="Accelerator (legacy) / Yr"
               name="addon_accelerator"
               value={policy.addOnAnnualAmounts.enterprise_accelerator}
               disabled={!canEdit}

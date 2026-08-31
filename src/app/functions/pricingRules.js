@@ -1,12 +1,30 @@
+// The term ladder. Hoisted out of the frozen export so `allowedTerms` can be DERIVED from it
+// rather than restated -- a second handwritten copy is how the onboarding amounts drifted.
+const termRules = Object.freeze([
+  Object.freeze({ months: 12, discount: 0 }),
+  Object.freeze({ months: 24, discount: 0.025 }),
+  Object.freeze({ months: 36, discount: 0.05 }),
+]);
+
 module.exports = Object.freeze({
   schemaVersion: '1.0',
   priceListVersion: 'FY26 v1',
   calculationMethod: 'excel_compatible',
   currency: 'USD',
   effectiveDate: '2026-07-01',
-  allowedTerms: [12, 24, 36],
+  allowedTerms: termRules.map(({ months }) => months),
   maximumVolume: 1_000_000_000,
   minimumCommittedArr: 25_000,
+  // DISABLED. Holly, 2026-08-31: "Just disable the arr minumum."
+  //
+  // The workbook states a $25,000 Enterprise recurring minimum, so the number stays above rather
+  // than being deleted -- deleting it would lose the rate card's own statement of the rule and make
+  // re-enabling it a guess. This flag is the switch, and Settings exposes it, so turning the
+  // minimum back on is one checkbox and the threshold it uses is already correct.
+  //
+  // While false: committed ARR below the minimum neither escalates to Finance nor blocks Lock in.
+  // The redlining/special-terms ARR threshold is SEPARATE and still enforced.
+  enforceMinimumCommittedArr: false,
   redliningMinimumArr: 50_000,
   // Credit card is not accepted on an invoice above this amount -- ACH/Bank Transfer (wire) is
   // required. Holly, 2026-08-27, as a hard REQUIREMENT rather than an approval step.
@@ -17,6 +35,11 @@ module.exports = Object.freeze({
   // $20,000 a period -- under the limit -- but $35,000 on the first invoice if $15,000 of
   // onboarding rides along with it, which is over. Testing ARR would have missed that.
   creditCardMaximumInvoice: 25_000,
+  // The approval ladder's two thresholds. Here rather than only in appSettings so there is
+  // exactly ONE place a rate or threshold lives -- calculator.js used to fall back to bare
+  // 0.1 / 0.3 literals, a second copy nothing kept in step.
+  salesDirectorDiscountMax: 0.1,
+  headSalesDiscountMax: 0.3,
   products: [
     {
       key: 'connect_ca',
@@ -81,9 +104,13 @@ module.exports = Object.freeze({
       name: 'Agent Email',
       unitOfMeasure: '1,000 emails',
       pricingModel: 'graduated_adjusted_bands',
+      // Tier 2 is 0.70, not 0.75. Settled 2026-08-31 against the FY26 MRD, which states it twice
+      // -- table 11 (Enterprise) and table 5 (Pro Annual) -- and states that Enterprise
+      // deliberately holds at the Pro Annual rates for Agent Accounts. The OneSubscription
+      // workbook says 0.75; on that reasoning the workbook is the typo. Holly confirmed.
       bands: [
         [0, 50, 1],
-        [50, 100, 0.75],
+        [50, 100, 0.7],
         [100, 500, 0.35],
         [500, null, 0.25],
       ],
@@ -135,11 +162,7 @@ module.exports = Object.freeze({
       hubspotValue: 'monthly',
     },
   ],
-  termRules: [
-    { months: 12, discount: 0 },
-    { months: 24, discount: 0.025 },
-    { months: 36, discount: 0.05 },
-  ],
+  termRules,
   supportRules: [
     {
       key: 'basic',
@@ -183,6 +206,13 @@ module.exports = Object.freeze({
     { itemCount: 3, oneTimeAmount: 5_500 },
     { itemCount: 4, oneTimeAmount: 7_200 },
     { itemCount: 5, oneTimeAmount: 8_800 },
+    // NO SIX-ITEM ROW YET, and that is why the sixth professional service is not offered.
+    //
+    // The MRD's bundle table lists the six-item price as TBD. Two things block adding it:
+    // the price itself, and the fact that `professionalServicesAmounts` is a STORED settings
+    // array whose length is validated at exactly 6 (indices 0..5) -- a seventh entry changes a
+    // stored shape, which REQUIREMENTS section 9 says never to do in place. Both are one small
+    // deliberate change once the number exists.
   ],
   professionalServiceOptions: [
     { key: 'google_verification_review', label: 'Google Verification Review' },
@@ -193,17 +223,36 @@ module.exports = Object.freeze({
       key: 'notification_webhook_best_practices',
       label: 'Notification & Webhook Best Practices',
     },
+    // The FY26 MRD lists a sixth plan, Ad-hoc Expert Consultation. Its HubSpot product exists
+    // (47446779731, $2,000) and lineItemModel's CATALOG can already bill it, but it is NOT
+    // offered here until the six-item bundle price exists -- see professionalServicesRules.
   ],
   addOnRules: [
     {
-      key: 'enterprise_accelerator',
-      label: 'Enterprise Accelerator Package',
+      // What an Enterprise deal actually buys. The FY26 MRD is explicit: the Accelerator Package
+      // is PRO ANNUAL ONLY, and on Enterprise the Hosted Auth Branding and custom domains it
+      // bundles are already included in the contract -- the single paid Enterprise add-on is the
+      // Shared OAuth App. Same 2,400 a year, correct SKU on the customer's quote.
+      key: 'shared_oauth_app',
+      label: 'Shared OAuth App',
       annualAmount: 2_400,
+    },
+    {
+      // DEPRECATED 2026-08-31, superseded by shared_oauth_app. Kept because it is a STORED key --
+      // it appears in saved quote configurations and in the addOnAnnualAmounts settings record,
+      // and removing it would invalidate both. Not offered in the card any more; still prices.
+      key: 'enterprise_accelerator',
+      label: 'Enterprise Accelerator Package (legacy)',
+      annualAmount: 2_400,
+      deprecated: true,
     },
     {
       key: 'privacy_filter',
       label: 'Privacy Filter Mode',
-      annualAmount: 6_000,
+      // 5,000, not 6,000. The FY26 MRD (add-ons table) and the HubSpot product PRIVACY
+      // (46060960674) both say 5,000; the code was the only source saying 6,000, and every quote
+      // carrying this add-on over-charged by 1,000 a year. Holly confirmed 2026-08-31.
+      annualAmount: 5_000,
     },
     {
       key: 'verified_oauth',

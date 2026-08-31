@@ -1,7 +1,10 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 
+const pricingRules = require('./pricingRules');
+const { calculateQuote } = require('./calculator');
 const {
+  productRateDescriptors,
   defaultSettings,
   isDealAllowed,
   normalizeSettings,
@@ -50,14 +53,230 @@ test('legacy Agent Email rates migrate while preserving custom settings', () => 
   legacy.pricingPolicy.productBandRates.agent_email_thousands = [0.5];
   assert.deepEqual(
     normalizeSettings(legacy).pricingPolicy.productBandRates.agent_email_thousands,
-    [1, 0.75, 0.35, 0.25],
+    [1, 0.7, 0.35, 0.25],
   );
 
   legacy.pricingPolicy.productBandRates.agent_email_thousands = [0.6];
   assert.deepEqual(
     normalizeSettings(legacy).pricingPolicy.productBandRates.agent_email_thousands,
-    [0.6, 0.75, 0.35, 0.25],
+    [0.6, 0.7, 0.35, 0.25],
   );
+});
+
+// NOTHING HARDCODES A RATE OR A PRODUCT OUTSIDE pricingRules AND THE SETTINGS. Holly, 2026-08-31.
+//
+// The Settings screen used to carry its own copy of the product structure -- seven keys, seven
+// labels, every band boundary as a literal string. It matched, but nothing kept it matching: a
+// band moved in pricingRules would have left the screen labelling the wrong boundary over the
+// right input, which is worse than an obvious error because it looks fine.
+test('the settings product rows are derived from the rate card', () => {
+  const rows = productRateDescriptors();
+  assert.deepEqual(
+    rows.map(({ key }) => key),
+    pricingRules.products.map(({ key }) => key),
+    'one row per product, in rate-card order',
+  );
+  // A band label per band, always -- the screen puts one input under each label, so a count
+  // mismatch means an input labelled with the wrong boundary.
+  for (const [i, row] of rows.entries()) {
+    assert.equal(
+      row.bands.length,
+      pricingRules.products[i].bands.length,
+      `${row.key}: one label per band`,
+    );
+  }
+  // The labels the screen showed before deriving them, so the change is invisible to the admin.
+  const connect = rows.find(({ key }) => key === 'connect_ca');
+  assert.deepEqual(connect.bands, [
+    '0\u2013500',
+    '500\u20131K',
+    '1K\u20132K',
+    '2K\u20135K',
+    '5K\u201310K',
+    '10K\u201320K',
+    '20K\u201350K',
+    '50K\u2013100K',
+    '100K\u2013200K',
+    '200K\u2013500K',
+    '500K\u20131.1M',
+    '1.1M+',
+  ]);
+  // An open-ended last band reads "N+", never "N-null".
+  const storage = rows.find(({ key }) => key === 'agent_storage_gb');
+  assert.deepEqual(storage.bands, ['0+']);
+  for (const row of rows) {
+    for (const label of row.bands) {
+      assert.equal(/null|undefined|NaN/.test(label), false, `${row.key}: ${label}`);
+    }
+  }
+  // Labels carry the product's own name and unit, not a second copy of them.
+  assert.equal(connect.label, 'Email + Calendar \u2014 CA');
+});
+
+// THE RATE CARD IS pricingRules.js, AND NOTHING MAY QUIETLY DISAGREE WITH IT.
+//
+// This is the test that was missing on 2026-08-27. pricingRules said onboarding was 5/10/15K --
+// confirmed by Holly, the workbook RATE CARD, QUOTE BUILDER row 38 and the HubSpot product export
+// -- while defaultPricingPolicy still said 0/5/10K. buildActiveRules reads the POLICY first, so
+// the stale copy won and every onboarding package was quoted $5,000 short for four days.
+//
+// The existing tests could not catch it: they pass `{}` as the pricing policy, which falls through
+// to pricingRules and never reads this table at all.
+test('every default pricing policy table equals the rate card', () => {
+  const policy = defaultSettings().pricingPolicy;
+
+  assert.deepEqual(
+    policy.onboardingAmounts,
+    Object.fromEntries(pricingRules.onboardingRules.map((r) => [r.key, r.oneTimeAmount])),
+    'onboarding amounts must equal pricingRules -- this is the one that drifted',
+  );
+  assert.deepEqual(
+    policy.termDiscounts,
+    Object.fromEntries(pricingRules.termRules.map((r) => [String(r.months), r.discount])),
+  );
+  assert.deepEqual(
+    policy.paymentPremiums,
+    Object.fromEntries(pricingRules.paymentRules.map((r) => [r.key, r.premium])),
+  );
+  assert.deepEqual(
+    policy.support,
+    Object.fromEntries(
+      pricingRules.supportRules.map((r) => [
+        r.key,
+        { percent: r.percentOfPlatformArr, cap: r.annualCap },
+      ]),
+    ),
+  );
+  assert.deepEqual(
+    policy.professionalServicesAmounts,
+    pricingRules.professionalServicesRules.map((r) => r.oneTimeAmount),
+  );
+  assert.deepEqual(
+    policy.addOnAnnualAmounts,
+    Object.fromEntries(pricingRules.addOnRules.map((r) => [r.key, r.annualAmount])),
+  );
+  assert.deepEqual(
+    policy.productBandRates,
+    Object.fromEntries(pricingRules.products.map((p) => [p.key, p.bands.map((b) => b[2])])),
+  );
+
+  // The SCALAR thresholds too, not just the tables. These were hardcoded twice over -- once here
+  // and once as bare 0.1 / 0.3 fallbacks in calculator.js -- with nothing keeping the copies in
+  // step. Asserting the tables alone left that whole class open.
+  for (const key of [
+    'minimumCommittedArr',
+    'redliningMinimumArr',
+    'creditCardMaximumInvoice',
+    'salesDirectorDiscountMax',
+    'headSalesDiscountMax',
+  ]) {
+    assert.equal(policy[key], pricingRules[key], `${key} must come from the rate card`);
+    assert.notEqual(pricingRules[key], undefined, `${key} must exist on the rate card`);
+  }
+});
+
+// calculator.js must not carry its own copy either. It falls back to the RULES when the policy
+// omits a key; it used to fall back to bare literals, which is a second source of truth that
+// nothing compares against the first.
+test('the calculator falls back to the rate card, never to a literal', () => {
+  const source = require('node:fs').readFileSync(
+    require('node:path').join(__dirname, 'calculator.js'),
+    'utf8',
+  );
+  const merge = source.slice(source.indexOf('const buildActiveRules'));
+  const block = merge.slice(0, merge.indexOf('\n};'));
+  for (const key of [
+    'minimumCommittedArr',
+    'redliningMinimumArr',
+    'creditCardMaximumInvoice',
+    'salesDirectorDiscountMax',
+    'headSalesDiscountMax',
+  ]) {
+    const line = new RegExp(`${key}:[\\s\\S]{0,120}?pricingPolicy\\.${key} \\?\\? rules\\.${key}`);
+    assert.match(block, line, `${key} must fall back to rules.${key}, not to a number`);
+  }
+});
+
+// allowedTerms used to be a SECOND handwritten copy of termRules' months, and calculator.js
+// carried a THIRD as the literal bounds 12/36 on its requireInteger call. Three copies of one
+// fact: adding a 48-month term to the rate card would have been rejected by the bounds check
+// before the allowedTerms check could accept it.
+test('the term ladder is stated once and derived everywhere else', () => {
+  assert.deepEqual(
+    pricingRules.allowedTerms,
+    pricingRules.termRules.map(({ months }) => months),
+    'allowedTerms must be derived from termRules, not restated',
+  );
+  const rulesSource = require('node:fs').readFileSync(
+    require('node:path').join(__dirname, 'pricingRules.js'),
+    'utf8',
+  );
+  // deepEqual alone would still pass against a handwritten [12, 24, 36] that HAPPENS to agree
+  // today. The point is that it cannot stop agreeing, so the source must not restate the numbers.
+  assert.doesNotMatch(
+    rulesSource,
+    /allowedTerms:\s*\[/,
+    'allowedTerms must be derived from termRules, not written out as a literal array',
+  );
+  const source = require('node:fs').readFileSync(
+    require('node:path').join(__dirname, 'calculator.js'),
+    'utf8',
+  );
+  assert.doesNotMatch(
+    source,
+    /requireInteger\(\s*input\.termMonths,\s*\d/,
+    'termMonths bounds must come from the rate card, not from numbers typed into calculator.js',
+  );
+});
+
+// Proven from the OUTSIDE: a term the rate card allows must actually price, and one it does not
+// must be refused -- by the allowedTerms check, not by a stale numeric bound.
+test('every term the rate card allows is priceable, and nothing else is', () => {
+  const base = {
+    paymentFrequency: 'annual_in_advance',
+    volumes: { connect_ca: 5_000 },
+    supportLevel: 'basic',
+    onboardingPackage: 'none',
+  };
+  for (const termMonths of pricingRules.allowedTerms) {
+    const quote = calculateQuote({ ...base, termMonths }, {});
+    assert.ok(quote.committedArr > 0, `${termMonths} months must price`);
+  }
+  for (const termMonths of [6, 18, 48]) {
+    assert.throws(
+      () => calculateQuote({ ...base, termMonths }, {}),
+      /UNSUPPORTED_TERM|INVALID_INTEGER|termMonths/,
+      `${termMonths} months is not on the rate card and must be refused`,
+    );
+  }
+});
+
+// The same thing from the OUTSIDE, because equal tables are only worth having if they produce
+// equal money. A quote priced with the default policy must cost exactly what the rate card alone
+// would charge -- the settings layer is for overriding a rate deliberately, never by accident.
+test('the default policy prices a quote identically to the rate card alone', () => {
+  const base = {
+    termMonths: 12,
+    paymentFrequency: 'annual_in_advance',
+    volumes: { connect_ca: 5_000, agent_email_thousands: 120 },
+    supportLevel: 'full',
+    professionalServices: ['gtm_review', 'provider_oauth_app_creation'],
+    addOns: ['privacy_filter', 'verified_oauth'],
+  };
+  const policy = defaultSettings().pricingPolicy;
+  for (const onboardingPackage of ['none', 'quick_launch', 'quick_launch_plus', 'strategic']) {
+    const input = { ...base, onboardingPackage };
+    const fromRateCard = calculateQuote(input, {});
+    const fromPolicy = calculateQuote(input, policy);
+    // oneTime is where the drift showed: Quick Launch quoted $0 instead of $5,000.
+    assert.equal(
+      fromPolicy.oneTime,
+      fromRateCard.oneTime,
+      `${onboardingPackage}: one-time fees must match the rate card`,
+    );
+    assert.equal(fromPolicy.tcv, fromRateCard.tcv, `${onboardingPackage}: TCV must match`);
+    assert.equal(fromPolicy.committedArr, fromRateCard.committedArr, `${onboardingPackage}: ARR`);
+  }
 });
 
 // Which quote templates the card offers, and which it preselects -- per QUOTE KIND, under their

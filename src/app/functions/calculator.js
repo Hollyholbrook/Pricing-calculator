@@ -104,8 +104,16 @@ const normalizeInput = (input, activeRules = rules) => {
     throw new QuoteValidationError('UNSUPPORTED_FIELD', 'input');
   }
 
-  const termMonths = requireInteger(input.termMonths, 12, 36, 'termMonths');
-  if (!activeRules.allowedTerms.includes(termMonths)) {
+  // Bounds derived from the rate card, never restated. A hardcoded 12/36 here would silently
+  // reject a term the rate card had added, before the allowedTerms check below could accept it.
+  const allowedTerms = activeRules.allowedTerms;
+  const termMonths = requireInteger(
+    input.termMonths,
+    Math.min(...allowedTerms),
+    Math.max(...allowedTerms),
+    'termMonths',
+  );
+  if (!allowedTerms.includes(termMonths)) {
     throw new QuoteValidationError('UNSUPPORTED_TERM', 'termMonths');
   }
 
@@ -376,11 +384,16 @@ const buildApproval = (
     reasons.push('Contract includes non-standard terms.');
   }
   const relaxed = isRenewal && activeRules.renewalRelaxesNonDiscountApprovals;
+  // The one switch. A `minimumCommittedArr > 0` guard was tried here and removed: committed ARR is
+  // never negative, so a threshold of 0 already blocks nothing, and no mutation could make that
+  // guard change an outcome. The flag is what turns the rule off, not a tiny threshold -- the live
+  // settings record carried a stray 10 that disabled it by accident rather than by decision.
+  const minimumArrApplies = activeRules.enforceMinimumCommittedArr === true;
   // Renewals skip the ARR-based rules. Both BLOCK Lock in rather than escalating, and a renewal is
   // expected to land under the new-business minimum, so leaving them on refuses every small
   // renewal outright. Holly, 2026-08-28. Non-standard terms are NOT relaxed -- the matrix says
   // Finance for all deal types.
-  if (!relaxed && committedArr < activeRules.minimumCommittedArr) {
+  if (minimumArrApplies && !relaxed && committedArr < activeRules.minimumCommittedArr) {
     tier = 'finance';
     reasons.push(
       `Committed ARR is below the ${currencyLabel(activeRules.minimumCommittedArr)} Enterprise minimum.`,
@@ -424,6 +437,8 @@ const buildActiveRules = (pricingPolicy = {}) => ({
     ]),
   })),
   minimumCommittedArr: pricingPolicy.minimumCommittedArr ?? rules.minimumCommittedArr,
+  enforceMinimumCommittedArr:
+    pricingPolicy.enforceMinimumCommittedArr ?? rules.enforceMinimumCommittedArr,
   redliningMinimumArr: pricingPolicy.redliningMinimumArr ?? rules.redliningMinimumArr,
   // This merge is an explicit allow-list, not a spread, so a new policy key silently falls back to
   // the frozen rules until it is named here. Adding the settings entry alone was not enough: the
@@ -431,8 +446,9 @@ const buildActiveRules = (pricingPolicy = {}) => ({
   // passed an override would have reported as the rule working correctly.
   creditCardMaximumInvoice:
     pricingPolicy.creditCardMaximumInvoice ?? rules.creditCardMaximumInvoice,
-  salesDirectorDiscountMax: pricingPolicy.salesDirectorDiscountMax ?? 0.1,
-  headSalesDiscountMax: pricingPolicy.headSalesDiscountMax ?? 0.3,
+  salesDirectorDiscountMax:
+    pricingPolicy.salesDirectorDiscountMax ?? rules.salesDirectorDiscountMax,
+  headSalesDiscountMax: pricingPolicy.headSalesDiscountMax ?? rules.headSalesDiscountMax,
   // The approval matrix, configurable in Settings. The merge here is an explicit allow-list, not
   // a spread: a key not named here is accepted, validated, normalized -- and then ignored.
   newBusinessFirstApprovalTier: pricingPolicy.newBusinessFirstApprovalTier ?? 'sales_director',
@@ -616,9 +632,20 @@ const calculateQuote = (
     });
   const annualAddOns = selectedAddOns.reduce((sum, item) => sum + item.annualAmount, 0);
   const listAnnualAddOns = selectedAddOns.reduce((sum, item) => sum + item.listAnnualAmount, 0);
-  const listProfessionalServicesAmount = activeRules.professionalServicesRules.find(
+  // `.find(...).oneTimeAmount` used to be read straight off the match. A bundle size the rate
+  // card does not price -- today six items, whose price the MRD still lists as TBD -- would have
+  // thrown TypeError: Cannot read properties of undefined, surfacing to the rep as a broken card
+  // rather than a priced quote with a clear reason.
+  const professionalServicesBundle = activeRules.professionalServicesRules.find(
     ({ itemCount }) => itemCount === input.psItemCount,
-  ).oneTimeAmount;
+  );
+  if (!professionalServicesBundle || professionalServicesBundle.oneTimeAmount == null) {
+    throw new QuoteValidationError(
+      'PROFESSIONAL_SERVICES_BUNDLE_PRICE_REQUIRED',
+      'professionalServices',
+    );
+  }
+  const listProfessionalServicesAmount = professionalServicesBundle.oneTimeAmount;
   const professionalServicesAmount = round(
     listProfessionalServicesAmount * (1 - input.professionalServicesDiscount),
     2,
@@ -677,7 +704,10 @@ const calculateQuote = (
   if (largestDiscretionaryDiscount > activeRules.headSalesDiscountMax && input.termMonths > 12) {
     legacyGuardrails.push('FINANCE_APPROVAL_MULTI_YEAR_DISCOUNT');
   }
-  if (committedArr < activeRules.minimumCommittedArr) {
+  if (
+    activeRules.enforceMinimumCommittedArr === true &&
+    committedArr < activeRules.minimumCommittedArr
+  ) {
     legacyGuardrails.push('FINANCE_APPROVAL_BELOW_MINIMUM');
   }
 

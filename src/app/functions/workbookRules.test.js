@@ -38,7 +38,7 @@ test('rate card is an exact transcription of the workbook', () => {
       ],
       agent_accounts: [[0, null, 0.2]],
       agent_email_thousands: [
-        [0, 50, 1], [50, 100, 0.75], [100, 500, 0.35], [500, null, 0.25],
+        [0, 50, 1], [50, 100, 0.7], [100, 500, 0.35], [500, null, 0.25],
       ],
       agent_storage_gb: [[0, null, 0.2]],
       agent_bandwidth_gb: [[0, null, 0.5]],
@@ -83,7 +83,15 @@ test('workbook modifiers and fixed charges are exact', () => {
   );
   assert.deepEqual(
     rules.addOnRules.map(({ key, annualAmount }) => [key, annualAmount]),
-    [['enterprise_accelerator', 2_400], ['privacy_filter', 6_000], ['verified_oauth', 5_000]],
+    // shared_oauth_app is what an Enterprise contract buys; enterprise_accelerator is kept only
+    // so quotes already saved with it still price. Privacy Filter is 5,000 per the FY26 MRD and
+    // the HubSpot product -- the 6,000 here was the last place that number survived.
+    [
+      ['shared_oauth_app', 2_400],
+      ['enterprise_accelerator', 2_400],
+      ['privacy_filter', 5_000],
+      ['verified_oauth', 5_000],
+    ],
   );
 });
 
@@ -143,15 +151,16 @@ test('support, recurring add-ons, onboarding, professional services, ARR, and TC
     supportLevel: 'full',
     onboardingPackage: 'quick_launch_plus',
     professionalServices: ['google_verification_review', 'gtm_review'],
-    addOns: ['enterprise_accelerator', 'privacy_filter'],
+    addOns: ['shared_oauth_app', 'privacy_filter'],
   });
 
   assert.equal(result.proposedPlatformArr, 19_800);
   assert.equal(result.supportAnnual, 1_980);
-  assert.equal(result.annualAddOns, 8_400);
+  // 2,400 + 5,000. Was 8,400 while Privacy Filter was priced at 6,000.
+  assert.equal(result.annualAddOns, 7_400);
   assert.equal(result.professionalServicesAmount, 3_800);
   assert.equal(result.onboardingAmount, 10_000);
-  assert.equal(result.committedArr, 30_180);
+  assert.equal(result.committedArr, 29_180);
   assert.equal(result.oneTime, 13_800);
-  assert.equal(result.tcv, 43_980);
+  assert.equal(result.tcv, 42_980);
 });

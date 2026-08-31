@@ -178,11 +178,13 @@ test('workbook parity: the graduated Agent Email bands adjust exactly as the wor
   const result = calculateQuote(WORKBOOK_INPUT);
   const email = result.lines.find(({ productKey }) => productKey === 'agent_email_thousands');
 
+  // Row 17 as the workbook printed it: "$1.02 /k for 1 - 50K · $0.76 /k for 50K - 100K · $0.36 /k
+  // for 100K - 500K". Tier 2 now reads 0.71, not 0.76 -- see the note below the assertion.
   // Row 17, verbatim: "$1.02 /k for 1 - 50K · $0.76 /k for 50K - 100K · $0.36 /k for 100K - 500K
   // · $0.25 /k for 500K+". Each is its base rate x 1.015, rounded to the cent, per band.
   assert.deepEqual(
     email.listBandRates.map(({ rate }) => rate),
-    [1.02, 0.76, 0.36, 0.25],
+    [1.02, 0.71, 0.36, 0.25],
   );
   // The band boundaries are in thousands of emails, matching the workbook's "per k" labels.
   assert.deepEqual(
@@ -195,11 +197,17 @@ test('workbook parity: the graduated Agent Email bands adjust exactly as the wor
     ],
   );
 
-  // This row is also EVIDENCE about a disagreement inside the workbook itself. Its RATE CARD sheet
-  // (row 71) gives Agent Email tier 2 as $0.70, while PRICING TABLES (row 20) says $0.75. Row 17
-  // settles which one the QUOTE BUILDER actually quotes: $0.76 is 0.75 x 1.015. At $0.70 the same
-  // cell would read $0.71. Do not change the tier without resolving that first -- and if it ever
-  // does change, this assertion is the one that will fail and say so.
+  // RESOLVED 2026-08-31, and this is the record of how.
+  //
+  // The workbook contradicted itself: its RATE CARD sheet (row 71) gave Agent Email tier 2 as
+  // $0.70 while PRICING TABLES (row 20) said $0.75, and the QUOTE BUILDER computed from 0.75 --
+  // which is why row 17 printed $0.76 (0.75 x 1.015). The FY26 MRD settles it at $0.70 in BOTH
+  // its Enterprise and Pro Annual tables and states that Enterprise holds at the Pro Annual
+  // rates, which agrees with the workbook's own RATE CARD sheet. Holly confirmed and corrected
+  // the HubSpot product.
+  //
+  // So the rate card is 0.70 and this row now reads $0.71. Both arithmetic facts are kept: the
+  // first explains any workbook copy still printing $0.76, the second is what the card produces.
   assert.equal(Math.round(0.75 * 1.015 * 100) / 100, 0.76);
   assert.equal(Math.round(0.7 * 1.015 * 100) / 100, 0.71);
 });
@@ -222,7 +230,7 @@ test('workbook parity: the graduated Agent Email bands adjust exactly as the wor
 //   Calendar Only   $0.82       $0.83   -               $0.83      $99,267
 //   Bot hrs         $0.55       $0.56   10%             $0.50      $12,058
 //   # of AAs        $0.2000     $0.2030 -               $0.2030    -
-//   Email banded    tiers       $1.02 / $0.76 / $0.36 / $0.25
+//   Email banded    tiers       $1.02 / $0.71 / $0.36 / $0.25   (workbook printed $0.76 at tier 2)
 const HIGH_VOLUME_INPUT = Object.freeze({
   termMonths: 24,
   paymentFrequency: 'semi_annual_in_advance',
@@ -271,7 +279,7 @@ test('workbook parity: a five-band scenario matches rate card, list, proposed an
   // Agent Email at zero volume still publishes its adjusted tiers.
   assert.deepEqual(
     line('agent_email_thousands').listBandRates.map(({ rate }) => rate),
-    [1.02, 0.76, 0.36, 0.25],
+    [1.02, 0.71, 0.36, 0.25],
   );
 });
 
@@ -302,6 +310,6 @@ test('the same volumes on a 12-month monthly deal give the card figures, not the
   assert.equal(Math.round(line('agent_accounts').displayListUnitRate * 100) / 100, 0.22);
   assert.deepEqual(
     line('agent_email_thousands').listBandRates.map(({ rate }) => rate),
-    [1.08, 0.81, 0.38, 0.27],
+    [1.08, 0.76, 0.38, 0.27],
   );
 });

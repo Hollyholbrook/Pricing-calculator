@@ -41,13 +41,13 @@
     "expected": {
       "termDiscount": 0.025,
       "paymentPremium": 0.06,
-      "listPlatformArr": 90326.4,
-      "proposedPlatformArr": 81417.6,
-      "supportAnnual": 8141.76,
+      "listPlatformArr": 90290.4,
+      "proposedPlatformArr": 81387.6,
+      "supportAnnual": 8138.76,
       "annualAddOns": 2480.4,
-      "committedArr": 92039.76,
+      "committedArr": 92006.76,
       "oneTime": 13800,
-      "tcv": 197879.52,
+      "tcv": 197813.52,
       "approvalStatus": "WITHIN_GUARDRAILS",
       "lines": [
         {
@@ -89,11 +89,11 @@
         {
           "productKey": "agent_email_thousands",
           "volume": 120,
-          "baseBlendedRate": 0.788,
-          "listUnitRate": 0.82,
-          "proposedUnitRate": 0.77,
-          "listMrr": 98.2,
-          "proposedMrr": 92.8
+          "baseBlendedRate": 0.767,
+          "listUnitRate": 0.79,
+          "proposedUnitRate": 0.75,
+          "listMrr": 95.2,
+          "proposedMrr": 90.3
         },
         {
           "productKey": "agent_storage_gb",

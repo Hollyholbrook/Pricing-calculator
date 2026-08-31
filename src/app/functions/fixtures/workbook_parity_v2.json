@@ -1,5 +1,5 @@
 {
-  "source": "One-Subscription Pricing Workbook (2), QUOTE BUILDER and RATE CARD",
+  "source": "One-Subscription Pricing Workbook (2), QUOTE BUILDER and RATE CARD. Agent Email figures re-derived 2026-08-31 after tier 2 moved from 0.75 to 0.70 per the FY26 MRD (Enterprise and Pro Annual tables) and the corrected HubSpot product. A workbook still printing $0.76 in the 50K-100K band predates that correction.",
   "agentEmailInputUnit": "1,000 emails per month",
   "scenarios": [
     {
@@ -7,8 +7,12 @@
       "input": {
         "termMonths": 12,
         "paymentFrequency": "annual_in_advance",
-        "volumes": { "connect_ca": 500 },
-        "productDiscounts": { "connect_ca": 0 },
+        "volumes": {
+          "connect_ca": 500
+        },
+        "productDiscounts": {
+          "connect_ca": 0
+        },
         "supportLevel": "basic",
         "onboardingPackage": "quick_launch",
         "professionalServices": [],
@@ -26,8 +30,12 @@
       "input": {
         "termMonths": 12,
         "paymentFrequency": "annual_in_advance",
-        "volumes": { "connect_ca": 1100 },
-        "productDiscounts": { "connect_ca": 0.2 },
+        "volumes": {
+          "connect_ca": 1100
+        },
+        "productDiscounts": {
+          "connect_ca": 0.2
+        },
         "supportLevel": "basic",
         "onboardingPackage": "quick_launch",
         "professionalServices": [],
@@ -45,8 +53,12 @@
       "input": {
         "termMonths": 12,
         "paymentFrequency": "annual_in_advance",
-        "volumes": { "agent_email_thousands": 10 },
-        "productDiscounts": { "agent_email_thousands": 0.1 },
+        "volumes": {
+          "agent_email_thousands": 10
+        },
+        "productDiscounts": {
+          "agent_email_thousands": 0.1
+        },
         "supportLevel": "basic",
         "onboardingPackage": "quick_launch",
         "professionalServices": [],
@@ -57,7 +69,12 @@
         "proposedUnitRate": 0.9,
         "proposedMrr": 9,
         "annualCommitment": 108,
-        "proposedBandRates": [0.9, 0.68, 0.32, 0.23]
+        "proposedBandRates": [
+          0.9,
+          0.63,
+          0.32,
+          0.23
+        ]
       }
     },
     {
@@ -65,8 +82,12 @@
       "input": {
         "termMonths": 12,
         "paymentFrequency": "quarterly_in_advance",
-        "volumes": { "agent_email_thousands": 120 },
-        "productDiscounts": { "agent_email_thousands": 0.05 },
+        "volumes": {
+          "agent_email_thousands": 120
+        },
+        "productDiscounts": {
+          "agent_email_thousands": 0.05
+        },
         "supportLevel": "basic",
         "onboardingPackage": "quick_launch",
         "professionalServices": [],
@@ -74,10 +95,15 @@
       },
       "expected": {
         "productKey": "agent_email_thousands",
-        "proposedUnitRate": 0.8,
-        "proposedMrr": 95.5,
-        "annualCommitment": 1146,
-        "proposedBandRates": [1.01, 0.76, 0.35, 0.25]
+        "proposedUnitRate": 0.77,
+        "proposedMrr": 92.5,
+        "annualCommitment": 1110,
+        "proposedBandRates": [
+          1.01,
+          0.7,
+          0.35,
+          0.25
+        ]
       }
     },
     {
@@ -85,8 +111,12 @@
       "input": {
         "termMonths": 12,
         "paymentFrequency": "monthly_in_advance",
-        "volumes": { "agent_email_thousands": 600 },
-        "productDiscounts": { "agent_email_thousands": 0 },
+        "volumes": {
+          "agent_email_thousands": 600
+        },
+        "productDiscounts": {
+          "agent_email_thousands": 0
+        },
         "supportLevel": "basic",
         "onboardingPackage": "quick_launch",
         "professionalServices": [],
@@ -94,10 +124,15 @@
       },
       "expected": {
         "productKey": "agent_email_thousands",
-        "proposedUnitRate": 0.46,
-        "proposedMrr": 273.5,
-        "annualCommitment": 3282,
-        "proposedBandRates": [1.08, 0.81, 0.38, 0.27]
+        "proposedUnitRate": 0.45,
+        "proposedMrr": 271,
+        "annualCommitment": 3252,
+        "proposedBandRates": [
+          1.08,
+          0.76,
+          0.38,
+          0.27
+        ]
       }
     }
   ]

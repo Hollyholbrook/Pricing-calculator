@@ -257,6 +257,12 @@ interface ServerlessBody {
     keptOnCreate?: string[];
     repaired?: boolean;
   };
+  primaryQuote?: {
+    applied?: boolean;
+    label?: string | null;
+    ineligible?: boolean;
+    reason?: string | null;
+  };
   latestQuoteSeller?: {
     quoteId: string;
     ownerId: string;
@@ -286,6 +292,13 @@ interface ServerlessBody {
     | "error"
     | null;
   contractAssociated?: boolean | null;
+  // The Internal quote status the generated quote ended up with. Reported because HubSpot's
+  // approval workflow enrols on it -- a quote that needed approval and did not get the status is
+  // an approval nobody is asked for, and that is invisible otherwise.
+  quoteStatus?: string;
+  quoteStatusExpected?: string;
+  quoteStatusRepaired?: boolean;
+  needsApproval?: boolean;
   // What the contracts probe actually observed. Printed on the card when the picker is empty:
   // three rounds were spent reading error strings and inferring, and the card is where the person
   // who needs it is already looking.
@@ -444,8 +457,12 @@ const onboardingOptions = [
   { value: "strategic", label: "Strategic Onboarding" },
 ];
 
+// The Accelerator Package is PRO ANNUAL only. On Enterprise its contents are already in the
+// contract, and the one paid Enterprise add-on is the Shared OAuth App -- same $2,400. The old
+// enterprise_accelerator key still prices for quotes already saved with it; it is just not
+// offered any more.
 const addOnOptions = [
-  { value: "enterprise_accelerator", label: "Enterprise Accelerator Package" },
+  { value: "shared_oauth_app", label: "Shared OAuth App" },
   { value: "privacy_filter", label: "Privacy Filter Mode" },
   { value: "verified_oauth", label: "Turnkey Verified OAuth Projects" },
 ];
@@ -579,6 +596,7 @@ const emptyInput = (): QuoteInput => ({
   discretionaryDiscount: 0,
   productDiscounts: emptyProductDiscounts(),
   addOnDiscounts: {
+    shared_oauth_app: 0,
     enterprise_accelerator: 0,
     privacy_filter: 0,
     verified_oauth: 0,
@@ -733,16 +751,47 @@ const sellerSummary = (seller?: {
   repaired?: boolean;
 }) => {
   if (!seller) return "not reported";
+  // The seller is the DEAL OWNER and is never substituted -- a customer-facing quote naming the
+  // wrong person is worse than one naming nobody. So this says what to go and fix, rather than
+  // quietly putting whoever locked in on the document. Holly, 2026-08-31.
   if (!seller.ownerId)
-    return "this Deal has no owner, so the quote has no seller";
+    return "BLANK — this Deal has no owner. Set an owner on the Deal and lock in again";
   const sent = seller.sent || [];
   if (sent.length === 0)
-    return `owner ${seller.ownerId}, but no name or email could be read`;
+    return `deal owner ${seller.ownerId}, but no name or email could be read`;
   const kept = seller.keptOnCreate || [];
   if (kept.length === sent.length)
-    return `owner ${seller.ownerId}, set on create`;
-  if (seller.repaired) return `owner ${seller.ownerId}, set on a second write`;
-  return `owner ${seller.ownerId} — HubSpot did NOT keep ${sent.join(", ")}`;
+    return `deal owner ${seller.ownerId}, set on create`;
+  if (seller.repaired)
+    return `deal owner ${seller.ownerId}, set on a second write`;
+  return `deal owner ${seller.ownerId} — HubSpot did NOT keep ${sent.join(", ")}`;
+};
+
+// The primary-quote flag has to be re-applied on every Lock in, because regenerating the quote
+// leaves the label on the superseded one. Reported rather than assumed for the same reason as the
+// Seller block: a write that silently did not apply looks exactly like one that did.
+const primaryQuoteSummary = (primary?: {
+  applied?: boolean;
+  label?: string | null;
+  ineligible?: boolean;
+  reason?: string | null;
+}) => {
+  if (!primary) return "Primary quote: not reported.";
+  if (primary.applied) return "Set as the Deal's primary quote.";
+  // The normal path, not a failure. HubSpot only lets a PUBLISHED or ACCEPTED quote be primary --
+  // draft quotes are ineligible, and this app creates drafts. Said plainly so nobody spends a
+  // round trip on a bug that is a documented HubSpot rule.
+  if (primary.ineligible)
+    return (
+      "Not yet the primary quote — HubSpot only allows a published or accepted quote to be " +
+      "primary, and this one is still a draft. Publish it and it becomes the primary quote."
+    );
+  if (!primary.label)
+    return (
+      "NOT set as the primary quote: no primary-quote association label exists in this portal. " +
+      "Create one in HubSpot association settings and the next Lock in will apply it."
+    );
+  return `NOT set as the primary quote: ${primary.reason || "unknown reason"}.`;
 };
 
 const approvalLabel = (value?: string) =>
@@ -781,6 +830,18 @@ const formatDateInput = ({
 hubspot.extend<"crm.record.tab">(({ context, actions }: CrmExtensionProps) => (
   <NylasPricingBuilder context={context} actions={actions} />
 ));
+
+// What the generated quote's Internal quote status ended up as, in the rep's terms. It only
+// mentions the mechanics when something went wrong with them.
+const quoteStatusSummary = (body: ServerlessBody) => {
+  if (!body.quoteStatus) return "";
+  if (body.quoteStatus !== body.quoteStatusExpected) {
+    return `WARNING: the Quote status is ${body.quoteStatus}, not ${body.quoteStatusExpected} -- the approval workflow will not pick it up.`;
+  }
+  return body.needsApproval
+    ? "Approval is required, and the Quote is marked Pending approval."
+    : "No approval is required.";
+};
 
 const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
   const dealId = String(context.crm.objectId);
@@ -1112,7 +1173,12 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
           `${body.lineItemCount || 0} calculated line items replaced the Deal line items. ` +
           `Template: ${body.templateName || body.templateId || "unknown"}. ` +
           `Seller: ${sellerSummary(body.seller)}. ` +
-          `The draft Quote is on the Deal's Quotes card.`,
+          `${primaryQuoteSummary(body.primaryQuote)} ` +
+          // The approval handoff, stated rather than assumed. HubSpot's workflow enrols on this
+          // status, so a quote that needed approval and did not get it is an approval nobody is
+          // asked for -- silent unless the confirmation says so.
+          `${quoteStatusSummary(body)} ` +
+          `The Quote is on the Deal's Quotes card.`,
         type: "success",
       });
       // After the alert, so the rep sees the confirmation before the page goes.

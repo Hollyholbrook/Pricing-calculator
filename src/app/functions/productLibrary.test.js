@@ -72,14 +72,14 @@ test('Agent Email boundaries are scaled from emails to thousands before comparin
   const scaled = _test.scaleBands(
     [
       [0, 50_000, 1],
-      [50_000, 100_000, 0.75],
+      [50_000, 100_000, 0.7],
       [500_000, null, 0.25],
     ],
     'agent_email_thousands',
   );
   assert.deepEqual(scaled, [
     [0, 50, 1],
-    [50, 100, 0.75],
+    [50, 100, 0.7],
     [500, null, 0.25],
   ]);
   // Every other product is counted in the same unit on both sides and must pass through untouched.
@@ -100,7 +100,7 @@ test('the real Agent Email product reports no disagreement when HubSpot matches 
       ]),
       hs_tier_prices: JSON.stringify([
         { index: 0, price: 1 },
-        { index: 1, price: 0.75 },
+        { index: 1, price: 0.7 },
         { index: 2, price: 0.35 },
         { index: 3, price: 0.25 },
       ]),
@@ -131,12 +131,14 @@ test('the exact drift found on 2026-08-27 is reported', () => {
       ]),
     },
   });
+  // Only tier 1 now. The tier-2 half of that episode -- local 0.75 against HubSpot 0.70 -- was
+  // resolved on 2026-08-31 by moving the rate card to 0.70 per the MRD, so HubSpot turns out to
+  // have been right about that band the whole time. Tier 1, the "first 50,000 emails free"
+  // error, is still a real disagreement and must still be reported.
   const fields = row.disagreements.map(({ field }) => field);
-  assert.deepEqual(fields, ['tier 1 rate', 'tier 2 rate']);
+  assert.deepEqual(fields, ['tier 1 rate']);
   assert.equal(row.disagreements[0].local, 1);
   assert.equal(row.disagreements[0].hubspot, 0);
-  assert.equal(row.disagreements[1].local, 0.75);
-  assert.equal(row.disagreements[1].hubspot, 0.7);
 });
 
 test('graduated versus volume is reported, because it is a 6x error not a rounding one', () => {
@@ -163,6 +165,78 @@ test('a null pricing model is read as flat, which is what HubSpot documents', ()
   assert.equal(row.hubspotPricingModel, 'flat');
   // Agent Accounts is a single flat rate locally too, so nothing should be reported.
   assert.deepEqual(row.disagreements, []);
+});
+
+// The check used to be gated on `bands.length === 1`, so the twelve-band products -- the ones
+// most likely to drift -- were never price-checked, and the report came back clean while three of
+// them were wrong. That silence is the bug this test exists to prevent.
+test('a banded product is price-checked against its entry rate', () => {
+  const rules = require('./pricingRules');
+  const entryRate = rules.products.find((p) => p.key === 'connect_ca').bands[0][2];
+  assert.equal(entryRate, 1.7, 'the fixture must be the real rate card, not a made-up number');
+
+  // Band TWO of connect_ca, which is what the live library actually held on 2026-08-31. It looks
+  // plausible -- it IS a real rate from the table -- which is exactly why it went unnoticed.
+  const drifted = _test.compareProduct('connect_ca', CATALOG.connect_ca, {
+    id: CATALOG.connect_ca.id,
+    properties: {
+      name: CATALOG.connect_ca.name,
+      price: '1.6',
+      hs_pricing_model: 'flat',
+    },
+  });
+  const priceDisagreement = drifted.disagreements.find((d) => d.field === 'price');
+  assert.ok(priceDisagreement, 'a banded product at the wrong price must be reported');
+  assert.equal(priceDisagreement.local, 1.7);
+  assert.equal(priceDisagreement.hubspot, 1.6);
+  assert.match(priceDisagreement.detail, /entry rate/);
+
+  // Both directions, so this cannot pass vacuously once the library is corrected.
+  const agreeing = _test.compareProduct('connect_ca', CATALOG.connect_ca, {
+    id: CATALOG.connect_ca.id,
+    properties: {
+      name: CATALOG.connect_ca.name,
+      price: '1.7',
+      hs_pricing_model: 'flat',
+    },
+  });
+  assert.deepEqual(agreeing.disagreements, [], 'the entry rate must be accepted');
+});
+
+// A graduated product carries its money in the tier table. This portal has no tier storage on
+// products at all (hs_tier_ranges does not exist on PRODUCT here), so the price must stay blank --
+// a number there is a second, contradictory answer, not a helpful default.
+test('a graduated product must not carry a flat unit price', () => {
+  const blank = _test.compareProduct(
+    'agent_email_thousands',
+    CATALOG.agent_email_thousands,
+    {
+      id: CATALOG.agent_email_thousands.id,
+      properties: {
+        name: CATALOG.agent_email_thousands.name,
+        price: '',
+        hs_pricing_model: 'graduated',
+      },
+    },
+  );
+  assert.deepEqual(blank.disagreements, [], 'a blank price is correct on a graduated product');
+
+  const priced = _test.compareProduct(
+    'agent_email_thousands',
+    CATALOG.agent_email_thousands,
+    {
+      id: CATALOG.agent_email_thousands.id,
+      properties: {
+        name: CATALOG.agent_email_thousands.name,
+        price: '1',
+        hs_pricing_model: 'graduated',
+      },
+    },
+  );
+  assert.ok(
+    priced.disagreements.some((d) => d.field === 'price' && /must not carry/.test(d.detail)),
+    'a flat price on a graduated product must be reported',
+  );
 });
 
 test('onboarding now agrees with the product library, and drift would still be reported', () => {

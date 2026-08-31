@@ -6,15 +6,30 @@ var __commonJS = (cb, mod) => function __require() {
 // pricingRules.js
 var require_pricingRules = __commonJS({
   "pricingRules.js"(exports2, module2) {
+    var termRules = Object.freeze([
+      Object.freeze({ months: 12, discount: 0 }),
+      Object.freeze({ months: 24, discount: 0.025 }),
+      Object.freeze({ months: 36, discount: 0.05 })
+    ]);
     module2.exports = Object.freeze({
       schemaVersion: "1.0",
       priceListVersion: "FY26 v1",
       calculationMethod: "excel_compatible",
       currency: "USD",
       effectiveDate: "2026-07-01",
-      allowedTerms: [12, 24, 36],
+      allowedTerms: termRules.map(({ months }) => months),
       maximumVolume: 1e9,
       minimumCommittedArr: 25e3,
+      // DISABLED. Holly, 2026-08-31: "Just disable the arr minumum."
+      //
+      // The workbook states a $25,000 Enterprise recurring minimum, so the number stays above rather
+      // than being deleted -- deleting it would lose the rate card's own statement of the rule and make
+      // re-enabling it a guess. This flag is the switch, and Settings exposes it, so turning the
+      // minimum back on is one checkbox and the threshold it uses is already correct.
+      //
+      // While false: committed ARR below the minimum neither escalates to Finance nor blocks Lock in.
+      // The redlining/special-terms ARR threshold is SEPARATE and still enforced.
+      enforceMinimumCommittedArr: false,
       redliningMinimumArr: 5e4,
       // Credit card is not accepted on an invoice above this amount -- ACH/Bank Transfer (wire) is
       // required. Holly, 2026-08-27, as a hard REQUIREMENT rather than an approval step.
@@ -25,6 +40,11 @@ var require_pricingRules = __commonJS({
       // $20,000 a period -- under the limit -- but $35,000 on the first invoice if $15,000 of
       // onboarding rides along with it, which is over. Testing ARR would have missed that.
       creditCardMaximumInvoice: 25e3,
+      // The approval ladder's two thresholds. Here rather than only in appSettings so there is
+      // exactly ONE place a rate or threshold lives -- calculator.js used to fall back to bare
+      // 0.1 / 0.3 literals, a second copy nothing kept in step.
+      salesDirectorDiscountMax: 0.1,
+      headSalesDiscountMax: 0.3,
       products: [
         {
           key: "connect_ca",
@@ -89,9 +109,13 @@ var require_pricingRules = __commonJS({
           name: "Agent Email",
           unitOfMeasure: "1,000 emails",
           pricingModel: "graduated_adjusted_bands",
+          // Tier 2 is 0.70, not 0.75. Settled 2026-08-31 against the FY26 MRD, which states it twice
+          // -- table 11 (Enterprise) and table 5 (Pro Annual) -- and states that Enterprise
+          // deliberately holds at the Pro Annual rates for Agent Accounts. The OneSubscription
+          // workbook says 0.75; on that reasoning the workbook is the typo. Holly confirmed.
           bands: [
             [0, 50, 1],
-            [50, 100, 0.75],
+            [50, 100, 0.7],
             [100, 500, 0.35],
             [500, null, 0.25]
           ]
@@ -143,11 +167,7 @@ var require_pricingRules = __commonJS({
           hubspotValue: "monthly"
         }
       ],
-      termRules: [
-        { months: 12, discount: 0 },
-        { months: 24, discount: 0.025 },
-        { months: 36, discount: 0.05 }
-      ],
+      termRules,
       supportRules: [
         {
           key: "basic",
@@ -191,6 +211,13 @@ var require_pricingRules = __commonJS({
         { itemCount: 3, oneTimeAmount: 5500 },
         { itemCount: 4, oneTimeAmount: 7200 },
         { itemCount: 5, oneTimeAmount: 8800 }
+        // NO SIX-ITEM ROW YET, and that is why the sixth professional service is not offered.
+        //
+        // The MRD's bundle table lists the six-item price as TBD. Two things block adding it:
+        // the price itself, and the fact that `professionalServicesAmounts` is a STORED settings
+        // array whose length is validated at exactly 6 (indices 0..5) -- a seventh entry changes a
+        // stored shape, which REQUIREMENTS section 9 says never to do in place. Both are one small
+        // deliberate change once the number exists.
       ],
       professionalServiceOptions: [
         { key: "google_verification_review", label: "Google Verification Review" },
@@ -201,17 +228,36 @@ var require_pricingRules = __commonJS({
           key: "notification_webhook_best_practices",
           label: "Notification & Webhook Best Practices"
         }
+        // The FY26 MRD lists a sixth plan, Ad-hoc Expert Consultation. Its HubSpot product exists
+        // (47446779731, $2,000) and lineItemModel's CATALOG can already bill it, but it is NOT
+        // offered here until the six-item bundle price exists -- see professionalServicesRules.
       ],
       addOnRules: [
         {
-          key: "enterprise_accelerator",
-          label: "Enterprise Accelerator Package",
+          // What an Enterprise deal actually buys. The FY26 MRD is explicit: the Accelerator Package
+          // is PRO ANNUAL ONLY, and on Enterprise the Hosted Auth Branding and custom domains it
+          // bundles are already included in the contract -- the single paid Enterprise add-on is the
+          // Shared OAuth App. Same 2,400 a year, correct SKU on the customer's quote.
+          key: "shared_oauth_app",
+          label: "Shared OAuth App",
           annualAmount: 2400
+        },
+        {
+          // DEPRECATED 2026-08-31, superseded by shared_oauth_app. Kept because it is a STORED key --
+          // it appears in saved quote configurations and in the addOnAnnualAmounts settings record,
+          // and removing it would invalidate both. Not offered in the card any more; still prices.
+          key: "enterprise_accelerator",
+          label: "Enterprise Accelerator Package (legacy)",
+          annualAmount: 2400,
+          deprecated: true
         },
         {
           key: "privacy_filter",
           label: "Privacy Filter Mode",
-          annualAmount: 6e3
+          // 5,000, not 6,000. The FY26 MRD (add-ons table) and the HubSpot product PRIVACY
+          // (46060960674) both say 5,000; the code was the only source saying 6,000, and every quote
+          // carrying this add-on over-charged by 1,000 a year. Holly confirmed 2026-08-31.
+          annualAmount: 5e3
         },
         {
           key: "verified_oauth",
@@ -321,8 +367,14 @@ var require_calculator = __commonJS({
       if (Object.keys(input).some((field) => !allowedInputFields.has(field))) {
         throw new QuoteValidationError2("UNSUPPORTED_FIELD", "input");
       }
-      const termMonths = requireInteger(input.termMonths, 12, 36, "termMonths");
-      if (!activeRules.allowedTerms.includes(termMonths)) {
+      const allowedTerms = activeRules.allowedTerms;
+      const termMonths = requireInteger(
+        input.termMonths,
+        Math.min(...allowedTerms),
+        Math.max(...allowedTerms),
+        "termMonths"
+      );
+      if (!allowedTerms.includes(termMonths)) {
         throw new QuoteValidationError2("UNSUPPORTED_TERM", "termMonths");
       }
       const payment = findRule(
@@ -521,7 +573,8 @@ var require_calculator = __commonJS({
         reasons.push("Contract includes non-standard terms.");
       }
       const relaxed = isRenewal && activeRules.renewalRelaxesNonDiscountApprovals;
-      if (!relaxed && committedArr < activeRules.minimumCommittedArr) {
+      const minimumArrApplies = activeRules.enforceMinimumCommittedArr === true;
+      if (minimumArrApplies && !relaxed && committedArr < activeRules.minimumCommittedArr) {
         tier = "finance";
         reasons.push(
           `Committed ARR is below the ${currencyLabel(activeRules.minimumCommittedArr)} Enterprise minimum.`
@@ -552,14 +605,15 @@ var require_calculator = __commonJS({
         ])
       })),
       minimumCommittedArr: pricingPolicy.minimumCommittedArr ?? rules.minimumCommittedArr,
+      enforceMinimumCommittedArr: pricingPolicy.enforceMinimumCommittedArr ?? rules.enforceMinimumCommittedArr,
       redliningMinimumArr: pricingPolicy.redliningMinimumArr ?? rules.redliningMinimumArr,
       // This merge is an explicit allow-list, not a spread, so a new policy key silently falls back to
       // the frozen rules until it is named here. Adding the settings entry alone was not enough: the
       // override was accepted, validated, normalized -- and then ignored, which a test that only
       // passed an override would have reported as the rule working correctly.
       creditCardMaximumInvoice: pricingPolicy.creditCardMaximumInvoice ?? rules.creditCardMaximumInvoice,
-      salesDirectorDiscountMax: pricingPolicy.salesDirectorDiscountMax ?? 0.1,
-      headSalesDiscountMax: pricingPolicy.headSalesDiscountMax ?? 0.3,
+      salesDirectorDiscountMax: pricingPolicy.salesDirectorDiscountMax ?? rules.salesDirectorDiscountMax,
+      headSalesDiscountMax: pricingPolicy.headSalesDiscountMax ?? rules.headSalesDiscountMax,
       // The approval matrix, configurable in Settings. The merge here is an explicit allow-list, not
       // a spread: a key not named here is accepted, validated, normalized -- and then ignored.
       newBusinessFirstApprovalTier: pricingPolicy.newBusinessFirstApprovalTier ?? "sales_director",
@@ -709,9 +763,16 @@ var require_calculator = __commonJS({
       });
       const annualAddOns = selectedAddOns.reduce((sum, item) => sum + item.annualAmount, 0);
       const listAnnualAddOns = selectedAddOns.reduce((sum, item) => sum + item.listAnnualAmount, 0);
-      const listProfessionalServicesAmount = activeRules.professionalServicesRules.find(
+      const professionalServicesBundle = activeRules.professionalServicesRules.find(
         ({ itemCount }) => itemCount === input.psItemCount
-      ).oneTimeAmount;
+      );
+      if (!professionalServicesBundle || professionalServicesBundle.oneTimeAmount == null) {
+        throw new QuoteValidationError2(
+          "PROFESSIONAL_SERVICES_BUNDLE_PRICE_REQUIRED",
+          "professionalServices"
+        );
+      }
+      const listProfessionalServicesAmount = professionalServicesBundle.oneTimeAmount;
       const professionalServicesAmount = round(
         listProfessionalServicesAmount * (1 - input.professionalServicesDiscount),
         2
@@ -751,7 +812,7 @@ var require_calculator = __commonJS({
       if (largestDiscretionaryDiscount > activeRules.headSalesDiscountMax && input.termMonths > 12) {
         legacyGuardrails.push("FINANCE_APPROVAL_MULTI_YEAR_DISCOUNT");
       }
-      if (committedArr < activeRules.minimumCommittedArr) {
+      if (activeRules.enforceMinimumCommittedArr === true && committedArr < activeRules.minimumCommittedArr) {
         legacyGuardrails.push("FINANCE_APPROVAL_BELOW_MINIMUM");
       }
       const dates = calculateDates(input);
@@ -900,6 +961,14 @@ var require_lineItemModel = __commonJS({
         name: "Agent Accounts - GB / Bandwidth",
         category: "Platform"
       },
+      // The Enterprise add-on. 'Accelerator Package' (46102266003) is the PRO ANNUAL product and is
+      // not what an Enterprise contract buys -- see pricingRules.addOnRules.
+      shared_oauth_app: {
+        id: "34548719650",
+        name: "Add-On: Shared Google OAuth App",
+        category: "Add-Ons"
+      },
+      // Deprecated, kept so a stored quote that still carries this key can be priced and re-billed.
       enterprise_accelerator: {
         id: "46102266003",
         name: "Accelerator Package",
@@ -961,6 +1030,10 @@ var require_lineItemModel = __commonJS({
         name: "Notification & Webhook Best Practices",
         category: "Professional Services"
       }
+      // The MRD's sixth professional service, Ad-hoc Expert Consultation, has a HubSpot product --
+      // 47446779731, Professional Services, $2,000, created 2026-08-31 -- but no entry here yet.
+      // Everything in CATALOG must have a local price to compare against, and the six-item bundle
+      // price is still TBD. Add this entry and the rate-card rows together, not separately.
     });
     var PRESENTATIONS = Object.freeze(["itemized_products", "subscription_summary"]);
     var PRODUCT_LINE_ORDER = Object.freeze([
@@ -991,9 +1064,8 @@ var require_lineItemModel = __commonJS({
     });
     var carriesFees = (key) => !String(key).startsWith("metered:");
     var feeTotals = (item, option) => {
-      const price = Number(item.properties.price);
-      if (!Number.isFinite(price)) return null;
-      const net = price - Number(item.properties.discount || 0);
+      const net = netPrice(item.properties);
+      if (net == null) return null;
       const amount = net * Number(item.properties.quantity || 0);
       const recurring = Boolean(item.properties.recurringbillingfrequency);
       const perPeriod = recurring ? amount : 0;
@@ -1094,15 +1166,36 @@ var require_lineItemModel = __commonJS({
       nylas_pricing_state_hash: option.result.stateHash,
       nylas_line_item_source: source
     });
+    var DISCOUNT_PRECISIONS = [2, 4, 6, 8, 10];
+    var discountPercentageFor = (list, net) => {
+      if (!(list > 0)) return null;
+      const exact = (list - net) / list * 100;
+      for (const decimals of DISCOUNT_PRECISIONS) {
+        const candidate = round(exact, decimals);
+        if (round(list * (1 - candidate / 100), 2) === round(net, 2)) return candidate;
+      }
+      return round(exact, DISCOUNT_PRECISIONS[DISCOUNT_PRECISIONS.length - 1]);
+    };
+    var netPrice = (properties = {}) => {
+      const price = Number(properties.price);
+      if (!Number.isFinite(price)) return null;
+      const percentage = Number(properties.hs_discount_percentage);
+      if (Number.isFinite(percentage) && percentage !== 0) {
+        return round(price * (1 - percentage / 100), 2);
+      }
+      return round(price - Number(properties.discount || 0), 2);
+    };
     var priceProperties = (price, listPrice) => {
       if (price == null) return {};
       const net = round(price, 2);
       if (listPrice == null) return { price: String(net), proposed_rate: String(net) };
       const list = round(listPrice, 2);
       if (list - net < 0.01) return { price: String(net), proposed_rate: String(net) };
+      const percentage = discountPercentageFor(list, net);
+      if (percentage == null) return { price: String(net), proposed_rate: String(net) };
       return {
         price: String(list),
-        discount: String(round(list - net, 2)),
+        hs_discount_percentage: String(percentage),
         proposed_rate: String(net)
       };
     };
@@ -1413,10 +1506,11 @@ var require_lineItemModel = __commonJS({
     module2.exports = {
       CATALOG,
       FEE_TOTAL_PROPERTIES,
-      _test: { feeTotals, withFeeTotals },
+      _test: { discountPercentageFor, feeTotals, withFeeTotals },
       buildDealLineItems: buildDealLineItems2,
       buildQuoteLineItems: buildQuoteLineItems2,
       contentHash: contentHash2,
+      netPrice,
       normalizeQuoteContent: normalizeQuoteContent2
     };
   }
@@ -1555,12 +1649,24 @@ var require_productLibrary = __commonJS({
         row.notes.push(
           "hs_tier_ranges absent \u2014 either this portal has no tiered pricing (Revenue Hub) or the property was not requested"
         );
-        if (expectation.bands.length === 1 && !sameMoney(expectation.bands[0][2], row.hubspotPrice)) {
+        if (expectation.pricingModel === "graduated") {
+          if (row.hubspotPrice != null && row.hubspotPrice !== 0) {
+            row.disagreements.push({
+              field: "price",
+              local: null,
+              hubspot: row.hubspotPrice,
+              detail: "graduated product must not carry a flat unit price"
+            });
+          }
+          return row;
+        }
+        const entryRate = expectation.bands[0][2];
+        if (!sameMoney(entryRate, row.hubspotPrice)) {
           row.disagreements.push({
             field: "price",
-            local: expectation.bands[0][2],
+            local: entryRate,
             hubspot: row.hubspotPrice,
-            detail: "single-rate product, unit price differs"
+            detail: expectation.bands.length === 1 ? "single-rate product, unit price differs" : `banded product, unit price must be the entry rate (band 1 of ${expectation.bands.length})`
           });
         }
         return row;
@@ -1701,14 +1807,16 @@ var require_appSettings = __commonJS({
     });
     var defaultPricingPolicy = () => ({
       calculationMethod: "excel_compatible",
-      minimumCommittedArr: 25e3,
-      redliningMinimumArr: 5e4,
+      minimumCommittedArr: pricingRules.minimumCommittedArr,
+      // Off, from the rate card, which is where the decision is written down. Holly, 2026-08-31.
+      enforceMinimumCommittedArr: pricingRules.enforceMinimumCommittedArr,
+      redliningMinimumArr: pricingRules.redliningMinimumArr,
       // Credit card is refused on an invoice above this. Configurable like the other thresholds,
       // because it is a finance policy rather than a rate -- and because a hard-coded limit could not
       // be tested at its own boundary without contriving a deal that lands exactly on $25,000.
-      creditCardMaximumInvoice: 25e3,
-      salesDirectorDiscountMax: 0.1,
-      headSalesDiscountMax: 0.3,
+      creditCardMaximumInvoice: pricingRules.creditCardMaximumInvoice,
+      salesDirectorDiscountMax: pricingRules.salesDirectorDiscountMax,
+      headSalesDiscountMax: pricingRules.headSalesDiscountMax,
       // APPROVAL MATRIX (Holly, 2026-08-28). The THRESHOLDS are shared by both deal types -- only
       // who signs off changes:
       //
@@ -1735,29 +1843,41 @@ var require_appSettings = __commonJS({
       // about refusing a lock -- a renewal is expected to land under the new-business minimum, and
       // that rule blocks rather than escalates.
       renewalRelaxesNonDiscountApprovals: true,
-      termDiscounts: { "12": 0, "24": 0.025, "36": 0.05 },
-      paymentPremiums: {
-        annual_in_advance: 0,
-        semi_annual_in_advance: 0.04,
-        quarterly_in_advance: 0.06,
-        monthly_in_advance: 0.08
-      },
-      support: {
-        basic: { percent: 0, cap: 0 },
-        full: { percent: 0.1, cap: 1e4 },
-        premium: { percent: 0.2, cap: 2e4 }
-      },
-      onboardingAmounts: {
-        quick_launch: 0,
-        quick_launch_plus: 5e3,
-        strategic: 1e4
-      },
-      professionalServicesAmounts: [0, 2e3, 3800, 5500, 7200, 8800],
-      addOnAnnualAmounts: {
-        enterprise_accelerator: 2400,
-        privacy_filter: 6e3,
-        verified_oauth: 5e3
-      },
+      // DERIVED FROM pricingRules, every one of them. Do not hand-copy a rate into this file.
+      //
+      // These used to be typed out here, duplicating the rate card, while productBandRates below was
+      // derived. Onboarding drifted: pricingRules said 5/10/15K -- confirmed by Holly, the workbook
+      // RATE CARD, QUOTE BUILDER row 38 and the HubSpot product export on 2026-08-27 -- and this file
+      // still said 0/5/10K. Because buildActiveRules reads the POLICY first
+      // (`pricingPolicy.onboardingAmounts?.[key] ?? rule.oneTimeAmount`), the stale copy won and every
+      // onboarding package was quoted $5,000 short. The tests did not catch it because they pass `{}`
+      // as the policy, which falls through to pricingRules and never sees this table.
+      //
+      // Deriving makes that class of drift impossible. A rate change now happens in pricingRules.js
+      // alone, and a test below asserts these stay equal to it.
+      termDiscounts: Object.fromEntries(
+        pricingRules.termRules.map(({ months, discount }) => [String(months), discount])
+      ),
+      paymentPremiums: Object.fromEntries(
+        pricingRules.paymentRules.map(({ key, premium }) => [key, premium])
+      ),
+      support: Object.fromEntries(
+        pricingRules.supportRules.map(({ key, percentOfPlatformArr, annualCap }) => [
+          key,
+          { percent: percentOfPlatformArr, cap: annualCap }
+        ])
+      ),
+      onboardingAmounts: Object.fromEntries(
+        pricingRules.onboardingRules.map(({ key, oneTimeAmount }) => [key, oneTimeAmount])
+      ),
+      // Indexed by the NUMBER of professional-services items, so it stays a dense array 0..5 rather
+      // than a keyed object -- professionalServicesAmounts[3] is the three-item bundle.
+      professionalServicesAmounts: pricingRules.professionalServicesRules.map(
+        ({ oneTimeAmount }) => oneTimeAmount
+      ),
+      addOnAnnualAmounts: Object.fromEntries(
+        pricingRules.addOnRules.map(({ key, annualAmount }) => [key, annualAmount])
+      ),
       productBandRates: Object.fromEntries(
         pricingRules.products.map(({ key, bands }) => [key, bands.map((band) => band[2])])
       )
@@ -1802,6 +1922,22 @@ var require_appSettings = __commonJS({
       defaultQuoteTemplateId: "",
       pricingPolicy: defaultPricingPolicy()
     });
+    var compactVolume = (value) => {
+      const n = Number(value);
+      if (!Number.isFinite(n)) return String(value);
+      if (n === 0) return "0";
+      if (n % 1e6 === 0) return `${n / 1e6}M`;
+      if (n >= 1e6) return `${Number((n / 1e6).toFixed(1))}M`;
+      if (n % 1e3 === 0) return `${n / 1e3}K`;
+      if (n >= 1e3) return `${Number((n / 1e3).toFixed(1))}K`;
+      return String(n);
+    };
+    var bandLabel = ([from, to]) => to == null ? `${compactVolume(from)}+` : `${compactVolume(from)}\u2013${compactVolume(to)}`;
+    var productRateDescriptors2 = () => pricingRules.products.map(({ key, name, unitOfMeasure, bands }) => ({
+      key,
+      label: unitOfMeasure ? `${name} \u2014 ${unitOfMeasure}` : name,
+      bands: bands.map(bandLabel)
+    }));
     var APPROVAL_TIERS = Object.freeze([
       "none",
       "sales_director",
@@ -1880,6 +2016,7 @@ var require_appSettings = __commonJS({
           1e9,
           "minimumCommittedArr"
         ),
+        enforceMinimumCommittedArr: typeof value.enforceMinimumCommittedArr === "boolean" ? value.enforceMinimumCommittedArr : defaults.enforceMinimumCommittedArr,
         redliningMinimumArr: requireNumber(
           value.redliningMinimumArr ?? defaults.redliningMinimumArr,
           0,
@@ -2182,6 +2319,7 @@ var require_appSettings = __commonJS({
       APPROVAL_TIERS,
       QUOTE_KINDS,
       accountIdFromContext: accountIdFromContext2,
+      productRateDescriptors: productRateDescriptors2,
       dealCategory: dealCategory2,
       defaultPricingPolicy,
       defaultSettings,
@@ -2207,6 +2345,7 @@ var {
   accountIdFromContext,
   isDealAllowed,
   isSettingsAdmin,
+  productRateDescriptors,
   readDealPipelines,
   readSettings,
   saveSettings,
@@ -2296,6 +2435,14 @@ var discountReasonProperties = (discountReason) => {
     pricing_discount_reason: discountReason.trim().slice(0, DISCOUNT_REASON_MAX_LENGTH)
   };
 };
+var QUOTE_STATUS_PENDING_APPROVAL = "PENDING_APPROVAL";
+var QUOTE_STATUS_APPROVAL_NOT_NEEDED = "APPROVAL_NOT_NEEDED";
+var ARCHIVABLE_QUOTE_STATUSES = Object.freeze([
+  "DRAFT",
+  QUOTE_STATUS_PENDING_APPROVAL,
+  QUOTE_STATUS_APPROVAL_NOT_NEEDED,
+  "REJECTED"
+]);
 var QUOTE_ACCEPTANCE_METHOD = "clickwrap";
 var MAX_OPTIONS = 10;
 var MAX_PAYLOAD_LENGTH = 6e4;
@@ -2853,7 +3000,12 @@ var HUBSPOT_LINE_ITEM_PROPERTIES = /* @__PURE__ */ new Set([
   "hs_product_id",
   "quantity",
   "price",
-  "discount",
+  // A PERCENTAGE, not the flat `discount` amount this used to send. Holly, 2026-08-31: discounts
+  // are always expressed in %. `discount` is deliberately NOT in this list any more -- a line
+  // carrying both fields would have HubSpot apply one and the reader believe the other. Managed
+  // line items are recreated rather than updated on every sync, so no line survives with a stale
+  // flat amount on it. hs_discount_percentage is HubSpot-defined on line items in every portal.
+  "hs_discount_percentage",
   "description",
   // 'product_category' deliberately omitted: it is not a HubSpot-defined Line Item property, so
   // in a portal that never had it created every create fails with a 400 and the sync collapses.
@@ -3374,7 +3526,6 @@ var contractOptions = async (client, dealId) => {
       readStrategy: null,
       associatedCount: contractIds.length,
       objectPath: probe.path,
-      sawRecords: probe.sawRecords,
       dealAssociationType: fromDeal.associationType,
       companyAssociationType: fromCompany.associationType
     };
@@ -3624,9 +3775,9 @@ var archiveSupersededQuote = async (client, supersededQuoteId, newQuoteId) => {
   try {
     const superseded = await client.crm.quotes.basicApi.getById(supersededQuoteId, ["hs_status"]);
     const status = superseded?.properties?.hs_status;
-    if (status !== "DRAFT") {
+    if (!ARCHIVABLE_QUOTE_STATUSES.includes(String(status))) {
       console.warn(
-        `Nylas pricing: superseded quote ${supersededQuoteId} left in place -- status is ${status || "unknown"}, not DRAFT.`
+        `Nylas pricing: superseded quote ${supersededQuoteId} left in place -- status is ${status || "unknown"}, which is not one of ${ARCHIVABLE_QUOTE_STATUSES.join(", ")}.`
       );
       return null;
     }
@@ -3637,6 +3788,68 @@ var archiveSupersededQuote = async (client, supersededQuoteId, newQuoteId) => {
       `Nylas pricing: could not archive superseded quote ${supersededQuoteId}. It is left in place. ${String(error?.body?.message || error?.message || error)}`
     );
     return null;
+  }
+};
+var primaryQuoteLabelCache;
+var primaryQuoteAssociationType = async (client) => {
+  if (primaryQuoteLabelCache !== void 0) return primaryQuoteLabelCache;
+  try {
+    const schema = await client.crm.associations.v4.schema.definitionsApi.getAll("quotes", "deals");
+    const definitions = schema?.results || [];
+    const match = definitions.find((entry) => /primary/i.test(String(entry?.label || "")));
+    if (!match) {
+      console.warn(
+        `Nylas pricing: no primary-quote association label exists on quotes -> deals. Labels available: [${definitions.map((e) => e?.label || e?.typeId).join(", ")}]. Create one in HubSpot association settings and the next Lock in will apply it.`
+      );
+      primaryQuoteLabelCache = null;
+      return primaryQuoteLabelCache;
+    }
+    primaryQuoteLabelCache = {
+      typeId: match.typeId,
+      label: match.label,
+      category: match.category || "USER_DEFINED"
+    };
+    console.info(
+      `Nylas pricing: primary-quote label resolved -- "${match.label}" typeId=${match.typeId} category=${primaryQuoteLabelCache.category}`
+    );
+    return primaryQuoteLabelCache;
+  } catch (error) {
+    console.warn(
+      `Nylas pricing: could not read the quotes -> deals association labels. ${String(error?.body?.message || error?.message || error)}`
+    );
+    primaryQuoteLabelCache = null;
+    return primaryQuoteLabelCache;
+  }
+};
+var markAsPrimaryQuote = async (client, quoteId, dealId) => {
+  const labelType = await primaryQuoteAssociationType(client);
+  if (!labelType) return { applied: false, label: null, reason: "no primary-quote label" };
+  try {
+    await client.crm.associations.v4.basicApi.create("quotes", String(quoteId), "deals", String(dealId), [
+      { associationCategory: labelType.category, associationTypeId: labelType.typeId }
+    ]);
+    console.info(
+      `Nylas pricing: quote ${quoteId} marked as the primary quote on deal ${dealId}.`
+    );
+    return { applied: true, label: labelType.label, reason: null };
+  } catch (error) {
+    const detail = String(error?.body?.message || error?.message || error);
+    const ineligible = /not eligible to become primary/i.test(detail);
+    if (ineligible) {
+      console.info(
+        `Nylas pricing: quote ${quoteId} is a draft, so HubSpot will not make it the primary quote on deal ${dealId} yet. It becomes eligible when the quote is published.`
+      );
+    } else {
+      console.warn(
+        `Nylas pricing: could not mark quote ${quoteId} primary on deal ${dealId}. ${detail}`
+      );
+    }
+    return {
+      applied: false,
+      label: labelType.label,
+      ineligible,
+      reason: detail
+    };
   }
 };
 var generateQuote = async (client, dealId, state, parameters, portalId, settings) => {
@@ -3650,6 +3863,8 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
       state.dealName
     ) || `${state.dealName} \u2013 ${option.name}`
   );
+  const needsApproval = String(option.result?.approvalTierRequired || "none") !== "none";
+  const desiredQuoteStatus = needsApproval ? QUOTE_STATUS_PENDING_APPROVAL : QUOTE_STATUS_APPROVAL_NOT_NEEDED;
   const category = dealCategory(settings, state.dealType, state.pipelineId);
   const templateId = content.templateId || defaultQuoteTemplateFor(settings, quoteKindsForCategory(category)[0]);
   if (!/^\d+$/.test(templateId)) throw new Error("QUOTE_CONFIGURATION_REQUIRED");
@@ -3688,12 +3903,12 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
   }
   if (!dealOwnerId) {
     console.warn(
-      `Nylas pricing: deal ${dealId} has no hubspot_owner_id. The quote will carry no owner and no Seller contact.`
+      `Nylas pricing: deal ${dealId} has no hubspot_owner_id. The quote will carry no owner and no Seller contact. Set an owner on the Deal -- the seller is never substituted.`
     );
   }
   const sender = await senderProperties(client, dealOwnerId);
   console.info(
-    `Nylas pricing: quote seller resolved -- owner=${dealOwnerId || "NONE"} fields=[${Object.keys(sender).join(", ") || "NONE"}]`
+    `Nylas pricing: quote seller resolved -- deal owner=${dealOwnerId || "NONE"} fields=[${Object.keys(sender).join(", ") || "NONE"}]`
   );
   const lineItems = buildQuoteLineItems(option, content);
   let quote;
@@ -3760,13 +3975,19 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
         //
         // clickwrap is "accept without signature": it renders an accept button and, unlike the
         // other two, does not require a signer contact associated to the quote.
-        hs_acceptance_method: QUOTE_ACCEPTANCE_METHOD
+        hs_acceptance_method: QUOTE_ACCEPTANCE_METHOD,
+        // Set on CREATE deliberately, not by a later update. An update to a live quote
+        // REVALIDATES the whole thing, and that is the call that failed with a template-type
+        // complaint the last time this property was written (see the read-back below). Creating
+        // with it avoids that path; the read-back repairs it if HubSpot drops it.
+        hs_status: desiredQuoteStatus
       },
       associations: []
     });
     await client.crm.associations.v4.basicApi.create("quotes", String(quote.id), "deals", dealId, [
       { associationCategory: "HUBSPOT_DEFINED", associationTypeId: 64 }
     ]);
+    const primaryQuote = await markAsPrimaryQuote(client, quote.id, dealId);
     await client.crm.associations.v4.basicApi.create(
       "quotes",
       String(quote.id),
@@ -3858,6 +4079,26 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
       ...Object.keys(sender)
     ]);
     const quoteUrl = finalized?.properties?.hs_quote_link || "";
+    let quoteStatus = finalized?.properties?.hs_status || "";
+    let quoteStatusRepaired = false;
+    if (quoteStatus !== desiredQuoteStatus) {
+      console.warn(
+        `Nylas pricing: quote ${quote.id} came out of the create as "${quoteStatus || "unset"}" rather than ${desiredQuoteStatus}. Setting it now.`
+      );
+      try {
+        await client.crm.quotes.basicApi.update(String(quote.id), {
+          properties: { hs_status: desiredQuoteStatus }
+        });
+        const after = await client.crm.quotes.basicApi.getById(String(quote.id), ["hs_status"]);
+        quoteStatus = after?.properties?.hs_status || quoteStatus;
+        quoteStatusRepaired = quoteStatus === desiredQuoteStatus;
+      } catch (error) {
+        console.error(
+          `Nylas pricing: could not set hs_status on quote ${quote.id}. The approval workflow will not enrol it. ${String(error?.body?.message || error?.message || error)}`,
+          safeProviderDiagnostics(error, "set_quote_status")
+        );
+      }
+    }
     const senderMissing = Object.entries(sender).filter(
       ([name]) => !finalized?.properties?.[name]
     );
@@ -3902,6 +4143,10 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
         keptOnCreate: Object.keys(sender).filter((name) => Boolean(finalized?.properties?.[name])),
         repaired: senderRepaired
       },
+      // Reported for the same reason as the Seller block: a primary flag that silently did not
+      // apply is indistinguishable from one that did, and this is the third time a quietly-skipped
+      // write has cost a round trip.
+      primaryQuote,
       quoteId: String(quote.id),
       quoteUrl,
       generatedAt,
@@ -3911,7 +4156,14 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
       // refused it. The card prints all three, because "the quote was made but the contract did
       // not attach" is exactly the silent half-success section 3 warns about.
       contractId: contractId || null,
-      contractAssociated
+      contractAssociated,
+      // What the Internal quote status actually ended up as, and whether it took a second write.
+      // The card prints it: this is the field the approval workflow watches, so a silent failure
+      // here means an approval nobody is asked for.
+      quoteStatus,
+      quoteStatusExpected: desiredQuoteStatus,
+      quoteStatusRepaired,
+      needsApproval
     };
   } catch (error) {
     for (const id of createdLineItemIds) {
@@ -3963,7 +4215,10 @@ exports.main = async (context) => {
         pipelines,
         // The FULL list, not the narrowed one: this is the screen where the narrowing is chosen,
         // so it has to show every template the portal has.
-        quoteTemplates: await usableQuoteTemplates(getClient())
+        quoteTemplates: await usableQuoteTemplates(getClient()),
+        // The product rows and band labels, derived from pricingRules. The Settings screen used to
+        // carry its own copy of all seven products and every band boundary as a literal string.
+        productRates: productRateDescriptors()
       });
     }
     if (action === "update_settings") {
