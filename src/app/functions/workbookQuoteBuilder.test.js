@@ -206,8 +206,10 @@ test('workbook parity: the graduated Agent Email bands adjust exactly as the wor
   // rates, which agrees with the workbook's own RATE CARD sheet. Holly confirmed and corrected
   // the HubSpot product.
   //
-  // So the rate card is 0.70 and this row now reads $0.71. Both arithmetic facts are kept: the
-  // first explains any workbook copy still printing $0.76, the second is what the card produces.
+  // So the rate card is 0.70 and this row now reads $0.71. CONFIRMED: workbook v7 prints
+  // "$1.02 /k for 1 - 50K, $0.71 /k for 50K - 100K, $0.36 /k for 100K - 500K, $0.25 /k for 500K+"
+  // at row 17 -- the card and the workbook agree again. Both arithmetic facts are kept: the first
+  // explains any older copy still printing $0.76, the second is what both produce now.
   assert.equal(Math.round(0.75 * 1.015 * 100) / 100, 0.76);
   assert.equal(Math.round(0.7 * 1.015 * 100) / 100, 0.71);
 });

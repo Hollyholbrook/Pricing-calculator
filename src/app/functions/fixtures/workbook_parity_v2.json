@@ -1,5 +1,5 @@
 {
-  "source": "One-Subscription Pricing Workbook (2), QUOTE BUILDER and RATE CARD. Agent Email figures re-derived 2026-08-31 after tier 2 moved from 0.75 to 0.70 per the FY26 MRD (Enterprise and Pro Annual tables) and the corrected HubSpot product. A workbook still printing $0.76 in the 50K-100K band predates that correction.",
+  "source": "One-Subscription Pricing Workbook v7, QUOTE BUILDER and RATE CARD. Agent Email tier 2 is $0.70 (list $0.71) and Privacy Filter Mode is $5,000 -- both corrected in the workbook on 2026-08-31 to agree with the FY26 MRD. A copy printing $0.76 at that band, or $6,000 for Privacy Filter, predates the correction.",
   "agentEmailInputUnit": "1,000 emails per month",
   "scenarios": [
     {

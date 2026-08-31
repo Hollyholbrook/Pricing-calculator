@@ -458,14 +458,32 @@ const onboardingOptions = [
 ];
 
 // The Accelerator Package is PRO ANNUAL only. On Enterprise its contents are already in the
-// contract, and the one paid Enterprise add-on is the Shared OAuth App -- same $2,400. The old
-// enterprise_accelerator key still prices for quotes already saved with it; it is just not
-// offered any more.
+// contract, and the one paid Enterprise add-on is the Shared OAuth App -- same $2,400.
 const addOnOptions = [
   { value: "shared_oauth_app", label: "Shared OAuth App" },
   { value: "privacy_filter", label: "Privacy Filter Mode" },
   { value: "verified_oauth", label: "Turnkey Verified OAuth Projects" },
 ];
+
+// A DEAL SAVED BEFORE 2026-08-31 CARRIES enterprise_accelerator IN input.addOns.
+//
+// MultiSelect is given `value` and `options` together, so a stored value with no matching option
+// is a value the control cannot render. Dropping the retired key from the list outright would
+// therefore break the card on exactly the Deals that already used it -- and a card that fails to
+// render never calls the pricing function at all, so the symptom is "refresh does nothing" with
+// an empty function log rather than an error anyone can read.
+//
+// The retired option is offered ONLY while it is still selected: reps never see it on a new
+// quote, an existing quote still renders and still prices, and unticking it is a one-way door,
+// which is what we want.
+const LEGACY_ADD_ON = {
+  value: "enterprise_accelerator",
+  label: "Enterprise Accelerator Package (retired — use Shared OAuth App)",
+};
+const addOnOptionsFor = (selected: readonly string[]) =>
+  selected.includes(LEGACY_ADD_ON.value)
+    ? [...addOnOptions, LEGACY_ADD_ON]
+    : addOnOptions;
 
 const professionalServiceOptions = [
   { value: "google_verification_review", label: "Google Verification Review" },
@@ -1429,7 +1447,7 @@ const OptionEditor = ({
           `${label} ${asPercent(option.input.productDiscounts?.[key] || 0)}` +
           ((option.input.volumes[key] || 0) > 0 ? "" : " (no volume)"),
       ),
-    ...addOnOptions
+    ...addOnOptionsFor(option.input.addOns)
       .filter(
         ({ value }) => (option.input.addOnDiscounts?.[String(value)] || 0) > 0,
       )
@@ -2037,7 +2055,7 @@ const OptionEditor = ({
                       label="Subscription Add-ons"
                       name="add_ons"
                       value={option.input.addOns}
-                      options={addOnOptions}
+                      options={addOnOptionsFor(option.input.addOns)}
                       onChange={(value) =>
                         onInputChange("addOns", value.map(String))
                       }
@@ -2046,7 +2064,7 @@ const OptionEditor = ({
                       option meant a column of read-only 0% inputs for things nobody is buying,
                       which is most of this section's height and reads as broken rather than
                       inactive. */}
-                    {addOnOptions
+                    {addOnOptionsFor(option.input.addOns)
                       .filter(({ value }) =>
                         option.input.addOns.includes(String(value)),
                       )

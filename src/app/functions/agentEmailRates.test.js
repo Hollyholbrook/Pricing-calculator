@@ -4,7 +4,8 @@ const test = require('node:test');
 // Agent Email tier 2 is 0.70. The FY26 MRD states it in both the Enterprise and the Pro
 // Annual table; the OneSubscription workbook computed from 0.75 and printed $0.76 for this
 // band, which is why these expectations moved on 2026-08-31. Holly confirmed and updated the
-// HubSpot product. A workbook still printing $0.76 in the 50K-100K band is out of date.
+// HubSpot product, and workbook v7 now prints $0.71 for that band. A workbook still showing
+// $0.76 is a copy older than 2026-08-31.
 const { calculateQuote } = require('./calculator');
 
 const calculateEmail = (volume, overrides = {}) =>
