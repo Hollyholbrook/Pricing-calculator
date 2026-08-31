@@ -838,13 +838,27 @@ test('renewals skip the non-discount approvals that block new business', () => {
   assert.deepEqual(asRenewal.blockingReasons, [], 'a small renewal must not be blocked');
   assert.equal(asRenewal.approvalTierRequired, 'none');
 
-  // Redlining below the ARR threshold: blocks new business, not renewals.
+  // Special terms below the ARR threshold: blocks new business, not renewals. The input key is
+  // still redliningRequested -- renaming it would change the hash of every stored option -- but
+  // everything a rep reads now says special terms.
   const redlined = { ...small, redliningRequested: true };
   assert.ok(
     calculateQuote(redlined, {}, 0, 'new_business').blockingReasons.includes(
-      'REDLINING_BELOW_THRESHOLD',
+      'SPECIAL_TERMS_BELOW_THRESHOLD',
     ),
   );
+  assert.ok(
+    calculateQuote(redlined, {}, 0, 'new_business').approvalReasons.some((r) =>
+      /Special terms were requested below the \$50,000 ARR threshold\./.test(r),
+    ),
+  );
+  // Nothing a rep sees may still say "redlin" -- that was the point of the rename.
+  for (const line of [
+    ...calculateQuote(redlined, {}, 0, 'new_business').blockingReasons,
+    ...calculateQuote(redlined, {}, 0, 'new_business').approvalReasons,
+  ]) {
+    assert.equal(/redlin/i.test(line), false, `still says redlining: ${line}`);
+  }
   assert.deepEqual(calculateQuote(redlined, {}, 0, 'renewal').blockingReasons, []);
   // The Legal note survives, because it informs rather than gates.
   assert.ok(

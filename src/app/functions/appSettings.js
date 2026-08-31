@@ -85,8 +85,31 @@ const defaultSettings = () => ({
   // An EMPTY list means "every usable template", which is what the card did before this existed --
   // so an unconfigured portal behaves exactly as it always has rather than showing an empty picker.
   // Choosing templates here narrows it; it never adds one the portal does not have.
+  //
+  // PER QUOTE KIND since 2026-08-30, and the key is the KIND rather than the deal category
+  // because there are three documents and only two categories. A renewal-pipeline Deal prints
+  // either a change quote or a renewal quote depending on what the rep chooses; a new-business
+  // Deal prints the third. Keying these by category would have left the renewal category holding
+  // two defaults in one field.
+  //
+  // Everything else in Settings stays shared: one rate card, one set of thresholds. Only the
+  // templates differ, so only the templates are nested.
+  quoteTemplatesByKind: {
+    new_business: { enabledIds: [], defaultId: '' },
+    change: { enabledIds: [], defaultId: '' },
+    renewal: { enabledIds: [], defaultId: '' },
+  },
+  // LEGACY MIRRORS, derived -- never edited directly, never read by this code.
+  //
+  // They exist so a ROLLBACK is survivable. The per-kind data lives under its own key, so code
+  // that predates it still finds a plain array and a plain id here and keeps working. Without
+  // this, a record saved by the new Settings screen made the old normalizeSettings throw
+  // INVALID_SETTINGS, which readSettings turns into SETTINGS_CONFIGURATION_REQUIRED -- taking the
+  // whole card down, not just Settings, for anyone who rolled back after a save.
+  //
+  // They mirror the NEW BUSINESS kind, which is what a single shared list meant before kinds
+  // existed. Empty falls back to the QUOTE_TEMPLATE_ID secret, as it always did.
   enabledQuoteTemplateIds: [],
-  // Empty falls back to the QUOTE_TEMPLATE_ID secret, which is where the default lived before.
   defaultQuoteTemplateId: '',
   pricingPolicy: defaultPricingPolicy(),
 });
@@ -109,6 +132,82 @@ const normalizeTemplateId = (value, field) => {
   const id = String(value);
   if (!/^\d{1,20}$/.test(id)) throw new Error(`INVALID_SETTINGS:${field}`);
   return id;
+};
+
+// The three documents this app can print, from REQUIREMENTS.md section 2. Not the same axis as
+// dealCategory, which has two values: the renewal CATEGORY covers two KINDS, and which of them a
+// quote is is the rep's choice.
+const QUOTE_KINDS = Object.freeze(['new_business', 'change', 'renewal']);
+
+// Which kinds a resolved category may choose between. dealCategory also returns 'unsupported';
+// isDealAllowed refuses those Deals before this is reached, so they fall to the new-business kind
+// as a safety net rather than as a route anything takes.
+const quoteKindsForCategory = (category) =>
+  category === 'renewal' ? ['change', 'renewal'] : ['new_business'];
+
+// The per-kind template settings went under their own key, `quoteTemplatesByKind`, on 2026-08-30.
+// Two older shapes have to keep working:
+//
+//   FLAT      enabledQuoteTemplateIds: ['123'],  defaultQuoteTemplateId: '123'
+//             -- every portal configured before 2026-08-30. Read as "every kind uses this".
+//   BY KIND   enabledQuoteTemplateIds: { change: [...] }, ...
+//             -- the shape this file briefly used on 2026-08-30, before the rollback hazard was
+//             found. Read per kind. Harmless to keep supporting and it costs four lines.
+//
+// A value that is none of these falls through to the empty default rather than throwing, because
+// empty already means something safe: "offer every usable template".
+// Precedence is decided on the WHOLE key, not entry by entry. New code always writes all three
+// kinds, so if `quoteTemplatesByKind` is present it is authoritative and complete -- and an EMPTY
+// enabledIds under it is a real answer ("offer every usable template"), not a gap to fill from
+// somewhere else. Reading it entry by entry made an explicitly-empty kind silently inherit the
+// legacy list, which is the opposite of what the admin chose.
+const hasPerKindKey = (byKind) =>
+  Boolean(byKind) && typeof byKind === 'object' && !Array.isArray(byKind);
+
+const legacyTemplateIds = (legacyEnabled, kind) => {
+  if (Array.isArray(legacyEnabled)) return legacyEnabled;
+  if (legacyEnabled && typeof legacyEnabled === 'object') return legacyEnabled[kind];
+  return [];
+};
+
+const legacyDefaultId = (legacyDefault, kind) => {
+  if (typeof legacyDefault === 'string' || typeof legacyDefault === 'number') return legacyDefault;
+  if (legacyDefault && typeof legacyDefault === 'object' && !Array.isArray(legacyDefault)) {
+    return legacyDefault[kind];
+  }
+  return '';
+};
+
+const normalizeQuoteTemplatesByKind = (byKind, legacyEnabled, legacyDefault) => {
+  const canonical = hasPerKindKey(byKind);
+  return Object.fromEntries(
+    QUOTE_KINDS.map((kind) => [
+      kind,
+      {
+        enabledIds: normalizePipelineIds(
+          (canonical
+            ? byKind[kind]?.enabledIds
+            : legacyTemplateIds(legacyEnabled, kind)) || [],
+          `quoteTemplatesByKind.${kind}.enabledIds`,
+        ),
+        defaultId: normalizeTemplateId(
+          canonical ? byKind[kind]?.defaultId : legacyDefaultId(legacyDefault, kind),
+          `quoteTemplatesByKind.${kind}.defaultId`,
+        ),
+      },
+    ]),
+  );
+};
+
+// The template settings ONE kind uses. An unrecognised kind reads as new business rather than as
+// nothing: an empty list would be indistinguishable from "offer every template", so an unknown
+// kind must not be able to silently widen the picker.
+const quoteTemplateSettings = (settings, quoteKind) => {
+  const kind = QUOTE_KINDS.includes(quoteKind) ? quoteKind : 'new_business';
+  return {
+    enabledIds: settings?.quoteTemplatesByKind?.[kind]?.enabledIds || [],
+    defaultId: settings?.quoteTemplatesByKind?.[kind]?.defaultId || '',
+  };
 };
 
 const requireApprovalTier = (value, field) => {
@@ -330,6 +429,11 @@ const normalizeSettings = (value, currentVersion = 0) => {
   if (!value.allowNewBusiness && !value.allowRenewals) {
     throw new Error('INVALID_SETTINGS:allowedDealTypes');
   }
+  const byKind = normalizeQuoteTemplatesByKind(
+    value.quoteTemplatesByKind,
+    value.enabledQuoteTemplateIds,
+    value.defaultQuoteTemplateId,
+  );
   return {
     schemaVersion: '1.0',
     version: currentVersion,
@@ -339,14 +443,10 @@ const normalizeSettings = (value, currentVersion = 0) => {
       value.newBusinessPipelineIds || [],
       'newBusinessPipelineIds',
     ),
-    enabledQuoteTemplateIds: normalizePipelineIds(
-      value.enabledQuoteTemplateIds || [],
-      'enabledQuoteTemplateIds',
-    ),
-    defaultQuoteTemplateId: normalizeTemplateId(
-      value.defaultQuoteTemplateId,
-      'defaultQuoteTemplateId',
-    ),
+    quoteTemplatesByKind: byKind,
+    // Derived, every save, from the new-business kind. See defaultSettings for why they exist.
+    enabledQuoteTemplateIds: byKind.new_business.enabledIds,
+    defaultQuoteTemplateId: byKind.new_business.defaultId,
     renewalPipelineIds: normalizePipelineIds(
       value.renewalPipelineIds || [],
       'renewalPipelineIds',
@@ -488,6 +588,7 @@ const isDealAllowed = (settings, dealType, pipelineId) => {
 
 module.exports = {
   APPROVAL_TIERS,
+  QUOTE_KINDS,
   accountIdFromContext,
   dealCategory,
   defaultPricingPolicy,
@@ -495,6 +596,8 @@ module.exports = {
   isDealAllowed,
   isSettingsAdmin,
   normalizeSettings,
+  quoteKindsForCategory,
+  quoteTemplateSettings,
   readDealPipelines,
   readSettings,
   saveSettings,

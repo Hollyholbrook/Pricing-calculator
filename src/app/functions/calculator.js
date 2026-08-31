@@ -390,12 +390,16 @@ const buildApproval = (
   if (!relaxed && input.redliningRequested && committedArr < activeRules.redliningMinimumArr) {
     tier = 'finance';
     reasons.push(
-      `Redlining was requested below the ${currencyLabel(activeRules.redliningMinimumArr)} ARR threshold.`,
+      `Special terms were requested below the ${currencyLabel(activeRules.redliningMinimumArr)} ` +
+        'ARR threshold.',
     );
-    blockingReasons.push('REDLINING_BELOW_THRESHOLD');
+    // The CODE is what the rep reads: the card renders blockingReasons verbatim in the banner
+    // alongside the prose. So this string is user-facing copy, not an internal identifier, and it
+    // had to follow the rename too. Only calculator.js and its test refer to it.
+    blockingReasons.push('SPECIAL_TERMS_BELOW_THRESHOLD');
   }
   if (input.redliningRequested) {
-    reasons.push('Customer-requested redlines require Legal approval.');
+    reasons.push('Customer-requested special terms require Legal approval.');
   }
   // REMOVED 2026-08-28, Holly: Turnkey Verified OAuth no longer requires a professional-services
   // item, and a quote without one is no longer blocked. It used to push

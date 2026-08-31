@@ -35,6 +35,29 @@ interface PricingPolicy {
   productBandRates: Record<string, number[]>;
 }
 
+// The three documents the app can print. Not the same axis as the deal category: a renewal
+// pipeline resolves to the renewal CATEGORY, and the rep then chooses which of its two KINDS the
+// quote is. Keyed by kind here because that is what picks a template.
+type QuoteKind = "new_business" | "change" | "renewal";
+
+const QUOTE_KINDS: { kind: QuoteKind; label: string; note: string }[] = [
+  {
+    kind: "new_business",
+    label: "New Business",
+    note: "Offered on Deals in a new business pipeline.",
+  },
+  {
+    kind: "change",
+    label: "Change",
+    note: "Offered on renewal pipelines when the rep is quoting a change.",
+  },
+  {
+    kind: "renewal",
+    label: "Renewal",
+    note: "Offered on renewal pipelines when the rep is quoting a renewal.",
+  },
+];
+
 interface AppSettings {
   schemaVersion: string;
   version: number;
@@ -42,6 +65,12 @@ interface AppSettings {
   allowRenewals: boolean;
   newBusinessPipelineIds: string[];
   renewalPipelineIds: string[];
+  quoteTemplatesByKind: Record<
+    QuoteKind,
+    { enabledIds: string[]; defaultId: string }
+  >;
+  // Derived server-side from the new business kind and never edited here. They exist so code
+  // predating quoteTemplatesByKind still finds the flat shape it expects after a rollback.
   enabledQuoteTemplateIds: string[];
   defaultQuoteTemplateId: string;
   pricingPolicy: PricingPolicy;
@@ -241,17 +270,30 @@ const SettingsPage = () => {
   }));
   // An empty choice means "offer every template", so the default may legitimately be one that is
   // not in the chosen list. Once a narrowing exists, the default has to be inside it or the card
-  // would preselect something the picker will not show.
-  const offeredTemplateOptions =
-    settings.enabledQuoteTemplateIds.length === 0
+  // would preselect something the picker will not show. Per kind, since each kind narrows
+  // separately.
+  const forKind = (kind: QuoteKind) => settings.quoteTemplatesByKind[kind];
+  const setKind = (
+    kind: QuoteKind,
+    patch: Partial<{ enabledIds: string[]; defaultId: string }>,
+  ) =>
+    setSettings({
+      ...settings,
+      quoteTemplatesByKind: {
+        ...settings.quoteTemplatesByKind,
+        [kind]: { ...settings.quoteTemplatesByKind[kind], ...patch },
+      },
+    });
+  const offeredTemplateOptionsFor = (kind: QuoteKind) =>
+    forKind(kind).enabledIds.length === 0
       ? templateOptions
       : templateOptions.filter(({ value }) =>
-          settings.enabledQuoteTemplateIds.includes(value),
+          forKind(kind).enabledIds.includes(value),
         );
-  const defaultOutsideChoice =
-    settings.defaultQuoteTemplateId !== "" &&
-    settings.enabledQuoteTemplateIds.length > 0 &&
-    !settings.enabledQuoteTemplateIds.includes(settings.defaultQuoteTemplateId);
+  const defaultOutsideChoiceFor = (kind: QuoteKind) =>
+    forKind(kind).defaultId !== "" &&
+    forKind(kind).enabledIds.length > 0 &&
+    !forKind(kind).enabledIds.includes(forKind(kind).defaultId);
 
   return (
     <Stack distance="sm">
@@ -375,50 +417,57 @@ const SettingsPage = () => {
           <Heading>Quote Templates</Heading>
           <Text variant="microcopy">
             Which templates the pricing card offers, and which one it
-            preselects. Leave the list empty to offer every template in the
-            portal.
+            preselects, for each kind of quote. Leave a list empty to offer
+            every template in the portal for that kind.
           </Text>
-          <AutoGrid columnWidth={230} flexible gap="sm">
-            <MultiSelect
-              label="Templates Reps Can Choose"
-              name="enabled_quote_templates"
-              value={settings.enabledQuoteTemplateIds}
-              options={templateOptions}
-              readOnly={!canEdit}
-              onChange={(value) =>
-                setSettings({
-                  ...settings,
-                  enabledQuoteTemplateIds: value.map(String),
-                })
-              }
-            />
-            <Select
-              label="Default Template"
-              name="default_quote_template"
-              value={settings.defaultQuoteTemplateId}
-              options={[
-                { value: "", label: "Use the configured secret" },
-                ...offeredTemplateOptions,
-              ]}
-              readOnly={!canEdit}
-              onChange={(value) =>
-                setSettings({
-                  ...settings,
-                  defaultQuoteTemplateId: String(value ?? ""),
-                })
-              }
-            />
-          </AutoGrid>
+          {QUOTE_KINDS.map(({ kind, label, note }) => (
+            <Stack distance="sm" key={kind}>
+              <Text format={{ fontWeight: "bold" }}>{label}</Text>
+              <Text variant="microcopy">{note}</Text>
+              <AutoGrid columnWidth={230} flexible gap="sm">
+                <MultiSelect
+                  label="Templates Reps Can Choose"
+                  name={`enabled_quote_templates_${kind}`}
+                  value={forKind(kind).enabledIds}
+                  options={templateOptions}
+                  readOnly={!canEdit}
+                  onChange={(value) =>
+                    setKind(kind, { enabledIds: value.map(String) })
+                  }
+                />
+                <Select
+                  label="Default Template"
+                  name={`default_quote_template_${kind}`}
+                  value={forKind(kind).defaultId}
+                  options={[
+                    { value: "", label: "Use the configured secret" },
+                    ...offeredTemplateOptionsFor(kind),
+                  ]}
+                  readOnly={!canEdit}
+                  onChange={(value) =>
+                    setKind(kind, { defaultId: String(value ?? "") })
+                  }
+                />
+              </AutoGrid>
+              {defaultOutsideChoiceFor(kind) && (
+                <Text variant="microcopy" format={{ fontWeight: "bold" }}>
+                  The default {label.toLowerCase()} template is not one reps can
+                  choose. Add it to the list above, or pick a different default.
+                </Text>
+              )}
+            </Stack>
+          ))}
           {quoteTemplates.length === 0 && (
             <Text variant="microcopy">
               No quote templates could be listed for this portal. The card will
               fall back to the configured QUOTE_TEMPLATE_ID secret.
             </Text>
           )}
-          {defaultOutsideChoice && (
-            <Text variant="microcopy" format={{ fontWeight: "bold" }}>
-              The default template is not one reps can choose. Add it to the
-              list above, or pick a different default.
+          {!settings.allowRenewals && (
+            <Text variant="microcopy">
+              Renewals are turned off, so the Change and Renewal templates are
+              not offered to anyone yet. They are kept here so they can be set
+              up before renewals are switched on.
             </Text>
           )}
         </Stack>
@@ -434,7 +483,7 @@ const SettingsPage = () => {
             onChange={(value) => setPolicyNumber("minimumCommittedArr", value)}
           />
           <Money
-            label="ARR to Allow Redlining"
+            label="ARR to Allow Special Terms"
             name="redlining_arr"
             value={policy.redliningMinimumArr}
             disabled={!canEdit}

@@ -150,6 +150,18 @@ interface QuoteResult {
   };
 }
 
+// The three documents the app can print, and the two categories a Deal resolves to. They are
+// different axes on purpose: the pipeline decides the CATEGORY, which a rep cannot change, and
+// within the renewal category the rep chooses the KIND.
+type QuoteKind = "new_business" | "change" | "renewal";
+type DealCategory = "new_business" | "renewal" | "unsupported";
+
+const QUOTE_KIND_LABELS: Record<QuoteKind, string> = {
+  new_business: "New business",
+  change: "Change",
+  renewal: "Renewal",
+};
+
 interface QuoteOption {
   id?: string;
   name: string;
@@ -158,6 +170,9 @@ interface QuoteOption {
   result?: QuoteResult;
   createdAt?: string;
   updatedAt?: string;
+  // Which of the two renewal documents this configuration is for. Stored on the OPTION rather
+  // than inside input, so toggling it does not change the state hash -- it moves no number.
+  quoteKind?: QuoteKind;
   // Card-only: marks that the saved configuration has already been restored, so a later
   // response cannot overwrite edits made since the load. Never sent to the server.
   restoredFromDeal?: boolean;
@@ -251,8 +266,51 @@ interface ServerlessBody {
   } | null;
   contacts?: { id: string; label: string }[];
   contactSource?: "deal" | "company" | "none";
+  // The company's contracts, sent only on a renewal-category Deal. contractsUnavailable says WHY
+  // the list is empty when it is: an empty picker because the scope is missing and an empty picker
+  // because the company has no contracts need completely different responses.
+  contracts?: {
+    id: string;
+    label: string;
+    status: string;
+    effectiveDate: string;
+  }[];
+  contractSource?: "deal" | "company" | "none";
+  companyName?: string;
+  contractsUnavailable?:
+    | "scope_missing"
+    | "not_supported"
+    | "none_associated"
+    | "none_found"
+    | "unreadable"
+    | "error"
+    | null;
+  contractAssociated?: boolean | null;
+  // What the contracts probe actually observed. Printed on the card when the picker is empty:
+  // three rounds were spent reading error strings and inferring, and the card is where the person
+  // who needs it is already looking.
+  contractDiagnostics?: {
+    build?: number;
+    listed?: number;
+    discoveredType?: string | null;
+    discoveredName?: string | null;
+    objectPath?: string | null;
+    readPath?: string | null;
+    readStrategy?: string | null;
+    readReason?: string | null;
+    associatedCount?: number;
+    sawRecords?: boolean;
+    dealAssociationType?: string | null;
+    companyAssociationType?: string | null;
+  };
   dealContactIds?: string[];
   defaultQuoteTemplateId?: string;
+  // The flow the server resolved from the Deal's pipeline, and which kind claims each template.
+  // The card reads templateKinds to decide whether a contract applies the instant the rep changes
+  // template -- no round trip, and no opinion of its own about which template is which. That
+  // mapping is Settings' business and nobody else's.
+  dealCategory?: DealCategory;
+  templateKinds?: Record<string, QuoteKind>;
   dealName?: string;
 }
 
@@ -730,6 +788,28 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
     { id: string; name: string }[]
   >([]);
   const [templateId, setTemplateId] = useState("");
+  // The flow, resolved by the server from the Deal's pipeline. The card never decides this and
+  // never sends it back -- it only renders it.
+  const [dealCategory, setDealCategory] =
+    useState<DealCategory>("new_business");
+  // Which contract a change or renewal is for. Association only -- it changes no number, so like
+  // the contact and the discount reason it travels as its own parameter, not as pricing input.
+  const [contracts, setContracts] = useState<
+    { id: string; label: string; status: string; effectiveDate: string }[]
+  >([]);
+  const [contractId, setContractId] = useState("");
+  const [contractsUnavailable, setContractsUnavailable] = useState<
+    string | null
+  >(null);
+  const [contractDiagnostics, setContractDiagnostics] =
+    useState<ServerlessBody["contractDiagnostics"]>(undefined);
+  // Which kind claims each template, from Settings. The rep picks a TEMPLATE and the kind is read
+  // off it -- there is no separate Quote Type control. One existed briefly and it let the two
+  // disagree on screen (Quote Type "Change" beside the New Business template); the template is
+  // what actually prints, so it is the input.
+  const [templateKinds, setTemplateKinds] = useState<Record<string, QuoteKind>>(
+    {},
+  );
   const [quoteTitle, setQuoteTitle] = useState("");
   // Not part of the pricing input: it changes no number, and normalizeStoredInput would strip it
   // from option.input anyway. It travels as its own parameter and lands on the Deal.
@@ -744,11 +824,9 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
   // option.input. It travels as its own parameter and lands on pricing_discount_reason.
   const [discountReason, setDiscountReason] = useState("");
   const [dealName, setDealName] = useState("");
+  const [companyName, setCompanyName] = useState("");
   const trimmedQuoteTitle = quoteTitle.trim();
   const quoteTitleTooLong = trimmedQuoteTitle.length > QUOTE_TITLE_MAX_LENGTH;
-  const fallbackQuoteTitle = dealName
-    ? `${dealName} – ${LIVE_OPTION_NAME}`
-    : "";
   // The card exposes no controls for the rest of these, so they are constants rather than state
   // whose setter is never called.
   const quoteContent: QuoteContent = {
@@ -770,6 +848,18 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
     status: "draft",
     input: emptyInput(),
   });
+  // "<Company name> - <year>". Holly, 2026-08-30. It used to be "<deal name> - Live calculator",
+  // which put an internal label in front of a customer. The year is the CONTRACT START year, not
+  // today's: a quote written in December for a January term belongs to the term it covers. The
+  // company falls back to the deal name, and the year is dropped rather than printed as NaN.
+  // Mirrors defaultQuoteTitle on the server, which is what actually names the quote.
+  const quoteTitleSubject = (companyName || dealName).trim();
+  const quoteTitleYear = String(editing.input.startDate || "").slice(0, 4);
+  const fallbackQuoteTitle = !quoteTitleSubject
+    ? ""
+    : /^\d{4}$/.test(quoteTitleYear)
+      ? `${quoteTitleSubject} - ${quoteTitleYear}`
+      : quoteTitleSubject;
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   // The product-library drift check is NOT on this card. It was added on 2026-08-27 (0c874c7) as
@@ -802,6 +892,7 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
 
   const updateFromBody = (body: ServerlessBody) => {
     if (body.dealName) setDealName(body.dealName);
+    if (body.companyName !== undefined) setCompanyName(body.companyName);
     if (body.latestQuoteSeller !== undefined) {
       setLatestQuoteSeller(body.latestQuoteSeller);
     }
@@ -860,6 +951,16 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
             },
       );
     }
+    // The resolved flow. Read before the templates below, because which template list applies
+    // depends on it.
+    if (body.dealCategory) setDealCategory(body.dealCategory);
+    if (body.templateKinds) setTemplateKinds(body.templateKinds);
+    if (body.contracts) setContracts(body.contracts);
+    if (body.contractsUnavailable !== undefined) {
+      setContractsUnavailable(body.contractsUnavailable);
+    }
+    if (body.contractDiagnostics)
+      setContractDiagnostics(body.contractDiagnostics);
     if (body.quoteTemplates) {
       setQuoteTemplates(body.quoteTemplates);
       // Preselect the configured default when it is one of the usable templates, so the picker
@@ -881,6 +982,11 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
       });
     }
   };
+
+  // The kind is DERIVED from the chosen template, not chosen separately. Undefined when no kind
+  // claims it, which is normal on a portal where the change and renewal templates have not been
+  // assigned in Settings yet -- and in that state no contract is asked for.
+  const quoteKind = templateKinds[templateId];
 
   const runAction = async (parameters: Record<string, unknown>) => {
     const result = await hubspot.serverless<ServerlessResult>(
@@ -979,6 +1085,7 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
         discountReason,
         replaceExistingQuote,
         contactId,
+        contractId,
       });
       // Every lock creates a NEW quote -- generation is unconditional, because the hash-based
       // reuse it replaced is what let a stale quote come back rendered with the old template.
@@ -1063,6 +1170,8 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
         quoteTemplates={quoteTemplates}
         templateId={templateId}
         onTemplateChange={setTemplateId}
+        dealCategory={dealCategory}
+        quoteKind={quoteKind}
         paymentMethod={paymentMethod}
         onPaymentMethodChange={setPaymentMethod}
         quoteTitle={quoteTitle}
@@ -1075,6 +1184,11 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
         contactSource={contactSource}
         contactId={contactId}
         onContactChange={setContactId}
+        contracts={contracts}
+        contractId={contractId}
+        contractsUnavailable={contractsUnavailable}
+        contractDiagnostics={contractDiagnostics}
+        onContractChange={setContractId}
         replaceExistingQuote={replaceExistingQuote}
         onReplaceExistingQuoteChange={setReplaceExistingQuote}
         onPreview={previewQuote}
@@ -1092,6 +1206,8 @@ const OptionEditor = ({
   quoteTemplates,
   templateId,
   onTemplateChange,
+  dealCategory,
+  quoteKind,
   paymentMethod,
   onPaymentMethodChange,
   quoteTitle,
@@ -1104,6 +1220,11 @@ const OptionEditor = ({
   contactSource,
   contactId,
   onContactChange,
+  contracts,
+  contractId,
+  contractsUnavailable,
+  contractDiagnostics,
+  onContractChange,
   replaceExistingQuote,
   onReplaceExistingQuoteChange,
   onPreview,
@@ -1116,6 +1237,10 @@ const OptionEditor = ({
   quoteTemplates: { id: string; name: string }[];
   templateId: string;
   onTemplateChange: (value: string) => void;
+  dealCategory: DealCategory;
+  // Derived from the chosen template. Undefined when Settings has not assigned that template to
+  // a kind, in which case no contract applies.
+  quoteKind: QuoteKind | undefined;
   paymentMethod: string;
   onPaymentMethodChange: (value: string) => void;
   quoteTitle: string;
@@ -1137,6 +1262,16 @@ const OptionEditor = ({
   contactSource: "deal" | "company" | "none";
   contactId: string;
   onContactChange: (value: string) => void;
+  contracts: {
+    id: string;
+    label: string;
+    status: string;
+    effectiveDate: string;
+  }[];
+  contractId: string;
+  contractsUnavailable: string | null;
+  contractDiagnostics: ServerlessBody["contractDiagnostics"];
+  onContractChange: (value: string) => void;
   replaceExistingQuote: boolean;
   onReplaceExistingQuoteChange: (checked: boolean) => void;
   onPreview: (input: QuoteInput) => Promise<QuoteResult>;
@@ -1548,6 +1683,15 @@ const OptionEditor = ({
                 variants are body-sized, so Heading's default is the only larger size available
                 from the card. */}
             <Heading>Contract Basics:</Heading>
+            {/* The flow this Deal resolved to, stated rather than implied. It comes from the
+                Deal's PIPELINE via Settings, so a rep cannot change it here -- and when the
+                pipeline is wrong, seeing "Renewal" on a new-business Deal is what makes that
+                obvious before a quote is generated from the wrong template. */}
+            <Text variant="microcopy">
+              {dealCategory === "renewal"
+                ? "This Deal is in a renewal pipeline."
+                : "This Deal is in a new business pipeline."}
+            </Text>
             <AutoGrid columnWidth={200} flexible gap="sm">
               <DateInput
                 label="Start Date"
@@ -1598,6 +1742,72 @@ const OptionEditor = ({
                 }
                 onChange={(value) => onPaymentMethodChange(String(value))}
               />
+              {/* Which contract this change or renewal is for. Shown ONLY on those two kinds:
+                  a new business quote has no prior contract to point at, and a control that is
+                  always visible but never applicable is how a rep learns to ignore it.
+                  Association only -- it changes no price. */}
+              {(quoteKind === "change" || quoteKind === "renewal") && (
+                <Flex direction="column" gap="flush">
+                  <Select
+                    label="Contract for this Quote"
+                    name="quote_contract"
+                    value={contractId}
+                    options={[
+                      { value: "", label: "Choose a contract…" },
+                      ...contracts.map(({ id, label }) => ({
+                        value: id,
+                        label,
+                      })),
+                    ]}
+                    description={
+                      contracts.length > 0
+                        ? `${QUOTE_KIND_LABELS[quoteKind]} of an existing contract on this company.`
+                        : undefined
+                    }
+                    onChange={(value) => onContractChange(String(value))}
+                  />
+                  {/* Why the list is empty, when it is. An empty picker because nobody added the
+                      scope, an empty picker because nothing is ASSOCIATED, and an empty picker
+                      because the portal has no contracts at all are the same thing on screen and
+                      three completely different problems. Only the middle one is the rep's to
+                      fix, and it is the one that actually happened. */}
+                  {contracts.length === 0 && (
+                    <Text variant="microcopy">
+                      {contractsUnavailable === "scope_missing"
+                        ? "Contracts cannot be read: the app needs the crm.objects.contracts.read scope and a reinstall. You can still lock in."
+                        : contractsUnavailable === "none_associated"
+                          ? "Contracts exist in this portal, but none is associated with this Deal or its company. Associate the contract on the Deal or the Company record, then reload."
+                          : contractsUnavailable === "none_found"
+                            ? "No contract was found on this Deal or its company, and none could be listed. Either there are none, or the app cannot see them — check hs project logs for the contracts probe."
+                            : contractsUnavailable === "unreadable"
+                              ? "A contract is linked to this Deal or company, but the app could not read it. Associations resolve while record reads return nothing, which is what a missing crm.objects.contracts.read scope looks like on this object — it answers empty rather than refusing. Check the granted scopes on the app."
+                              : contractsUnavailable === "not_supported"
+                                ? "Contracts could not be listed for this Deal or its company. You can still lock in."
+                                : contractsUnavailable
+                                  ? "Contracts could not be listed. You can still lock in."
+                                  : "No contract was found for this Deal or its company."}
+                    </Text>
+                  )}
+                  {/* What the probe actually observed. On the card rather than in the logs,
+                      because three rounds were spent reading error strings and inferring
+                      instead of looking at the numbers. */}
+                  {contracts.length === 0 && contractDiagnostics && (
+                    <Text variant="microcopy">
+                      {`Probe v${contractDiagnostics.build ?? "?"}: ` +
+                        `${contractDiagnostics.associatedCount ?? 0} associated · ` +
+                        `list ${contractDiagnostics.objectPath || "none answered"} ` +
+                        `(${contractDiagnostics.listed ?? 0} records) · ` +
+                        `read ${contractDiagnostics.readPath || "none answered"} ` +
+                        `(${contractDiagnostics.readStrategy || contractDiagnostics.readReason || "no strategy"}) · ` +
+                        `deal assoc ${contractDiagnostics.dealAssociationType || "none"} · ` +
+                        `company assoc ${contractDiagnostics.companyAssociationType || "none"}` +
+                        (contractDiagnostics.discoveredType
+                          ? ` · schema says ${contractDiagnostics.discoveredType}`
+                          : "")}
+                    </Text>
+                  )}
+                </Flex>
+              )}
               {/* The Quote's contact. HubSpot lists Contact as a REQUIRED association on a CPQ
                   quote, and the app used to send whatever the Deal happened to have -- so a Deal
                   with none produced a quote HubSpot refused, with an error that named the template
@@ -1892,11 +2102,11 @@ const OptionEditor = ({
                 onInputChange("redliningRequested", checked)
               }
             >
-              Customer requests redlines
+              Customer requests special terms
             </Checkbox>
             {option.input.redliningRequested && (
               <TextArea
-                label="Describe the Requested Terms"
+                label="Describe the Special Terms"
                 name="special_terms"
                 value={option.input.specialTerms}
                 rows={3}
