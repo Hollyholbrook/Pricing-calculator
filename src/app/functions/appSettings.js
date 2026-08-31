@@ -11,14 +11,16 @@ const LEGACY_PRODUCT_BAND_RATES = Object.freeze({
 
 const defaultPricingPolicy = () => ({
   calculationMethod: 'excel_compatible',
-  minimumCommittedArr: 25_000,
-  redliningMinimumArr: 50_000,
+  minimumCommittedArr: pricingRules.minimumCommittedArr,
+  // Off, from the rate card, which is where the decision is written down. Holly, 2026-08-31.
+  enforceMinimumCommittedArr: pricingRules.enforceMinimumCommittedArr,
+  redliningMinimumArr: pricingRules.redliningMinimumArr,
   // Credit card is refused on an invoice above this. Configurable like the other thresholds,
   // because it is a finance policy rather than a rate -- and because a hard-coded limit could not
   // be tested at its own boundary without contriving a deal that lands exactly on $25,000.
-  creditCardMaximumInvoice: 25_000,
-  salesDirectorDiscountMax: 0.1,
-  headSalesDiscountMax: 0.3,
+  creditCardMaximumInvoice: pricingRules.creditCardMaximumInvoice,
+  salesDirectorDiscountMax: pricingRules.salesDirectorDiscountMax,
+  headSalesDiscountMax: pricingRules.headSalesDiscountMax,
   // APPROVAL MATRIX (Holly, 2026-08-28). The THRESHOLDS are shared by both deal types -- only
   // who signs off changes:
   //
@@ -45,29 +47,41 @@ const defaultPricingPolicy = () => ({
   // about refusing a lock -- a renewal is expected to land under the new-business minimum, and
   // that rule blocks rather than escalates.
   renewalRelaxesNonDiscountApprovals: true,
-  termDiscounts: { '12': 0, '24': 0.025, '36': 0.05 },
-  paymentPremiums: {
-    annual_in_advance: 0,
-    semi_annual_in_advance: 0.04,
-    quarterly_in_advance: 0.06,
-    monthly_in_advance: 0.08,
-  },
-  support: {
-    basic: { percent: 0, cap: 0 },
-    full: { percent: 0.1, cap: 10_000 },
-    premium: { percent: 0.2, cap: 20_000 },
-  },
-  onboardingAmounts: {
-    quick_launch: 0,
-    quick_launch_plus: 5_000,
-    strategic: 10_000,
-  },
-  professionalServicesAmounts: [0, 2_000, 3_800, 5_500, 7_200, 8_800],
-  addOnAnnualAmounts: {
-    enterprise_accelerator: 2_400,
-    privacy_filter: 6_000,
-    verified_oauth: 5_000,
-  },
+  // DERIVED FROM pricingRules, every one of them. Do not hand-copy a rate into this file.
+  //
+  // These used to be typed out here, duplicating the rate card, while productBandRates below was
+  // derived. Onboarding drifted: pricingRules said 5/10/15K -- confirmed by Holly, the workbook
+  // RATE CARD, QUOTE BUILDER row 38 and the HubSpot product export on 2026-08-27 -- and this file
+  // still said 0/5/10K. Because buildActiveRules reads the POLICY first
+  // (`pricingPolicy.onboardingAmounts?.[key] ?? rule.oneTimeAmount`), the stale copy won and every
+  // onboarding package was quoted $5,000 short. The tests did not catch it because they pass `{}`
+  // as the policy, which falls through to pricingRules and never sees this table.
+  //
+  // Deriving makes that class of drift impossible. A rate change now happens in pricingRules.js
+  // alone, and a test below asserts these stay equal to it.
+  termDiscounts: Object.fromEntries(
+    pricingRules.termRules.map(({ months, discount }) => [String(months), discount]),
+  ),
+  paymentPremiums: Object.fromEntries(
+    pricingRules.paymentRules.map(({ key, premium }) => [key, premium]),
+  ),
+  support: Object.fromEntries(
+    pricingRules.supportRules.map(({ key, percentOfPlatformArr, annualCap }) => [
+      key,
+      { percent: percentOfPlatformArr, cap: annualCap },
+    ]),
+  ),
+  onboardingAmounts: Object.fromEntries(
+    pricingRules.onboardingRules.map(({ key, oneTimeAmount }) => [key, oneTimeAmount]),
+  ),
+  // Indexed by the NUMBER of professional-services items, so it stays a dense array 0..5 rather
+  // than a keyed object -- professionalServicesAmounts[3] is the three-item bundle.
+  professionalServicesAmounts: pricingRules.professionalServicesRules.map(
+    ({ oneTimeAmount }) => oneTimeAmount,
+  ),
+  addOnAnnualAmounts: Object.fromEntries(
+    pricingRules.addOnRules.map(({ key, annualAmount }) => [key, annualAmount]),
+  ),
   productBandRates: Object.fromEntries(
     pricingRules.products.map(({ key, bands }) => [key, bands.map((band) => band[2])]),
   ),
@@ -116,6 +130,37 @@ const defaultSettings = () => ({
 
 // The tiers the card knows how to label. A tier it cannot label would render as a raw key on a
 // blocking banner, so an unknown one fails closed at save time rather than at quote time.
+// The product rate rows the Settings screen renders, DERIVED from pricingRules.
+//
+// The Settings page used to carry its own copy of this: seven product keys, seven labels and
+// every band boundary spelled out as a string ("0-500", "500-1K", ...). It happened to match, but
+// nothing kept it matching -- a band added or moved in pricingRules would have left the screen
+// labelling the wrong boundary over the right input, which is worse than an obvious error.
+//
+// Holly, 2026-08-31: nothing is hardcoded outside the settings and the product information itself.
+const compactVolume = (value) => {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return String(value);
+  if (n === 0) return '0';
+  if (n % 1_000_000 === 0) return `${n / 1_000_000}M`;
+  if (n >= 1_000_000) return `${Number((n / 1_000_000).toFixed(1))}M`;
+  if (n % 1_000 === 0) return `${n / 1_000}K`;
+  if (n >= 1_000) return `${Number((n / 1_000).toFixed(1))}K`;
+  return String(n);
+};
+
+// An open-ended last band reads "1.1M+"; every other band reads "from-to". Matches what the
+// screen showed before, so the change is invisible to whoever is looking at it.
+const bandLabel = ([from, to]) =>
+  to == null ? `${compactVolume(from)}+` : `${compactVolume(from)}\u2013${compactVolume(to)}`;
+
+const productRateDescriptors = () =>
+  pricingRules.products.map(({ key, name, unitOfMeasure, bands }) => ({
+    key,
+    label: unitOfMeasure ? `${name} \u2014 ${unitOfMeasure}` : name,
+    bands: bands.map(bandLabel),
+  }));
+
 const APPROVAL_TIERS = Object.freeze([
   'none',
   'sales_director',
@@ -243,6 +288,10 @@ const normalizePricingPolicy = (incoming) => {
       1_000_000_000,
       'minimumCommittedArr',
     ),
+    enforceMinimumCommittedArr:
+      typeof value.enforceMinimumCommittedArr === 'boolean'
+        ? value.enforceMinimumCommittedArr
+        : defaults.enforceMinimumCommittedArr,
     redliningMinimumArr: requireNumber(
       value.redliningMinimumArr ?? defaults.redliningMinimumArr,
       0,
@@ -590,6 +639,7 @@ module.exports = {
   APPROVAL_TIERS,
   QUOTE_KINDS,
   accountIdFromContext,
+  productRateDescriptors,
   dealCategory,
   defaultPricingPolicy,
   defaultSettings,

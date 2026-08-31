@@ -223,12 +223,42 @@ const compareProduct = (key, catalogEntry, hubspot) => {
       'hs_tier_ranges absent — either this portal has no tiered pricing (Revenue Hub) or the ' +
         'property was not requested',
     );
-    if (expectation.bands.length === 1 && !sameMoney(expectation.bands[0][2], row.hubspotPrice)) {
+
+    // A GRADUATED product's price is meant to be blank: the money is in the tier table, and a
+    // number here would be a second, contradictory answer.
+    if (expectation.pricingModel === 'graduated') {
+      if (row.hubspotPrice != null && row.hubspotPrice !== 0) {
+        row.disagreements.push({
+          field: 'price',
+          local: null,
+          hubspot: row.hubspotPrice,
+          detail: 'graduated product must not carry a flat unit price',
+        });
+      }
+      return row;
+    }
+
+    // Every banded product is checked against its ENTRY rate, not just the single-band ones.
+    //
+    // This used to be gated on `expectation.bands.length === 1`, so the twelve-band products were
+    // never price-checked at all and the report came back clean while three of them were wrong:
+    // Email + Calendar held $1.60 and Calendar-Only $1.20 -- their BAND TWO rates -- and Notetaker
+    // held $0.55, which is not any band. A check that cannot fail on the products most likely to
+    // drift is worse than no check, because it is read as an all-clear.
+    //
+    // The entry rate is the right expectation: this portal has no tier storage on products (see
+    // above), so the library can hold exactly one number, and the one that is true of a customer
+    // reading it is the rate at the bottom of the table.
+    const entryRate = expectation.bands[0][2];
+    if (!sameMoney(entryRate, row.hubspotPrice)) {
       row.disagreements.push({
         field: 'price',
-        local: expectation.bands[0][2],
+        local: entryRate,
         hubspot: row.hubspotPrice,
-        detail: 'single-rate product, unit price differs',
+        detail:
+          expectation.bands.length === 1
+            ? 'single-rate product, unit price differs'
+            : `banded product, unit price must be the entry rate (band 1 of ${expectation.bands.length})`,
       });
     }
     return row;

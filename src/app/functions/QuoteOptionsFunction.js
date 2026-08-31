@@ -7,6 +7,7 @@ const {
   accountIdFromContext,
   isDealAllowed,
   isSettingsAdmin,
+  productRateDescriptors,
   readDealPipelines,
   readSettings,
   saveSettings,
@@ -191,6 +192,29 @@ const discountReasonProperties = (discountReason) => {
 // "Accept without signature" on the quote. One of clickwrap | esignature | print_and_sign, per
 // HubSpot's Quotes guide. Named rather than inlined because it is a business choice, not a
 // mechanic: changing it changes what the customer is asked to do.
+// The quote's INTERNAL STATUS (hs_status, labelled "Internal quote status"). Values confirmed
+// against portal 45023718 on 2026-08-30 by reading the property definition, not from docs:
+// DRAFT, PENDING_APPROVAL, REJECTED, APPROVED, APPROVAL_NOT_NEEDED, ACCEPTED, VOID.
+//
+// The approval workflow enrols on hs_status changing to PENDING_APPROVAL, filtered to
+// CPQ_QUOTE templates. So the calculator has to SAY a quote needs approval; deciding it and
+// leaving the quote at DRAFT is what left the workflow with nothing to fire on.
+const QUOTE_STATUS_PENDING_APPROVAL = 'PENDING_APPROVAL';
+const QUOTE_STATUS_APPROVAL_NOT_NEEDED = 'APPROVAL_NOT_NEEDED';
+
+// Which superseded quotes "Replace the existing quote" may archive.
+//
+// Was DRAFT only, which was right while every quote the app made was DRAFT. Now that a locked
+// quote carries a real status, DRAFT-only would have silently stopped archiving anything --
+// the checkbox would look like it worked and do nothing. ACCEPTED and VOID are never touched:
+// one is a live agreement, the other is already terminal.
+const ARCHIVABLE_QUOTE_STATUSES = Object.freeze([
+  'DRAFT',
+  QUOTE_STATUS_PENDING_APPROVAL,
+  QUOTE_STATUS_APPROVAL_NOT_NEEDED,
+  'REJECTED',
+]);
+
 const QUOTE_ACCEPTANCE_METHOD = 'clickwrap';
 
 const MAX_OPTIONS = 10;
@@ -938,7 +962,12 @@ const HUBSPOT_LINE_ITEM_PROPERTIES = new Set([
   'hs_product_id',
   'quantity',
   'price',
-  'discount',
+  // A PERCENTAGE, not the flat `discount` amount this used to send. Holly, 2026-08-31: discounts
+  // are always expressed in %. `discount` is deliberately NOT in this list any more -- a line
+  // carrying both fields would have HubSpot apply one and the reader believe the other. Managed
+  // line items are recreated rather than updated on every sync, so no line survives with a stale
+  // flat amount on it. hs_discount_percentage is HubSpot-defined on line items in every portal.
+  'hs_discount_percentage',
   'description',
   // 'product_category' deliberately omitted: it is not a HubSpot-defined Line Item property, so
   // in a portal that never had it created every create fails with a 400 and the sync collapses.
@@ -1803,7 +1832,6 @@ const contractOptions = async (client, dealId) => {
       readStrategy: null,
       associatedCount: contractIds.length,
       objectPath: probe.path,
-      sawRecords: probe.sawRecords,
       dealAssociationType: fromDeal.associationType,
       companyAssociationType: fromCompany.associationType,
     };
@@ -2156,10 +2184,11 @@ const archiveSupersededQuote = async (client, supersededQuoteId, newQuoteId) => 
   try {
     const superseded = await client.crm.quotes.basicApi.getById(supersededQuoteId, ['hs_status']);
     const status = superseded?.properties?.hs_status;
-    if (status !== 'DRAFT') {
+    if (!ARCHIVABLE_QUOTE_STATUSES.includes(String(status))) {
       console.warn(
         `Nylas pricing: superseded quote ${supersededQuoteId} left in place -- status is ` +
-          `${status || 'unknown'}, not DRAFT.`,
+          `${status || 'unknown'}, which is not one of ` +
+          `${ARCHIVABLE_QUOTE_STATUSES.join(', ')}.`,
       );
       return null;
     }
@@ -2174,6 +2203,107 @@ const archiveSupersededQuote = async (client, supersededQuoteId, newQuoteId) => 
   }
 };
 
+// The "Deal with primary quote" association label.
+//
+// Holly, 2026-08-31: the newest quote has to be the Deal's primary quote, and it has to be re-set
+// on every refresh because regenerating the quote drops it.
+//
+// CONFIRMED AGAINST THE LIVE PORTAL, 2026-08-31: the label exists, associationTypeId 1392,
+// category HUBSPOT_DEFINED. It is still DISCOVERED by name rather than hardcoded -- guessing an id
+// is exactly how the contracts read burned four rounds on 2026-08-30 -- but the id above is what a
+// working portal answered, so a lookup that finds nothing is a real signal and not a mystery.
+//
+// A DRAFT QUOTE CANNOT BE PRIMARY. HubSpot's own documentation: a primary quote is "the published
+// or accepted quote associated with a deal that updates the deal amount and line items", and draft
+// quotes are explicitly ineligible. The live API agrees -- setting the label on draft quote
+// 42569430708 was refused with "Quote ... is not eligible to become primary for deal ...".
+//
+// This app creates DRAFT quotes, so the attempt below is EXPECTED to fail at Lock in time, and
+// that is not an error worth alarming anyone about. It is attempted anyway rather than skipped,
+// because a quote that IS already published (a re-lock on an approved quote) should get the flag,
+// and because the eligibility rule is HubSpot's to change, not ours to hardcode. What matters is
+// that the card says precisely which of the two happened.
+//
+// Read once per invocation and cached: the schema does not change inside a single Lock in.
+let primaryQuoteLabelCache;
+
+const primaryQuoteAssociationType = async (client) => {
+  if (primaryQuoteLabelCache !== undefined) return primaryQuoteLabelCache;
+  try {
+    const schema = await client.crm.associations.v4.schema.definitionsApi.getAll('quotes', 'deals');
+    const definitions = schema?.results || [];
+    // Matched on the LABEL, not on a position in the list. "primary" is the load-bearing word;
+    // the portal is free to call it "Primary quote" or "Deal with primary quote".
+    const match = definitions.find((entry) => /primary/i.test(String(entry?.label || '')));
+    if (!match) {
+      console.warn(
+        'Nylas pricing: no primary-quote association label exists on quotes -> deals. ' +
+          `Labels available: [${definitions.map((e) => e?.label || e?.typeId).join(', ')}]. ` +
+          'Create one in HubSpot association settings and the next Lock in will apply it.',
+      );
+      primaryQuoteLabelCache = null;
+      return primaryQuoteLabelCache;
+    }
+    primaryQuoteLabelCache = {
+      typeId: match.typeId,
+      label: match.label,
+      category: match.category || 'USER_DEFINED',
+    };
+    console.info(
+      `Nylas pricing: primary-quote label resolved -- "${match.label}" ` +
+        `typeId=${match.typeId} category=${primaryQuoteLabelCache.category}`,
+    );
+    return primaryQuoteLabelCache;
+  } catch (error) {
+    console.warn(
+      'Nylas pricing: could not read the quotes -> deals association labels. ' +
+        `${String(error?.body?.message || error?.message || error)}`,
+    );
+    primaryQuoteLabelCache = null;
+    return primaryQuoteLabelCache;
+  }
+};
+
+// NEVER FAILS THE LOCK. The quote exists and the pricing is right by the time this runs; a missing
+// primary flag is untidy, and throwing away a lock the rep has already committed is not a fix.
+const markAsPrimaryQuote = async (client, quoteId, dealId) => {
+  const labelType = await primaryQuoteAssociationType(client);
+  if (!labelType) return { applied: false, label: null, reason: 'no primary-quote label' };
+  try {
+    // The label is ADDED to the association that already exists (type 64 above). HubSpot keeps
+    // the default association and the labelled one together on the same pair, so this does not
+    // replace the plain deal link.
+    await client.crm.associations.v4.basicApi.create('quotes', String(quoteId), 'deals', String(dealId), [
+      { associationCategory: labelType.category, associationTypeId: labelType.typeId },
+    ]);
+    console.info(
+      `Nylas pricing: quote ${quoteId} marked as the primary quote on deal ${dealId}.`,
+    );
+    return { applied: true, label: labelType.label, reason: null };
+  } catch (error) {
+    const detail = String(error?.body?.message || error?.message || error);
+    // Told apart from a real failure. "Not eligible" is HubSpot enforcing its own rule on a draft,
+    // which is the normal path at Lock in; anything else is a problem worth looking at.
+    const ineligible = /not eligible to become primary/i.test(detail);
+    if (ineligible) {
+      console.info(
+        `Nylas pricing: quote ${quoteId} is a draft, so HubSpot will not make it the primary ` +
+          `quote on deal ${dealId} yet. It becomes eligible when the quote is published.`,
+      );
+    } else {
+      console.warn(
+        `Nylas pricing: could not mark quote ${quoteId} primary on deal ${dealId}. ${detail}`,
+      );
+    }
+    return {
+      applied: false,
+      label: labelType.label,
+      ineligible,
+      reason: detail,
+    };
+  }
+};
+
 const generateQuote = async (client, dealId, state, parameters, portalId, settings) => {
   const option = selectedOptionForDraft(state);
   assertCurrentSettings(option, settings);
@@ -2185,10 +2315,18 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
       state.dealName,
     ) || `${state.dealName} – ${option.name}`,
   );
-  // The rep's choice wins; the configured default covers anyone who does not pick.
-  // Settings' default for THIS FLOW, then the secret. The card normally sends an explicit
-  // templateId, so this matters when it sends none -- a configuration restored from before the
-  // picker existed.
+  // Does this quote need approval? The calculator already decided; this only reports the decision
+  // onto the quote so HubSpot's approval workflow -- which enrols on hs_status becoming
+  // PENDING_APPROVAL, filtered to CPQ_QUOTE templates -- has something to fire on. Deciding it and
+  // leaving the quote at DRAFT is why that workflow never ran.
+  //
+  // approvalTierRequired is the single source: 'none' means nobody has to sign off. The tier itself
+  // is already on the Deal as pricing_approval_tier_required, so this adds no judgement of its own.
+  const needsApproval = String(option.result?.approvalTierRequired || 'none') !== 'none';
+  const desiredQuoteStatus = needsApproval
+    ? QUOTE_STATUS_PENDING_APPROVAL
+    : QUOTE_STATUS_APPROVAL_NOT_NEEDED;
+
   const category = dealCategory(settings, state.dealType, state.pipelineId);
   // The default is the category's first kind's default -- there is no separate Quote Type to read
   // a default from any more. The card normally sends an explicit templateId, so this only matters
@@ -2267,10 +2405,21 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
   // Said out loud, because three rounds went by with a blank Seller block and no way to tell WHICH
   // step produced nothing -- an ownerless Deal, an unreadable owner, or the right properties on the
   // wrong quote model. `hs project logs` now answers that in one line.
+  //
+  // THE SELLER IS THE DEAL OWNER. Always, with no fallback.
+  //
+  // A fallback to the rep who clicked Lock in was written on 2026-08-31 and removed the same day.
+  // Holly: "It needs to use the actual deal owner, not just me. It should be whoever is the deal
+  // owner." She is right, and the reasoning behind the fallback was wrong: a quote is a
+  // customer-facing document, and printing the WRONG person as the seller is worse than printing
+  // nobody. A blank Seller block is visibly broken and gets fixed; a plausible wrong name does not.
+  //
+  // So an ownerless Deal produces an ownerless quote, loudly. The fix for that is to give the Deal
+  // an owner, which the card now says in as many words.
   if (!dealOwnerId) {
     console.warn(
       `Nylas pricing: deal ${dealId} has no hubspot_owner_id. The quote will carry no owner and ` +
-        'no Seller contact.',
+        'no Seller contact. Set an owner on the Deal -- the seller is never substituted.',
     );
   }
 
@@ -2278,7 +2427,7 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
   // half-made quote behind. senderProperties never throws, so this is belt and braces.
   const sender = await senderProperties(client, dealOwnerId);
   console.info(
-    `Nylas pricing: quote seller resolved -- owner=${dealOwnerId || 'NONE'} ` +
+    `Nylas pricing: quote seller resolved -- deal owner=${dealOwnerId || 'NONE'} ` +
       `fields=[${Object.keys(sender).join(', ') || 'NONE'}]`,
   );
 
@@ -2353,6 +2502,11 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
         // clickwrap is "accept without signature": it renders an accept button and, unlike the
         // other two, does not require a signer contact associated to the quote.
         hs_acceptance_method: QUOTE_ACCEPTANCE_METHOD,
+        // Set on CREATE deliberately, not by a later update. An update to a live quote
+        // REVALIDATES the whole thing, and that is the call that failed with a template-type
+        // complaint the last time this property was written (see the read-back below). Creating
+        // with it avoids that path; the read-back repairs it if HubSpot drops it.
+        hs_status: desiredQuoteStatus,
       },
       associations: [],
     });
@@ -2365,6 +2519,10 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
     await client.crm.associations.v4.basicApi.create('quotes', String(quote.id), 'deals', dealId, [
       { associationCategory: 'HUBSPOT_DEFINED', associationTypeId: 64 },
     ]);
+    // Applied on EVERY Lock in, not only the first. Regenerating the quote leaves the label on the
+    // old one, so the Deal's primary quote silently goes stale -- Holly, 2026-08-31: "that got
+    // deleted", "I need it to refresh again".
+    const primaryQuote = await markAsPrimaryQuote(client, quote.id, dealId);
     await client.crm.associations.v4.basicApi.create(
       'quotes',
       String(quote.id),
@@ -2520,6 +2678,35 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
     // values are not on it, they are written a second time as an update. A create that silently
     // ignores a property and an update that accepts it is a real HubSpot pattern, and this costs
     // one call to find out instead of another round trip.
+    // Did the status stick? Same reasoning as the Seller block below: HubSpot silently ignoring a
+    // property on create and accepting it on update is a real pattern here, and the whole point of
+    // this field is that a workflow watches it. A quote that needed approval and came out DRAFT
+    // would sit there with nobody asked to look at it.
+    let quoteStatus = finalized?.properties?.hs_status || '';
+    let quoteStatusRepaired = false;
+    if (quoteStatus !== desiredQuoteStatus) {
+      console.warn(
+        `Nylas pricing: quote ${quote.id} came out of the create as "${quoteStatus || 'unset'}" ` +
+          `rather than ${desiredQuoteStatus}. Setting it now.`,
+      );
+      try {
+        await client.crm.quotes.basicApi.update(String(quote.id), {
+          properties: { hs_status: desiredQuoteStatus },
+        });
+        const after = await client.crm.quotes.basicApi.getById(String(quote.id), ['hs_status']);
+        quoteStatus = after?.properties?.hs_status || quoteStatus;
+        quoteStatusRepaired = quoteStatus === desiredQuoteStatus;
+      } catch (error) {
+        // Never fatal. The quote exists and the pricing is right; what is lost is the workflow
+        // trigger, and saying so beats throwing away a lock the rep has already committed.
+        console.error(
+          `Nylas pricing: could not set hs_status on quote ${quote.id}. The approval workflow ` +
+            `will not enrol it. ${String(error?.body?.message || error?.message || error)}`,
+          safeProviderDiagnostics(error, 'set_quote_status'),
+        );
+      }
+    }
+
     const senderMissing = Object.entries(sender).filter(
       ([name]) => !finalized?.properties?.[name],
     );
@@ -2582,6 +2769,10 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
         keptOnCreate: Object.keys(sender).filter((name) => Boolean(finalized?.properties?.[name])),
         repaired: senderRepaired,
       },
+      // Reported for the same reason as the Seller block: a primary flag that silently did not
+      // apply is indistinguishable from one that did, and this is the third time a quietly-skipped
+      // write has cost a round trip.
+      primaryQuote,
       quoteId: String(quote.id),
       quoteUrl,
       generatedAt,
@@ -2592,6 +2783,13 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
       // not attach" is exactly the silent half-success section 3 warns about.
       contractId: contractId || null,
       contractAssociated,
+      // What the Internal quote status actually ended up as, and whether it took a second write.
+      // The card prints it: this is the field the approval workflow watches, so a silent failure
+      // here means an approval nobody is asked for.
+      quoteStatus,
+      quoteStatusExpected: desiredQuoteStatus,
+      quoteStatusRepaired,
+      needsApproval,
     };
   } catch (error) {
     // Archive the quote's own line items before the quote, so a failed attempt leaves nothing
@@ -2654,6 +2852,9 @@ exports.main = async (context) => {
         // The FULL list, not the narrowed one: this is the screen where the narrowing is chosen,
         // so it has to show every template the portal has.
         quoteTemplates: await usableQuoteTemplates(getClient()),
+        // The product rows and band labels, derived from pricingRules. The Settings screen used to
+        // carry its own copy of all seven products and every band boundary as a literal string.
+        productRates: productRateDescriptors(),
       });
     }
     if (action === 'update_settings') {

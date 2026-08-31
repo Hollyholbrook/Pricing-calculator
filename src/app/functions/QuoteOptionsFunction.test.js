@@ -670,14 +670,29 @@ test('the superseded draft quote is archived', async () => {
   assert.deepEqual(archived, ['111']);
 });
 
-test('a published or viewed quote is never archived', async () => {
-  // Every status that is not DRAFT must survive, including ones this code does not know about --
-  // the test is positive for DRAFT so a status HubSpot adds later fails safe.
-  for (const status of ['APPROVED', 'PENDING_APPROVAL', 'REJECTED', 'EXPIRED', 'SOMETHING_NEW', undefined]) {
+test('an accepted, live or unknown quote is never archived', async () => {
+  // Anything not on the archivable list must survive, INCLUDING statuses this code does not know
+  // about, so a value HubSpot adds later fails safe. The list is an allowlist for exactly that
+  // reason -- a denylist would archive tomorrow's new status by default.
+  for (const status of ['ACCEPTED', 'VOID', 'APPROVED', 'EXPIRED', 'SOMETHING_NEW', undefined]) {
     const { client, archived } = quoteClient(status);
     const result = await _test.archiveSupersededQuote(client, '111', '222');
     assert.equal(result, null, `status ${status} must not be archived`);
     assert.deepEqual(archived, [], `status ${status} must not be archived`);
+  }
+});
+
+// Widened 2026-08-30, and it had to be. Locked quotes now carry a real status, so DRAFT-only
+// would have quietly stopped "Replace the existing quote" archiving anything at all -- the
+// checkbox would look like it worked and do nothing.
+//
+// ACCEPTED is a live agreement and VOID is already terminal; neither is ours to archive.
+test('a superseded quote awaiting or clear of approval is archived', async () => {
+  for (const status of ['DRAFT', 'PENDING_APPROVAL', 'APPROVAL_NOT_NEEDED', 'REJECTED']) {
+    const { client, archived } = quoteClient(status);
+    const result = await _test.archiveSupersededQuote(client, '111', '222');
+    assert.equal(result, '111', `status ${status} must be archived`);
+    assert.deepEqual(archived, ['111'], `status ${status} must be archived`);
   }
 });
 
@@ -693,6 +708,51 @@ test('a failed archive does not fail the Lock in', async () => {
   // Resolves rather than throwing: the new quote and the Deal are already correct at this point,
   // and a leftover draft is untidy rather than wrong.
   assert.equal(await _test.archiveSupersededQuote(client, '111', '222'), null);
+});
+
+// THE APPROVAL HANDOFF. HubSpot's approval workflow enrols on hs_status becoming
+// PENDING_APPROVAL, filtered to CPQ_QUOTE templates. The calculator already decides whether a
+// quote needs approval; before this it kept that to itself and left the quote at DRAFT, so the
+// workflow had nothing to fire on.
+//
+// Values confirmed against portal 45023718 by reading the property definition, not from docs:
+// DRAFT, PENDING_APPROVAL, REJECTED, APPROVED, APPROVAL_NOT_NEEDED, ACCEPTED, VOID.
+test('the quote status reports whether approval is required', () => {
+  const source = require('node:fs').readFileSync(
+    require('node:path').join(__dirname, 'QuoteOptionsFunction.js'),
+    'utf8',
+  );
+  // Exactly the portal's spellings. A near-miss here is an invalid enum value, which is what
+  // emptied a Deal on 2026-08-28 when `units` was sent.
+  assert.match(source, /const QUOTE_STATUS_PENDING_APPROVAL = 'PENDING_APPROVAL';/);
+  assert.match(source, /const QUOTE_STATUS_APPROVAL_NOT_NEEDED = 'APPROVAL_NOT_NEEDED';/);
+
+  // Driven off approvalTierRequired, the calculator's own answer -- not a second judgement.
+  assert.match(
+    source,
+    /const needsApproval =\s*\n?\s*String\(option\.result\?\.approvalTierRequired \|\| 'none'\) !== 'none';/,
+  );
+  assert.match(
+    source,
+    /needsApproval\s*\n?\s*\? QUOTE_STATUS_PENDING_APPROVAL\s*\n?\s*: QUOTE_STATUS_APPROVAL_NOT_NEEDED/,
+  );
+
+  // On the CREATE call, not a later update. An update revalidates the whole quote, and that is
+  // the call that failed with a template-type complaint the last time this property was written.
+  const create = source.match(
+    /quote = await client\.crm\.quotes\.basicApi\.create\(\{([\s\S]*?)\n      \},/,
+  );
+  assert.ok(create, 'the quote create call must be findable');
+  assert.match(create[1], /hs_status: desiredQuoteStatus,/);
+
+  // Read back and repaired if HubSpot drops it -- the same pattern as the Seller block, and for
+  // the same reason: a workflow watches this field, so silently missing it means an approval
+  // nobody is asked for.
+  assert.match(source, /if \(quoteStatus !== desiredQuoteStatus\) \{/);
+  assert.match(source, /quoteStatusRepaired = quoteStatus === desiredQuoteStatus;/);
+  // ...and never fatal: the pricing is already correct and committed by this point.
+  const repair = source.slice(source.indexOf('if (quoteStatus !== desiredQuoteStatus)'));
+  assert.match(repair.slice(0, 1400), /catch \(error\) \{[\s\S]*?console\.error\(/);
 });
 
 // The quote is created with the deal owner as seller, and set to accept without a signature.

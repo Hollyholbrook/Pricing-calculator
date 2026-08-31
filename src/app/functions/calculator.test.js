@@ -9,6 +9,8 @@ const {
   normalizeStoredInput,
   round,
 } = require('./calculator');
+const pricingRules = require('./pricingRules');
+const { defaultSettings } = require('./appSettings');
 
 const goldenTests = require(path.resolve(
   __dirname,
@@ -827,14 +829,96 @@ test('new business still uses the size ladder', () => {
   );
 });
 
+// Holly, 2026-08-31: "Just disable the arr minumum."
+//
+// The threshold itself is deliberately KEPT at $25,000 -- the workbook states it, and deleting the
+// number would make re-enabling the rule a guess. This asserts the switch, not the number.
+test('the Enterprise ARR minimum is disabled', () => {
+  const tiny = renewalInput({ volumes: { ...renewalInput().volumes, connect_ca: 10 } });
+
+  // The rate card alone, and the default settings policy, must agree -- otherwise the rule is off
+  // in one path and on in the other, which is how a rep and the Deal end up disagreeing.
+  for (const [label, policy] of [
+    ['rate card', {}],
+    ['default settings policy', defaultSettings().pricingPolicy],
+  ]) {
+    const quote = calculateQuote(tiny, policy, 0, 'new_business');
+    assert.ok(
+      quote.committedArr < pricingRules.minimumCommittedArr,
+      `${label}: the fixture must actually be under the minimum or this proves nothing`,
+    );
+    assert.equal(
+      quote.blockingReasons.includes('BELOW_ENTERPRISE_MINIMUM'),
+      false,
+      `${label}: a small deal must not be blocked`,
+    );
+    assert.equal(
+      quote.approvalReasons.some((reason) => /Enterprise minimum/.test(reason)),
+      false,
+      `${label}: and must not be escalated for it either`,
+    );
+    // approvalStatus is the legacy guardrail list, joined. It writes to the Deal, so it has to
+    // agree with the approval ladder or the record contradicts the card.
+    assert.equal(
+      /FINANCE_APPROVAL_BELOW_MINIMUM/.test(quote.approvalStatus),
+      false,
+      `${label}: the legacy guardrail list must agree with the approval ladder`,
+    );
+  }
+
+  // The threshold survives being switched off, so turning it back on needs one checkbox.
+  assert.equal(pricingRules.minimumCommittedArr, 25_000);
+  assert.equal(defaultSettings().pricingPolicy.minimumCommittedArr, 25_000);
+});
+
+// The switch has to work in BOTH directions, or "disabled" is indistinguishable from "removed".
+test('the ARR minimum can be switched back on', () => {
+  const tiny = renewalInput({ volumes: { ...renewalInput().volumes, connect_ca: 10 } });
+
+  const on = calculateQuote(tiny, { enforceMinimumCommittedArr: true }, 0, 'new_business');
+  assert.ok(
+    on.blockingReasons.includes('BELOW_ENTERPRISE_MINIMUM'),
+    'switching it on must block a deal under the threshold',
+  );
+  assert.ok(
+    on.approvalReasons.some((reason) => /\$25,000 Enterprise minimum/.test(reason)),
+    'and must say which threshold it failed',
+  );
+  assert.ok(/FINANCE_APPROVAL_BELOW_MINIMUM/.test(on.approvalStatus));
+
+  // The threshold is still the one that decides, once the rule is on: raise it and a deal that
+  // cleared it stops clearing it.
+  const comfortable = renewalInput();
+  assert.deepEqual(
+    calculateQuote(comfortable, { enforceMinimumCommittedArr: true }, 0, 'new_business')
+      .blockingReasons,
+    [],
+    'a deal above the threshold is fine with the rule on',
+  );
+  assert.ok(
+    calculateQuote(
+      comfortable,
+      { enforceMinimumCommittedArr: true, minimumCommittedArr: 10_000_000 },
+      0,
+      'new_business',
+    ).blockingReasons.includes('BELOW_ENTERPRISE_MINIMUM'),
+    'and is blocked once the threshold is raised above it',
+  );
+});
+
 test('renewals skip the non-discount approvals that block new business', () => {
   // Far below the $25,000 Enterprise minimum. On new business this BLOCKS Lock in; a renewal is
   // expected to come in under it, so leaving that on would refuse every small renewal outright.
+  //
+  // The minimum is DISABLED by default (Holly, 2026-08-31), so it is switched on explicitly here.
+  // The renewal relaxation is what this test is about, and it still has to work for whoever turns
+  // the rule back on -- testing it against the disabled default would prove nothing.
+  const enforcing = { enforceMinimumCommittedArr: true };
   const small = renewalInput({ volumes: { ...renewalInput().volumes, connect_ca: 10 } });
-  const asNew = calculateQuote(small, {}, 0, 'new_business');
+  const asNew = calculateQuote(small, enforcing, 0, 'new_business');
   assert.ok(asNew.blockingReasons.includes('BELOW_ENTERPRISE_MINIMUM'));
 
-  const asRenewal = calculateQuote(small, {}, 0, 'renewal');
+  const asRenewal = calculateQuote(small, enforcing, 0, 'renewal');
   assert.deepEqual(asRenewal.blockingReasons, [], 'a small renewal must not be blocked');
   assert.equal(asRenewal.approvalTierRequired, 'none');
 
