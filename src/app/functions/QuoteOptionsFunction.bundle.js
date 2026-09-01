@@ -1053,66 +1053,6 @@ var require_lineItemModel = __commonJS({
       ...item,
       properties: { ...item.properties, hs_position_on_quote: String(index) }
     }));
-    var configuredProductId = (itemKey, configuration) => {
-      if (!configuration) return null;
-      if (itemKey.startsWith("metered:")) {
-        return configuration.products?.[itemKey.slice("metered:".length)]?.productId || null;
-      }
-      if (itemKey.startsWith("support:")) {
-        return configuration.options?.support?.[itemKey.slice("support:".length)]?.productId || null;
-      }
-      if (itemKey.startsWith("addon:")) {
-        return configuration.options?.addOns?.[itemKey.slice("addon:".length)]?.productId || null;
-      }
-      if (itemKey.startsWith("onboarding:")) {
-        return configuration.options?.onboarding?.[itemKey.slice("onboarding:".length)]?.productId || null;
-      }
-      if (itemKey.startsWith("professional_service:")) {
-        return configuration.options?.professionalServices?.[itemKey.slice("professional_service:".length)]?.productId || null;
-      }
-      if (itemKey.startsWith("subscription:")) {
-        return configuration.hubspotMappings?.products?.enterprise || null;
-      }
-      return null;
-    };
-    var applyCatalogConfiguration = (items, configuration) => {
-      if (!configuration) return items;
-      const lineItemMappings = configuration.hubspotMappings?.lineItemProperties || {};
-      const propertyRenames = {
-        committed_quantity: lineItemMappings.committedQuantity,
-        proposed_rate: lineItemMappings.proposedRate,
-        one_time_fees: lineItemMappings.oneTimeFees,
-        recurring_fees: lineItemMappings.recurringFees,
-        total_fees_for_term: lineItemMappings.totalFeesForTerm
-      };
-      const configured = items.map((item, originalIndex) => {
-        const properties = { ...item.properties };
-        const productId = configuredProductId(item.key, configuration);
-        if (productId) properties.hs_product_id = productId;
-        for (const [from, to] of Object.entries(propertyRenames)) {
-          if (to && to !== from && properties[from] != null) {
-            properties[to] = properties[from];
-            delete properties[from];
-          }
-        }
-        const productKey = item.key.startsWith("metered:") ? item.key.slice("metered:".length) : null;
-        return {
-          ...item,
-          properties,
-          _configuredOrder: productKey ? configuration.products?.[productKey]?.order ?? 1e4 : null,
-          _originalIndex: originalIndex
-        };
-      });
-      configured.sort((left, right) => {
-        if (left._configuredOrder == null || right._configuredOrder == null) {
-          return left._originalIndex - right._originalIndex;
-        }
-        return left._configuredOrder - right._configuredOrder;
-      });
-      return withPositions(
-        configured.map(({ _configuredOrder, _originalIndex, ...item }) => item)
-      );
-    };
     var FEE_TOTAL_PROPERTIES = Object.freeze({
       oneTime: "one_time_fees",
       // The per-BILLING-PERIOD amount, not the annualised one: it sits on a record that already
@@ -1528,7 +1468,7 @@ var require_lineItemModel = __commonJS({
         };
       });
     };
-    var buildLineItems = (option, { source, presentation = "itemized_products", catalogConfiguration }) => {
+    var buildLineItems = (option, { source, presentation = "itemized_products" }) => {
       if (!option?.id || !option?.input || !option?.result?.stateHash) {
         throw new Error("OPTION_REQUIRED");
       }
@@ -1536,7 +1476,7 @@ var require_lineItemModel = __commonJS({
         buildSubscriptionSummaryLine(option, source),
         ...presentation === "subscription_summary" ? [] : buildMeteredLines(option, source)
       ];
-      return applyCatalogConfiguration(withFeeTotals(
+      return withFeeTotals(
         withPositions([
           ...subscriptionLines,
           ...buildSupportLine(option, source),
@@ -1545,9 +1485,9 @@ var require_lineItemModel = __commonJS({
           ...buildProfessionalServiceLines(option, source)
         ]),
         option
-      ), catalogConfiguration);
+      );
     };
-    var buildDealLineItems2 = (option, catalogConfiguration) => applyCatalogConfiguration(withFeeTotals(
+    var buildDealLineItems2 = (option) => withFeeTotals(
       withPositions([
         buildDealBundleLine(option),
         ...buildMeteredLines(option, "deal"),
@@ -1557,11 +1497,10 @@ var require_lineItemModel = __commonJS({
         ...buildProfessionalServiceLines(option, "deal")
       ]),
       option
-    ), catalogConfiguration);
-    var buildQuoteLineItems2 = (option, content, catalogConfiguration) => buildLineItems(option, {
+    );
+    var buildQuoteLineItems2 = (option, content) => buildLineItems(option, {
       source: "quote",
-      presentation: content.presentation,
-      catalogConfiguration
+      presentation: content.presentation
     });
     var contentHash2 = (option, content) => crypto2.createHash("sha256").update(JSON.stringify({ optionId: option.id, stateHash: option.result.stateHash, content })).digest("hex");
     module2.exports = {
@@ -1854,153 +1793,11 @@ var require_productLibrary = __commonJS({
   }
 });
 
-// configurationDefaults.js
-var require_configurationDefaults = __commonJS({
-  "configurationDefaults.js"(exports2, module2) {
-    var pricingRules = require_pricingRules();
-    var DEFAULT_PRODUCT_PRESENTATION = Object.freeze({
-      connect_ca: Object.freeze({
-        enabled: true,
-        order: 10,
-        section: "Connect",
-        name: "Email + Calendar",
-        description: "Connected accounts",
-        inputUnit: "CA/month",
-        productId: "45820463620"
-      }),
-      calendar_ca: Object.freeze({
-        enabled: true,
-        order: 20,
-        section: "Connect",
-        name: "Calendar Only",
-        description: "Calendar-only accounts",
-        inputUnit: "calendars/month",
-        productId: "45887560099"
-      }),
-      notetaker_bot_hours: Object.freeze({
-        enabled: true,
-        order: 30,
-        section: "Notetaker",
-        name: "Notetaker",
-        description: "Bot hours",
-        inputUnit: "bot hours/month",
-        productId: "45816248707"
-      }),
-      agent_accounts: Object.freeze({
-        enabled: true,
-        order: 40,
-        section: "Agent Accounts",
-        name: "Agent Accounts",
-        description: "Agent accounts",
-        inputUnit: "accounts/month",
-        productId: "45816248710"
-      }),
-      agent_storage_gb: Object.freeze({
-        enabled: true,
-        order: 50,
-        section: "Agent Accounts",
-        name: "Agent Data Storage",
-        description: "Storage",
-        inputUnit: "GB/month",
-        productId: "45820463625"
-      }),
-      agent_bandwidth_gb: Object.freeze({
-        enabled: true,
-        order: 60,
-        section: "Agent Accounts",
-        name: "Agent Bandwidth",
-        description: "Bandwidth",
-        inputUnit: "GB/month",
-        productId: "45820401689"
-      }),
-      agent_email_thousands: Object.freeze({
-        enabled: true,
-        order: 70,
-        section: "Agent Accounts",
-        name: "Agent Email",
-        description: "Emails in thousands",
-        inputUnit: "1,000 emails",
-        productId: "45867076721"
-      })
-    });
-    var option = (enabled, order, name, description, productId) => Object.freeze({ enabled, order, name, description, productId });
-    var DEFAULT_OPTION_PRESENTATION = Object.freeze({
-      support: Object.freeze({
-        basic: option(true, 10, "Basic", "Included support", "40270989858"),
-        full: option(true, 20, "Full", "Full support", "41648477792"),
-        premium: option(true, 30, "Premium", "Premium support", "41732581464")
-      }),
-      onboarding: Object.freeze({
-        none: option(true, 0, "None", "No onboarding package", ""),
-        quick_launch: option(true, 10, "Quick Launch", "QuickLaunch onboarding", "42724377715"),
-        quick_launch_plus: option(true, 20, "Quick Launch Plus", "QuickLaunch+ onboarding", "42724501576"),
-        strategic: option(true, 30, "Strategic Onboarding", "Strategic onboarding", "42724439648")
-      }),
-      addOns: Object.freeze({
-        shared_oauth_app: option(true, 10, "Shared OAuth App", "Shared Google OAuth application", "34548719650"),
-        privacy_filter: option(true, 20, "Privacy Filter Mode", "Privacy Filter Mode", "46060960674"),
-        verified_oauth: option(true, 30, "Turnkey Verified OAuth Projects", "Verified OAuth project services", "46047848295"),
-        enterprise_accelerator: option(false, 90, "Enterprise Accelerator Package", "Retired; retained for saved quotes", "46102266003")
-      }),
-      professionalServices: Object.freeze({
-        google_verification_review: option(true, 10, "Google Verification Review", "Google verification review", "42870472964"),
-        architecture_workflow_review: option(true, 20, "Architecture Design & Workflow Review", "Architecture and workflow review", "42870349120"),
-        gtm_review: option(true, 30, "Go-to-Market Review", "Go-to-market review", "42870410889"),
-        provider_oauth_app_creation: option(true, 40, "Provider OAuth App Creation", "Provider OAuth application creation", "42870596743"),
-        notification_webhook_best_practices: option(true, 50, "Notification & Webhook Best Practices", "Notification and webhook best practices", "42870410890")
-      })
-    });
-    var DEFAULT_HUBSPOT_MAPPINGS = Object.freeze({
-      products: Object.freeze({
-        enterprise: "46037350773"
-      }),
-      dealProperties: Object.freeze({
-        optionsPayload: "pricing_quote_options_payload",
-        selectedOptionId: "pricing_selected_option_id",
-        selectedOptionName: "pricing_selected_option_name",
-        paymentMethod: "payment_method",
-        paymentFrequency: "payment_frequency",
-        autoRenewal: "auto_renewal__c",
-        contractTermMonths: "contract_term__months_"
-      }),
-      lineItemProperties: Object.freeze({
-        committedQuantity: "committed_quantity",
-        proposedRate: "proposed_rate",
-        oneTimeFees: "one_time_fees",
-        recurringFees: "recurring_fees",
-        totalFeesForTerm: "total_fees_for_term"
-      })
-    });
-    var clone = (value) => JSON.parse(JSON.stringify(value));
-    var defaultCatalogConfiguration = () => ({
-      products: clone(DEFAULT_PRODUCT_PRESENTATION),
-      options: clone(DEFAULT_OPTION_PRESENTATION),
-      contractTerms: Object.fromEntries(
-        pricingRules.termRules.map(({ months }) => [
-          String(months),
-          { enabled: true, order: months, label: `${months} months` }
-        ])
-      ),
-      paymentOptions: Object.fromEntries(
-        pricingRules.paymentRules.map(({ key, label }, index) => [
-          key,
-          { enabled: true, order: (index + 1) * 10, label }
-        ])
-      ),
-      hubspotMappings: clone(DEFAULT_HUBSPOT_MAPPINGS)
-    });
-    module2.exports = {
-      defaultCatalogConfiguration
-    };
-  }
-});
-
 // appSettings.js
 var require_appSettings = __commonJS({
   "appSettings.js"(exports2, module2) {
     var crypto2 = require("node:crypto");
     var pricingRules = require_pricingRules();
-    var { defaultCatalogConfiguration } = require_configurationDefaults();
     var CONFIGURATION_KEY = "default";
     var OBJECT_NAME = "nylas_pricing_configuration";
     var MAX_PIPELINES = 30;
@@ -2086,7 +1883,7 @@ var require_appSettings = __commonJS({
       )
     });
     var defaultSettings = () => ({
-      schemaVersion: "1.1",
+      schemaVersion: "1.0",
       version: 0,
       allowNewBusiness: true,
       allowRenewals: false,
@@ -2123,8 +1920,7 @@ var require_appSettings = __commonJS({
       // existed. Empty falls back to the QUOTE_TEMPLATE_ID secret, as it always did.
       enabledQuoteTemplateIds: [],
       defaultQuoteTemplateId: "",
-      pricingPolicy: defaultPricingPolicy(),
-      catalogConfiguration: defaultCatalogConfiguration()
+      pricingPolicy: defaultPricingPolicy()
     });
     var compactVolume = (value) => {
       const n = Number(value);
@@ -2205,129 +2001,6 @@ var require_appSettings = __commonJS({
         throw new Error(`INVALID_SETTINGS:${field}`);
       }
       return Math.round((value + Number.EPSILON) * 1e6) / 1e6;
-    };
-    var requireText = (value, min, max, field) => {
-      if (typeof value !== "string") throw new Error(`INVALID_SETTINGS:${field}`);
-      const text = value.trim();
-      if (text.length < min || text.length > max) throw new Error(`INVALID_SETTINGS:${field}`);
-      return text;
-    };
-    var requireProductId = (value, field, allowBlank = false) => {
-      const id = String(value ?? "");
-      if (allowBlank && id === "") return "";
-      if (!/^\d{1,20}$/.test(id)) throw new Error(`INVALID_SETTINGS:${field}`);
-      return id;
-    };
-    var requirePropertyName = (value, field) => {
-      const name = String(value ?? "");
-      if (!/^[A-Za-z][A-Za-z0-9_]{0,99}$/.test(name)) {
-        throw new Error(`INVALID_SETTINGS:${field}`);
-      }
-      return name;
-    };
-    var normalizeDisplayEntry = (incoming, defaults, field, { productId = true } = {}) => {
-      const value = incoming && typeof incoming === "object" && !Array.isArray(incoming) ? incoming : defaults;
-      return {
-        enabled: typeof value.enabled === "boolean" ? value.enabled : defaults.enabled,
-        order: requireNumber(value.order ?? defaults.order, 0, 1e4, `${field}.order`),
-        name: requireText(value.name ?? defaults.name, 1, 120, `${field}.name`),
-        description: requireText(
-          value.description ?? defaults.description,
-          0,
-          500,
-          `${field}.description`
-        ),
-        ...productId ? {
-          productId: requireProductId(
-            value.productId ?? defaults.productId,
-            `${field}.productId`,
-            defaults.productId === ""
-          )
-        } : {}
-      };
-    };
-    var normalizeCatalogConfiguration = (incoming) => {
-      const defaults = defaultCatalogConfiguration();
-      const value = incoming && typeof incoming === "object" && !Array.isArray(incoming) ? incoming : defaults;
-      const configuration = {
-        products: {},
-        options: { support: {}, onboarding: {}, addOns: {}, professionalServices: {} },
-        contractTerms: {},
-        paymentOptions: {},
-        hubspotMappings: { products: {}, dealProperties: {}, lineItemProperties: {} }
-      };
-      for (const [key, entryDefaults] of Object.entries(defaults.products)) {
-        const entry = normalizeDisplayEntry(value.products?.[key], entryDefaults, `products.${key}`);
-        configuration.products[key] = {
-          ...entry,
-          section: requireText(
-            value.products?.[key]?.section ?? entryDefaults.section,
-            1,
-            80,
-            `products.${key}.section`
-          ),
-          inputUnit: requireText(
-            value.products?.[key]?.inputUnit ?? entryDefaults.inputUnit,
-            1,
-            80,
-            `products.${key}.inputUnit`
-          )
-        };
-      }
-      if (!Object.values(configuration.products).some(({ enabled }) => enabled)) {
-        throw new Error("INVALID_SETTINGS:products.enabled");
-      }
-      for (const group of Object.keys(defaults.options)) {
-        for (const [key, entryDefaults] of Object.entries(defaults.options[group])) {
-          configuration.options[group][key] = normalizeDisplayEntry(
-            value.options?.[group]?.[key],
-            entryDefaults,
-            `options.${group}.${key}`
-          );
-        }
-        if (!Object.values(configuration.options[group]).some(({ enabled }) => enabled)) {
-          throw new Error(`INVALID_SETTINGS:options.${group}.enabled`);
-        }
-      }
-      for (const [key, entryDefaults] of Object.entries(defaults.contractTerms)) {
-        const entry = value.contractTerms?.[key] || entryDefaults;
-        configuration.contractTerms[key] = {
-          enabled: typeof entry.enabled === "boolean" ? entry.enabled : entryDefaults.enabled,
-          order: requireNumber(entry.order ?? entryDefaults.order, 0, 1e4, `contractTerms.${key}.order`),
-          label: requireText(entry.label ?? entryDefaults.label, 1, 80, `contractTerms.${key}.label`)
-        };
-      }
-      if (!Object.values(configuration.contractTerms).some(({ enabled }) => enabled)) {
-        throw new Error("INVALID_SETTINGS:contractTerms.enabled");
-      }
-      for (const [key, entryDefaults] of Object.entries(defaults.paymentOptions)) {
-        const entry = value.paymentOptions?.[key] || entryDefaults;
-        configuration.paymentOptions[key] = {
-          enabled: typeof entry.enabled === "boolean" ? entry.enabled : entryDefaults.enabled,
-          order: requireNumber(entry.order ?? entryDefaults.order, 0, 1e4, `paymentOptions.${key}.order`),
-          label: requireText(entry.label ?? entryDefaults.label, 1, 80, `paymentOptions.${key}.label`)
-        };
-      }
-      if (!Object.values(configuration.paymentOptions).some(({ enabled }) => enabled)) {
-        throw new Error("INVALID_SETTINGS:paymentOptions.enabled");
-      }
-      configuration.hubspotMappings.products.enterprise = requireProductId(
-        value.hubspotMappings?.products?.enterprise ?? defaults.hubspotMappings.products.enterprise,
-        "hubspotMappings.products.enterprise"
-      );
-      for (const [key, propertyDefault] of Object.entries(defaults.hubspotMappings.dealProperties)) {
-        configuration.hubspotMappings.dealProperties[key] = requirePropertyName(
-          value.hubspotMappings?.dealProperties?.[key] ?? propertyDefault,
-          `hubspotMappings.dealProperties.${key}`
-        );
-      }
-      for (const [key, propertyDefault] of Object.entries(defaults.hubspotMappings.lineItemProperties)) {
-        configuration.hubspotMappings.lineItemProperties[key] = requirePropertyName(
-          value.hubspotMappings?.lineItemProperties?.[key] ?? propertyDefault,
-          `hubspotMappings.lineItemProperties.${key}`
-        );
-      }
-      return configuration;
     };
     var normalizePricingPolicy = (incoming) => {
       const defaults = defaultPricingPolicy();
@@ -2508,7 +2181,7 @@ var require_appSettings = __commonJS({
         value.defaultQuoteTemplateId
       );
       return {
-        schemaVersion: "1.1",
+        schemaVersion: "1.0",
         version: currentVersion,
         allowNewBusiness: value.allowNewBusiness,
         allowRenewals: value.allowRenewals,
@@ -2524,8 +2197,7 @@ var require_appSettings = __commonJS({
           value.renewalPipelineIds || [],
           "renewalPipelineIds"
         ),
-        pricingPolicy: normalizePricingPolicy(value.pricingPolicy),
-        catalogConfiguration: normalizeCatalogConfiguration(value.catalogConfiguration)
+        pricingPolicy: normalizePricingPolicy(value.pricingPolicy)
       };
     };
     var request = async (accessToken, path, options = {}) => {
@@ -2650,12 +2322,10 @@ var require_appSettings = __commonJS({
       productRateDescriptors: productRateDescriptors2,
       dealCategory: dealCategory2,
       defaultPricingPolicy,
-      defaultCatalogConfiguration,
       defaultSettings,
       isDealAllowed: isDealAllowed2,
       isSettingsAdmin: isSettingsAdmin2,
       normalizeSettings,
-      normalizeCatalogConfiguration,
       quoteKindsForCategory: quoteKindsForCategory2,
       quoteTemplateSettings: quoteTemplateSettings2,
       readDealPipelines: readDealPipelines2,
@@ -2767,6 +2437,7 @@ var discountReasonProperties = (discountReason) => {
 };
 var QUOTE_STATUS_PENDING_APPROVAL = "PENDING_APPROVAL";
 var QUOTE_STATUS_APPROVAL_NOT_NEEDED = "APPROVAL_NOT_NEEDED";
+var QUOTE_STATUS_DRAFT = "DRAFT";
 var ARCHIVABLE_QUOTE_STATUSES = Object.freeze([
   "DRAFT",
   QUOTE_STATUS_PENDING_APPROVAL,
@@ -4288,7 +3959,7 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
     ) || `${state.dealName} \u2013 ${option.name}`
   );
   const needsApproval = String(option.result?.approvalTierRequired || "none") !== "none";
-  const desiredQuoteStatus = needsApproval ? QUOTE_STATUS_PENDING_APPROVAL : QUOTE_STATUS_APPROVAL_NOT_NEEDED;
+  const desiredQuoteStatus = needsApproval ? QUOTE_STATUS_PENDING_APPROVAL : QUOTE_STATUS_DRAFT;
   const category = dealCategory(settings, state.dealType, state.pipelineId);
   const templateId = content.templateId || defaultQuoteTemplateFor(settings, quoteKindsForCategory(category)[0]);
   if (!/^\d+$/.test(templateId)) throw new Error("QUOTE_CONFIGURATION_REQUIRED");
@@ -4399,12 +4070,12 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
         //
         // clickwrap is "accept without signature": it renders an accept button and, unlike the
         // other two, does not require a signer contact associated to the quote.
-        hs_acceptance_method: QUOTE_ACCEPTANCE_METHOD,
-        // Set on CREATE deliberately, not by a later update. An update to a live quote
-        // REVALIDATES the whole thing, and that is the call that failed with a template-type
-        // complaint the last time this property was written (see the read-back below). Creating
-        // with it avoids that path; the read-back repairs it if HubSpot drops it.
-        hs_status: desiredQuoteStatus
+        hs_acceptance_method: QUOTE_ACCEPTANCE_METHOD
+        // hs_status is DELIBERATELY NOT SENT. It used to be set here, on the reasoning that an
+        // update to a live quote revalidates the whole thing. On an approvals-enabled portal that
+        // is not a choice: HubSpot refuses to CREATE a quote in a published state at all, with
+        // "Quote cannot be published without going through the pending approval state". The quote
+        // is created at DRAFT and the read-back below makes the one legal transition.
       },
       associations: []
     });
@@ -4506,8 +4177,8 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
     let quoteStatus = finalized?.properties?.hs_status || "";
     let quoteStatusRepaired = false;
     if (quoteStatus !== desiredQuoteStatus) {
-      console.warn(
-        `Nylas pricing: quote ${quote.id} came out of the create as "${quoteStatus || "unset"}" rather than ${desiredQuoteStatus}. Setting it now.`
+      console.log(
+        `Nylas pricing: quote ${quote.id} was created as "${quoteStatus || "unset"}"; moving it to ${desiredQuoteStatus}. On an approvals-enabled portal this is the only legal way to reach it -- the create cannot carry a published status.`
       );
       try {
         await client.crm.quotes.basicApi.update(String(quote.id), {
@@ -4677,7 +4348,6 @@ exports.main = async (context) => {
         // The resolved flow, so the card renders that flow's view rather than guessing from a
         // deal type it never sees.
         dealCategory: listCategory,
-        catalogConfiguration: settings.catalogConfiguration,
         quoteTemplates: listTemplates.templates,
         defaultQuoteTemplateId: listTemplates.defaultTemplateId,
         // Which kind claims each template. The card reads this to decide whether the contract

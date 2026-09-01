@@ -1,6 +1,5 @@
 const crypto = require('node:crypto');
 const pricingRules = require('./pricingRules');
-const { defaultCatalogConfiguration } = require('./configurationDefaults');
 
 const CONFIGURATION_KEY = 'default';
 const OBJECT_NAME = 'nylas_pricing_configuration';
@@ -89,7 +88,7 @@ const defaultPricingPolicy = () => ({
 });
 
 const defaultSettings = () => ({
-  schemaVersion: '1.1',
+  schemaVersion: '1.0',
   version: 0,
   allowNewBusiness: true,
   allowRenewals: false,
@@ -127,7 +126,6 @@ const defaultSettings = () => ({
   enabledQuoteTemplateIds: [],
   defaultQuoteTemplateId: '',
   pricingPolicy: defaultPricingPolicy(),
-  catalogConfiguration: defaultCatalogConfiguration(),
 });
 
 // The tiers the card knows how to label. A tier it cannot label would render as a raw key on a
@@ -267,145 +265,6 @@ const requireNumber = (value, min, max, field) => {
     throw new Error(`INVALID_SETTINGS:${field}`);
   }
   return Math.round((value + Number.EPSILON) * 1_000_000) / 1_000_000;
-};
-
-const requireText = (value, min, max, field) => {
-  if (typeof value !== 'string') throw new Error(`INVALID_SETTINGS:${field}`);
-  const text = value.trim();
-  if (text.length < min || text.length > max) throw new Error(`INVALID_SETTINGS:${field}`);
-  return text;
-};
-
-const requireProductId = (value, field, allowBlank = false) => {
-  const id = String(value ?? '');
-  if (allowBlank && id === '') return '';
-  if (!/^\d{1,20}$/.test(id)) throw new Error(`INVALID_SETTINGS:${field}`);
-  return id;
-};
-
-const requirePropertyName = (value, field) => {
-  const name = String(value ?? '');
-  if (!/^[A-Za-z][A-Za-z0-9_]{0,99}$/.test(name)) {
-    throw new Error(`INVALID_SETTINGS:${field}`);
-  }
-  return name;
-};
-
-const normalizeDisplayEntry = (incoming, defaults, field, { productId = true } = {}) => {
-  const value = incoming && typeof incoming === 'object' && !Array.isArray(incoming)
-    ? incoming
-    : defaults;
-  return {
-    enabled: typeof value.enabled === 'boolean' ? value.enabled : defaults.enabled,
-    order: requireNumber(value.order ?? defaults.order, 0, 10_000, `${field}.order`),
-    name: requireText(value.name ?? defaults.name, 1, 120, `${field}.name`),
-    description: requireText(
-      value.description ?? defaults.description,
-      0,
-      500,
-      `${field}.description`,
-    ),
-    ...(productId
-      ? {
-          productId: requireProductId(
-            value.productId ?? defaults.productId,
-            `${field}.productId`,
-            defaults.productId === '',
-          ),
-        }
-      : {}),
-  };
-};
-
-const normalizeCatalogConfiguration = (incoming) => {
-  const defaults = defaultCatalogConfiguration();
-  const value = incoming && typeof incoming === 'object' && !Array.isArray(incoming)
-    ? incoming
-    : defaults;
-  const configuration = {
-    products: {},
-    options: { support: {}, onboarding: {}, addOns: {}, professionalServices: {} },
-    contractTerms: {},
-    paymentOptions: {},
-    hubspotMappings: { products: {}, dealProperties: {}, lineItemProperties: {} },
-  };
-
-  for (const [key, entryDefaults] of Object.entries(defaults.products)) {
-    const entry = normalizeDisplayEntry(value.products?.[key], entryDefaults, `products.${key}`);
-    configuration.products[key] = {
-      ...entry,
-      section: requireText(
-        value.products?.[key]?.section ?? entryDefaults.section,
-        1,
-        80,
-        `products.${key}.section`,
-      ),
-      inputUnit: requireText(
-        value.products?.[key]?.inputUnit ?? entryDefaults.inputUnit,
-        1,
-        80,
-        `products.${key}.inputUnit`,
-      ),
-    };
-  }
-  if (!Object.values(configuration.products).some(({ enabled }) => enabled)) {
-    throw new Error('INVALID_SETTINGS:products.enabled');
-  }
-
-  for (const group of Object.keys(defaults.options)) {
-    for (const [key, entryDefaults] of Object.entries(defaults.options[group])) {
-      configuration.options[group][key] = normalizeDisplayEntry(
-        value.options?.[group]?.[key],
-        entryDefaults,
-        `options.${group}.${key}`,
-      );
-    }
-    if (!Object.values(configuration.options[group]).some(({ enabled }) => enabled)) {
-      throw new Error(`INVALID_SETTINGS:options.${group}.enabled`);
-    }
-  }
-
-  for (const [key, entryDefaults] of Object.entries(defaults.contractTerms)) {
-    const entry = value.contractTerms?.[key] || entryDefaults;
-    configuration.contractTerms[key] = {
-      enabled: typeof entry.enabled === 'boolean' ? entry.enabled : entryDefaults.enabled,
-      order: requireNumber(entry.order ?? entryDefaults.order, 0, 10_000, `contractTerms.${key}.order`),
-      label: requireText(entry.label ?? entryDefaults.label, 1, 80, `contractTerms.${key}.label`),
-    };
-  }
-  if (!Object.values(configuration.contractTerms).some(({ enabled }) => enabled)) {
-    throw new Error('INVALID_SETTINGS:contractTerms.enabled');
-  }
-
-  for (const [key, entryDefaults] of Object.entries(defaults.paymentOptions)) {
-    const entry = value.paymentOptions?.[key] || entryDefaults;
-    configuration.paymentOptions[key] = {
-      enabled: typeof entry.enabled === 'boolean' ? entry.enabled : entryDefaults.enabled,
-      order: requireNumber(entry.order ?? entryDefaults.order, 0, 10_000, `paymentOptions.${key}.order`),
-      label: requireText(entry.label ?? entryDefaults.label, 1, 80, `paymentOptions.${key}.label`),
-    };
-  }
-  if (!Object.values(configuration.paymentOptions).some(({ enabled }) => enabled)) {
-    throw new Error('INVALID_SETTINGS:paymentOptions.enabled');
-  }
-
-  configuration.hubspotMappings.products.enterprise = requireProductId(
-    value.hubspotMappings?.products?.enterprise ?? defaults.hubspotMappings.products.enterprise,
-    'hubspotMappings.products.enterprise',
-  );
-  for (const [key, propertyDefault] of Object.entries(defaults.hubspotMappings.dealProperties)) {
-    configuration.hubspotMappings.dealProperties[key] = requirePropertyName(
-      value.hubspotMappings?.dealProperties?.[key] ?? propertyDefault,
-      `hubspotMappings.dealProperties.${key}`,
-    );
-  }
-  for (const [key, propertyDefault] of Object.entries(defaults.hubspotMappings.lineItemProperties)) {
-    configuration.hubspotMappings.lineItemProperties[key] = requirePropertyName(
-      value.hubspotMappings?.lineItemProperties?.[key] ?? propertyDefault,
-      `hubspotMappings.lineItemProperties.${key}`,
-    );
-  }
-  return configuration;
 };
 
 const normalizePricingPolicy = (incoming) => {
@@ -625,7 +484,7 @@ const normalizeSettings = (value, currentVersion = 0) => {
     value.defaultQuoteTemplateId,
   );
   return {
-    schemaVersion: '1.1',
+    schemaVersion: '1.0',
     version: currentVersion,
     allowNewBusiness: value.allowNewBusiness,
     allowRenewals: value.allowRenewals,
@@ -642,7 +501,6 @@ const normalizeSettings = (value, currentVersion = 0) => {
       'renewalPipelineIds',
     ),
     pricingPolicy: normalizePricingPolicy(value.pricingPolicy),
-    catalogConfiguration: normalizeCatalogConfiguration(value.catalogConfiguration),
   };
 };
 
@@ -784,12 +642,10 @@ module.exports = {
   productRateDescriptors,
   dealCategory,
   defaultPricingPolicy,
-  defaultCatalogConfiguration,
   defaultSettings,
   isDealAllowed,
   isSettingsAdmin,
   normalizeSettings,
-  normalizeCatalogConfiguration,
   quoteKindsForCategory,
   quoteTemplateSettings,
   readDealPipelines,

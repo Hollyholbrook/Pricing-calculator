@@ -201,6 +201,7 @@ const discountReasonProperties = (discountReason) => {
 // leaving the quote at DRAFT is what left the workflow with nothing to fire on.
 const QUOTE_STATUS_PENDING_APPROVAL = 'PENDING_APPROVAL';
 const QUOTE_STATUS_APPROVAL_NOT_NEEDED = 'APPROVAL_NOT_NEEDED';
+const QUOTE_STATUS_DRAFT = 'DRAFT';
 
 // Which superseded quotes "Replace the existing quote" may archive.
 //
@@ -2464,9 +2465,23 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
   // approvalTierRequired is the single source: 'none' means nobody has to sign off. The tier itself
   // is already on the Deal as pricing_approval_tier_required, so this adds no judgement of its own.
   const needsApproval = String(option.result?.approvalTierRequired || 'none') !== 'none';
+  // THIS PORTAL HAS QUOTE APPROVALS ENABLED, and that changes what a status may be set to and
+  // when. HubSpot refuses the CREATE outright:
+  //
+  //   HTTP 400 VALIDATION_ERROR -- "Quote cannot be published without going through the pending
+  //   approval state on an approvals enabled portal. Current status: <EMPTY>"
+  //
+  // APPROVAL_NOT_NEEDED is a PUBLISHED state, and on an approvals-enabled portal a quote cannot
+  // be born published: it starts at DRAFT and moves DRAFT -> PENDING_APPROVAL -> APPROVED. So the
+  // status is no longer sent on the create at all, and the read-back below performs the one legal
+  // transition when the calculator says approval is required.
+  //
+  // When no approval is needed the quote is LEFT AT DRAFT and the rep publishes it. Trying to
+  // shortcut a quote to APPROVAL_NOT_NEEDED is the thing the portal is configured to prevent, and
+  // an app should not be routing around its own account's approval policy.
   const desiredQuoteStatus = needsApproval
     ? QUOTE_STATUS_PENDING_APPROVAL
-    : QUOTE_STATUS_APPROVAL_NOT_NEEDED;
+    : QUOTE_STATUS_DRAFT;
 
   const category = dealCategory(settings, state.dealType, state.pipelineId);
   // The default is the category's first kind's default -- there is no separate Quote Type to read
@@ -2643,11 +2658,11 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
         // clickwrap is "accept without signature": it renders an accept button and, unlike the
         // other two, does not require a signer contact associated to the quote.
         hs_acceptance_method: QUOTE_ACCEPTANCE_METHOD,
-        // Set on CREATE deliberately, not by a later update. An update to a live quote
-        // REVALIDATES the whole thing, and that is the call that failed with a template-type
-        // complaint the last time this property was written (see the read-back below). Creating
-        // with it avoids that path; the read-back repairs it if HubSpot drops it.
-        hs_status: desiredQuoteStatus,
+        // hs_status is DELIBERATELY NOT SENT. It used to be set here, on the reasoning that an
+        // update to a live quote revalidates the whole thing. On an approvals-enabled portal that
+        // is not a choice: HubSpot refuses to CREATE a quote in a published state at all, with
+        // "Quote cannot be published without going through the pending approval state". The quote
+        // is created at DRAFT and the read-back below makes the one legal transition.
       },
       associations: [],
     });
@@ -2826,9 +2841,10 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
     let quoteStatus = finalized?.properties?.hs_status || '';
     let quoteStatusRepaired = false;
     if (quoteStatus !== desiredQuoteStatus) {
-      console.warn(
-        `Nylas pricing: quote ${quote.id} came out of the create as "${quoteStatus || 'unset'}" ` +
-          `rather than ${desiredQuoteStatus}. Setting it now.`,
+      console.log(
+        `Nylas pricing: quote ${quote.id} was created as "${quoteStatus || 'unset'}"; moving it ` +
+          `to ${desiredQuoteStatus}. On an approvals-enabled portal this is the only legal way ` +
+          'to reach it -- the create cannot carry a published status.',
       );
       try {
         await client.crm.quotes.basicApi.update(String(quote.id), {
@@ -3032,7 +3048,6 @@ exports.main = async (context) => {
         // The resolved flow, so the card renders that flow's view rather than guessing from a
         // deal type it never sees.
         dealCategory: listCategory,
-        catalogConfiguration: settings.catalogConfiguration,
         quoteTemplates: listTemplates.templates,
         defaultQuoteTemplateId: listTemplates.defaultTemplateId,
         // Which kind claims each template. The card reads this to decide whether the contract
