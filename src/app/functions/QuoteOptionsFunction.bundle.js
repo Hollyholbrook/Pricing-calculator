@@ -2438,7 +2438,6 @@ var discountReasonProperties = (discountReason) => {
 };
 var QUOTE_STATUS_PENDING_APPROVAL = "PENDING_APPROVAL";
 var QUOTE_STATUS_APPROVAL_NOT_NEEDED = "APPROVAL_NOT_NEEDED";
-var QUOTE_STATUS_DRAFT = "DRAFT";
 var ARCHIVABLE_QUOTE_STATUSES = Object.freeze([
   "DRAFT",
   QUOTE_STATUS_PENDING_APPROVAL,
@@ -3969,7 +3968,7 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
     ) || `${state.dealName} \u2013 ${option.name}`
   );
   const needsApproval = String(option.result?.approvalTierRequired || "none") !== "none";
-  const desiredQuoteStatus = needsApproval ? QUOTE_STATUS_PENDING_APPROVAL : QUOTE_STATUS_DRAFT;
+  const desiredQuoteStatus = QUOTE_STATUS_PENDING_APPROVAL;
   const category = dealCategory(settings, state.dealType, state.pipelineId);
   const templateId = content.templateId || defaultQuoteTemplateFor(settings, quoteKindsForCategory(category)[0]);
   if (!/^\d+$/.test(templateId)) throw new Error("QUOTE_CONFIGURATION_REQUIRED");
@@ -4088,12 +4087,12 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
         //
         // clickwrap is "accept without signature": it renders an accept button and, unlike the
         // other two, does not require a signer contact associated to the quote.
-        hs_acceptance_method: QUOTE_ACCEPTANCE_METHOD
-        // hs_status is DELIBERATELY NOT SENT. It used to be set here, on the reasoning that an
-        // update to a live quote revalidates the whole thing. On an approvals-enabled portal that
-        // is not a choice: HubSpot refuses to CREATE a quote in a published state at all, with
-        // "Quote cannot be published without going through the pending approval state". The quote
-        // is created at DRAFT and the read-back below makes the one legal transition.
+        hs_acceptance_method: QUOTE_ACCEPTANCE_METHOD,
+        // On the CREATE. PENDING_APPROVAL is a legal creation state on an approvals-enabled
+        // portal -- it is a PUBLISHED status, not this one, that the portal refuses. Setting it
+        // here rather than by a later update matters: the update after creation was being
+        // rejected, leaving every quote at DRAFT, unrendered and unapproved.
+        hs_status: desiredQuoteStatus
       },
       associations: []
     });

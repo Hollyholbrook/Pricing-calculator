@@ -768,31 +768,32 @@ test('the quote status reports whether approval is required', () => {
     source,
     /const needsApproval =\s*\n?\s*String\(option\.result\?\.approvalTierRequired \|\| 'none'\) !== 'none';/,
   );
-  // DRAFT when no approval is needed, not APPROVAL_NOT_NEEDED. This portal has quote approvals
-  // enabled, and APPROVAL_NOT_NEEDED is a PUBLISHED state -- an app must not route around its own
-  // account's approval policy.
-  assert.match(
-    source,
-    /needsApproval\s*\n?\s*\? QUOTE_STATUS_PENDING_APPROVAL\s*\n?\s*: QUOTE_STATUS_DRAFT/,
-  );
-  assert.match(source, /const QUOTE_STATUS_DRAFT = 'DRAFT';/);
+  // ALWAYS PENDING_APPROVAL, and always on the CREATE.
+  //
+  // The portal's rejection -- "Quote cannot be published without going through the pending
+  // approval state" -- refuses PUBLISHING. APPROVAL_NOT_NEEDED is a published state and is
+  // refused; PENDING_APPROVAL is the state the message names as the way through, and creating
+  // with it is legal.
+  //
+  // Never APPROVAL_NOT_NEEDED: on this portal that is the value that loses the whole quote.
+  assert.match(source, /const desiredQuoteStatus = QUOTE_STATUS_PENDING_APPROVAL;/);
 
-  // NOT on the create. On an approvals-enabled portal HubSpot refuses to create a quote in a
-  // published state at all:
-  //
-  //   400 VALIDATION_ERROR -- "Quote cannot be published without going through the pending
-  //   approval state on an approvals enabled portal. Current status: <EMPTY>"
-  //
-  // That rejection loses the whole quote, so this is the assertion that keeps it from coming
-  // back. The status is reached by the one legal transition, from DRAFT, after the create.
+  // On the CREATE, not by a later update. The update after creation was being rejected, which
+  // left every quote at DRAFT -- no approval workflow, and a DRAFT quote does not render as a
+  // finished CPQ document.
   const create = source.match(
     /quote = await client\.crm\.quotes\.basicApi\.create\(\{([\s\S]*?)\n      \},/,
   );
   assert.ok(create, 'the quote create call must be findable');
+  assert.match(
+    create[1],
+    /hs_status: desiredQuoteStatus,/,
+    'hs_status must be set ON the create',
+  );
   assert.doesNotMatch(
     create[1],
-    /hs_status:/,
-    'hs_status must NOT be sent on the create -- an approvals-enabled portal refuses it',
+    /APPROVAL_NOT_NEEDED/,
+    'a published status must never be sent on the create',
   );
 
   // Read back and repaired if HubSpot drops it -- the same pattern as the Seller block, and for
