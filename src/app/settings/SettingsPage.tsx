@@ -221,9 +221,16 @@ const SettingsPage = () => {
     value: id,
     label,
   }));
+  // THE ID IS PART OF THE LABEL. Holly, 2026-09-01: "I can't see the number."
+  //
+  // This portal has several templates whose names differ by a word -- "Renewal Quote Template"
+  // and "Renewal Quote - Existing contracts", "Change Quote Template" and "Starter Change Quote
+  // Template" -- and the whole of 2026-09-01 was spent establishing which id a given quote was
+  // actually built from. A picker that shows only the name cannot be checked against a quote,
+  // against Settings, or against anything said in a support thread.
   const templateOptions = quoteTemplates.map(({ id, name }) => ({
     value: id,
-    label: name,
+    label: `${name} (${id})`,
   }));
   // An empty choice means "offer every template", so the default may legitimately be one that is
   // not in the chosen list. Once a narrowing exists, the default has to be inside it or the card
