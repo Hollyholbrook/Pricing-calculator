@@ -671,7 +671,7 @@ test('a stored configuration carries no psItemCount to go stale', () => {
   assert.equal(calculateQuote(stored).professionalServicesAmount, 3_800);
 });
 
-test('the OAuth add-on dependency reads the same single source', () => {
+test('OAuth without professional services is blocked', () => {
   const base = {
     termMonths: 12,
     paymentFrequency: 'annual_in_advance',
@@ -680,25 +680,41 @@ test('the OAuth add-on dependency reads the same single source', () => {
     onboardingPackage: 'none',
     addOns: ['verified_oauth'],
   };
-  // Turnkey Verified OAuth NO LONGER requires a professional-services item. Removed 2026-08-28 at
-  // Holly's instruction: a quote without one used to be blocked outright, and should not be.
+  // Turnkey Verified OAuth requires a professional-services item again. This test asserted the
+  // OPPOSITE between 2026-08-28 and 2026-09-01, and the flip is deliberate both times.
   //
-  // Asserted rather than deleted, because this blocked real quotes and a silent reintroduction
-  // would do so again. Both directions are checked: with services and without.
+  // Removed 2026-08-28 on Holly's instruction. Reinstated 2026-09-01, also on Holly's instruction,
+  // because Pricing Workbook v9 -- which postdates the removal -- names the add-on "Turnkey
+  // Verified OAuth Projects (req. PS)" in all three places it appears. The workbook is the source
+  // of truth for pricing rules; if IT is the stale one, lift the block rather than ignoring the
+  // label.
+  //
+  // Both directions are checked, because this rule blocks real quotes in one direction and lets
+  // unpriced work through in the other.
   const withNone = calculateQuote({ ...base, professionalServices: [], psItemCount: 3 });
-  assert.deepEqual(withNone.blockingReasons, [], 'OAuth without services must not be blocked');
-  assert.equal(
-    withNone.approvalReasons.some((reason) => /OAuth/i.test(reason)),
-    false,
-    'and it must not raise an approval reason either',
-  );
+  assert.equal(withNone.blockingReasons.length, 1, 'OAuth without services must be blocked');
+  assert.match(withNone.blockingReasons[0], /Turnkey Verified OAuth Projects requires a Profession/);
+  // A SENTENCE, not a code: the card renders these verbatim to the rep.
+  assert.doesNotMatch(withNone.blockingReasons[0], /^[A-Z_]+$/);
+  // psItemCount is a stale field and must not satisfy the rule -- only real selections do.
+  assert.equal(withNone.blockingReasons.length, 1, 'psItemCount does not count as a selection');
+
+  // ANY professional-services item satisfies it. The workbook says "req. PS" and never names one,
+  // so a GTM Review -- nothing to do with OAuth -- is enough. Demanding a specific item would
+  // refuse quotes the workbook permits.
   const withOne = calculateQuote({
     ...base,
     professionalServices: ['gtm_review'],
     psItemCount: 0,
   });
   assert.deepEqual(withOne.blockingReasons, []);
-  // The guardrail summary must not carry it either.
+
+  // It BLOCKS; it does not route for approval. An approval reason nobody can act on is noise.
+  assert.equal(
+    withNone.approvalReasons.some((reason) => /OAuth/i.test(reason)),
+    false,
+    'blocking is the whole mechanism -- it must not also raise an approval reason',
+  );
   assert.equal(/OAUTH/i.test(String(withNone.guardrailSummary || '')), false);
 });
 
@@ -955,13 +971,22 @@ test('renewals skip the non-discount approvals that block new business', () => {
   // asserting against a fixture rather than against behaviour.
 });
 
-test('OAuth without professional services is not blocked on a renewal either', () => {
+test('OAuth without professional services is blocked on a renewal too', () => {
+  // NOT relaxed for renewals. renewalRelaxesNonDiscountApprovals waives approval THRESHOLDS -- the
+  // ARR minimum and the redlining floor. This is a product dependency, not a threshold: a renewal
+  // that sells the add-on needs the services exactly as a new deal does.
   const noServices = renewalInput({ addOns: ['verified_oauth'], professionalServices: [] });
   for (const category of ['new_business', 'renewal']) {
-    assert.deepEqual(
-      calculateQuote(noServices, {}, 0, category).blockingReasons,
-      [],
-      `${category}: the OAuth dependency is gone`,
-    );
+    const blocked = calculateQuote(noServices, {}, 0, category).blockingReasons;
+    assert.equal(blocked.length, 1, `${category}: the OAuth dependency applies`);
+    assert.match(blocked[0], /requires a Professional Services item/);
+  }
+  // And satisfied the same way on both.
+  const withService = renewalInput({
+    addOns: ['verified_oauth'],
+    professionalServices: ['provider_oauth_app_creation'],
+  });
+  for (const category of ['new_business', 'renewal']) {
+    assert.deepEqual(calculateQuote(withService, {}, 0, category).blockingReasons, []);
   }
 });

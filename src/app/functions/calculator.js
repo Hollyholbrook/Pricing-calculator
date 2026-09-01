@@ -414,13 +414,38 @@ const buildApproval = (
   if (input.redliningRequested) {
     reasons.push('Customer-requested special terms require Legal approval.');
   }
-  // REMOVED 2026-08-28, Holly: Turnkey Verified OAuth no longer requires a professional-services
-  // item, and a quote without one is no longer blocked. It used to push
-  // OAUTH_REQUIRES_PROFESSIONAL_SERVICES into blockingReasons, which refused Lock in outright.
+  // REINSTATED 2026-09-01, Holly: "Yes enforce that."
   //
-  // Deleted rather than downgraded to a warning: an approval reason nobody acts on is noise, and
-  // the requiresProfessionalServices flag it read has been removed from pricingRules too, so
-  // nothing is left half-wired for someone to switch back on by accident.
+  // This rule was REMOVED on 2026-08-28 -- "Turnkey Verified OAuth no longer requires a
+  // professional-services item" -- and is deliberately back. What changed is the source of truth:
+  // OneSubscription Pricing Workbook v9 names the add-on
+  //
+  //     "Turnkey Verified OAuth Projects (req. PS)"
+  //
+  // in all three places it appears (RATE CARD B130, QUOTE BUILDER B28, PRICING TABLES G26), and v9
+  // postdates the removal. If the workbook is the one that is stale, this is the block to lift --
+  // not the label to ignore.
+  //
+  // ANY professional-services item satisfies it. The workbook says "req. PS" and never names one,
+  // and two of the five items plausibly qualify (Google Verification Review, Provider OAuth App
+  // Creation). Demanding a specific item would refuse quotes the workbook permits, and refusing a
+  // legitimate quote is worse here than allowing an unusual pairing. Holly's call, 2026-09-01.
+  //
+  // NOT relaxed on renewals. `relaxed` waives approval THRESHOLDS; this is a product dependency,
+  // and a renewal that sells the add-on needs the services just as a new deal does.
+  //
+  // A SENTENCE, not a SHOUTY_CODE: the card renders blockingReasons verbatim to the rep, mixed in
+  // with prose like "A discount reason is required before this can be locked in." The two codes
+  // above predate that and read as identifiers in a red banner -- do not copy them.
+  if (
+    input.addOns.includes('verified_oauth') &&
+    input.professionalServices.length === 0
+  ) {
+    blockingReasons.push(
+      'Turnkey Verified OAuth Projects requires a Professional Services item. Add one under ' +
+        'Professional Services, or remove the add-on.',
+    );
+  }
 
   return { tier, reasons, blockingReasons };
 };

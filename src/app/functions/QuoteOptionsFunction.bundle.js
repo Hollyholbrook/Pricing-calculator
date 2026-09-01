@@ -591,6 +591,11 @@ var require_calculator = __commonJS({
       if (input.redliningRequested) {
         reasons.push("Customer-requested special terms require Legal approval.");
       }
+      if (input.addOns.includes("verified_oauth") && input.professionalServices.length === 0) {
+        blockingReasons.push(
+          "Turnkey Verified OAuth Projects requires a Professional Services item. Add one under Professional Services, or remove the add-on."
+        );
+      }
       return { tier, reasons, blockingReasons };
     };
     var buildActiveRules = (pricingPolicy = {}) => ({

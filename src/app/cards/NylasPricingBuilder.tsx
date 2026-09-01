@@ -413,7 +413,13 @@ const onboardingOptions = [
 const addOnOptions = [
   { value: "shared_oauth_app", label: "Shared Google OAuth App" },
   { value: "privacy_filter", label: "Privacy Filter Mode" },
-  { value: "verified_oauth", label: "Turnkey Verified OAuth Projects" },
+  // "(req. PS)" is the workbook's own label for this add-on, and it is a real rule: selecting it
+  // without a Professional Services item blocks Lock in. Saying so on the checkbox is cheaper than
+  // letting the rep discover it from a red banner after they have built the quote.
+  {
+    value: "verified_oauth",
+    label: "Turnkey Verified OAuth Projects (requires Professional Services)",
+  },
 ];
 
 // A DEAL SAVED BEFORE 2026-08-31 CARRIES enterprise_accelerator IN input.addOns.
