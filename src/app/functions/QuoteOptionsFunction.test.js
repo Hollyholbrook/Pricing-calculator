@@ -3,7 +3,13 @@ const test = require('node:test');
 
 const { calculateQuote } = require('./calculator');
 const { CATALOG } = require('./lineItemModel');
-const { defaultSettings, normalizeSettings } = require('./appSettings');
+const {
+  defaultSettings,
+  normalizeSettings,
+  quoteTemplateSettings,
+  quoteKindsForCategory,
+  dealCategory,
+} = require('./appSettings');
 const { _test } = require('./QuoteOptionsFunction');
 
 const OPTION_PROPERTY = 'pricing_quote_options_payload';
@@ -3039,4 +3045,116 @@ test('the contract picker defaults only when there is exactly one contract', () 
   assert.match(card, /body\.contracts\.length === 1 \? body\.contracts\[0\]\.id : ""/);
   // The rep's own choice always wins over the default.
   assert.match(card, /setContractId\(\(current\) => current \|\| only\)/);
+});
+
+// THE PIPELINE DECIDES THE TEMPLATE, AND THE CARD DOES NOT GET A VOTE.
+//
+// One bug produced three symptoms. `templateId` is card state; the preselect kept whatever it
+// already had (`if (current) return current`) so Lock in would not overwrite the rep's choice. But
+// the template LIST belongs to the Deal, and a Deal moves between pipelines while the card is
+// open. Load the card on the new business pipeline, move the Deal to renewal, Lock in -- the card
+// still holds New Business Template and sends it. Do it the other way and a new business Deal gets
+// the Renewal or Change document. Holly, 2026-09-01: "new business is loading the wrong quote",
+// "And renewal is broken now too", "and change".
+//
+// Nothing caught it server-side either: quoteKindForTemplate is not narrowed by category, so it
+// answered 'new_business' for a renewal Deal and the "no kind claims this" warning never fired.
+// Deal 63835136345 sat in renewal pipeline 876727403 holding a quote built from New Business
+// Template 567553820432, with no trace anywhere but the quote.
+//
+// Fixed on both sides, deliberately: the card drops a selection that is no longer on offer, and
+// the server substitutes the category default for anything outside the category's list. The card
+// is not the only way in, so the card alone is not enough.
+test('the server refuses a template that does not belong to the Deal category', () => {
+  const source = require('node:fs').readFileSync(
+    require('node:path').join(__dirname, 'QuoteOptionsFunction.js'),
+    'utf8',
+  );
+
+  // The allowed set is built from the category's own kinds, from SETTINGS -- no API call, and no
+  // second opinion about which templates a flow may use.
+  assert.match(source, /const allowedKinds = quoteKindsForCategory\(category\);/);
+  assert.match(
+    source,
+    /const allowedTemplateIds = new Set\(\s*allowedKinds\.flatMap\(\(kind\) =>\s*quoteTemplateSettings\(settings, kind\)\.enabledIds\.map\(String\),\s*\),\s*\);/,
+  );
+
+  // SUBSTITUTED, not thrown. Throwing would discard a configuration the rep already committed.
+  assert.match(
+    source,
+    /if \(allowedTemplateIds\.size > 0 && !allowedTemplateIds\.has\(String\(requestedTemplateId\)\)\) \{/,
+  );
+  assert.match(source, /const categoryDefault = defaultQuoteTemplateFor\(settings, allowedKinds\[0\]\);/);
+  assert.match(source, /if \(\/\^\\d\+\$\/\.test\(String\(categoryDefault\)\)\) templateId = String\(categoryDefault\);/);
+
+  // An unconfigured portal has no assigned templates, and there an empty list means "offer
+  // everything", not "every choice is wrong". The size check is what keeps that working.
+  assert.match(source, /allowedTemplateIds\.size > 0/);
+
+  // Everything downstream must read the SUBSTITUTED id, not what the card asked for. If any of
+  // these ever read requestedTemplateId again the substitution becomes decorative.
+  // Sliced from AFTER the substitution block -- inside it, reading requestedTemplateId is the
+  // whole point. Everything past it must speak only of the resolved `templateId`.
+  const substitutionEnd = source.indexOf('const quoteKind = quoteKindForTemplate(');
+  const generateEnd = source.indexOf('const hash = contentHash(', substitutionEnd);
+  assert.ok(substitutionEnd > 0 && generateEnd > substitutionEnd);
+  const body = source.slice(substitutionEnd, generateEnd);
+  assert.match(body, /quoteKindForTemplate\(settings, category, templateId\)/);
+  assert.match(body, /describeQuoteTemplate\(\s*client,\s*templateId,\s*\)/);
+  assert.doesNotMatch(
+    body,
+    /requestedTemplateId/,
+    'nothing after the substitution may read the card-supplied id',
+  );
+});
+
+test('the card drops a template selection the Deal no longer offers', () => {
+  const card = require('node:fs').readFileSync(
+    require('node:path').join(__dirname, '..', 'cards', 'NylasPricingBuilder.tsx'),
+    'utf8',
+  );
+  // The rep's choice still wins -- but only while it is a choice this Deal can make.
+  // Whitespace-tolerant: prettier wraps this across two lines at its current length.
+  assert.match(
+    card,
+    /if \(current && templates\.some\(\(\{ id \}\) => id === current\)\)\s+return current;/,
+  );
+  // The bare form is what pinned a stale template across a pipeline move.
+  assert.doesNotMatch(card, /\n\s*if \(current\) return current;/);
+});
+
+// The settings record itself was ruled out, and this pins that. Both legacy flat keys
+// (enabledQuoteTemplateIds / defaultQuoteTemplateId, still present on record 60753277713 at
+// version 19) sit alongside quoteTemplatesByKind, and if the flat pair won, EVERY kind would
+// resolve to New Business -- which looks exactly like the bug above and is not its cause.
+test('per-kind template settings win over the legacy flat keys', () => {
+  const live = {
+    schemaVersion: '1.0',
+    version: 19,
+    allowNewBusiness: true,
+    allowRenewals: true,
+    newBusinessPipelineIds: ['db8895ce-da7b-4843-8d7b-4be80a0b7d7b'],
+    renewalPipelineIds: ['876727403'],
+    quoteTemplatesByKind: {
+      new_business: { enabledIds: ['567553820432'], defaultId: '567553820432' },
+      change: { enabledIds: ['583243623796'], defaultId: '583243623796' },
+      renewal: { enabledIds: ['583243745379'], defaultId: '583243745379' },
+    },
+    enabledQuoteTemplateIds: ['567553820432'],
+    defaultQuoteTemplateId: '567553820432',
+    pricingPolicy: {},
+  };
+  const settings = normalizeSettings(live, live.version);
+
+  assert.deepEqual(quoteTemplateSettings(settings, 'new_business').enabledIds, ['567553820432']);
+  assert.deepEqual(quoteTemplateSettings(settings, 'change').enabledIds, ['583243623796']);
+  assert.deepEqual(quoteTemplateSettings(settings, 'renewal').enabledIds, ['583243745379']);
+
+  // ...and the two live pipelines land in the categories they are configured for.
+  assert.equal(dealCategory(settings, 'newbusiness', '876727403'), 'renewal');
+  assert.equal(dealCategory(settings, '', 'db8895ce-da7b-4843-8d7b-4be80a0b7d7b'), 'new_business');
+  // The PIPELINE outranks dealtype. Deal 63835136345 is dealtype "newbusiness" in the renewal
+  // pipeline, and it is a renewal Deal.
+  assert.deepEqual(quoteKindsForCategory('renewal'), ['change', 'renewal']);
+  assert.deepEqual(quoteKindsForCategory('new_business'), ['new_business']);
 });

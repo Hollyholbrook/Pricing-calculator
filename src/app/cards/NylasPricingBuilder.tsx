@@ -1090,7 +1090,8 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
         // Dropping it falls through to the preselect below, which picks the right default for the
         // flow the Deal is actually in. The server enforces the same rule -- see the category
         // check in generateQuote -- because the card is not the only way in.
-        if (current && templates.some(({ id }) => id === current)) return current;
+        if (current && templates.some(({ id }) => id === current))
+          return current;
         if (lastUsed && templates.some(({ id }) => id === lastUsed))
           return lastUsed;
         if (templates.some(({ id }) => id === preferred)) return preferred;
