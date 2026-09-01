@@ -77,23 +77,6 @@ The $25,000 minimum is present but is not blocking by default because enforcemen
 
 The settings page can control the following policy groups.
 
-### Catalog, display, and HubSpot mappings
-
-As of settings schema 1.1, administrators can also control the existing catalog without creating a separate pricing system:
-
-- which existing products, support levels, onboarding packages, add-ons, and professional services are offered;
-- product and option display order;
-- product sections, names, descriptions, and input-unit labels;
-- which supported contract terms and payment schedules are offered and how they are labelled;
-- the HubSpot product ID used for each existing stable catalog key;
-- the Enterprise Drawdown product ID;
-- the Deal property mappings for payment method, payment frequency, auto-renewal, and contract term; and
-- the line-item property mappings for committed quantity, proposed rate, one-time fees, recurring fees, and total fees for term.
-
-Stable calculation keys, tier boundaries, pricing models, formulas, payments-per-year values, HubSpot enumeration values, association types, and core saved-state properties remain code-owned. This prevents a presentation edit from changing money or making the application unable to read its own stored state.
-
-At least one product, support option, onboarding option, contract term, and payment option must remain enabled. Disabled selections are refused server-side. Existing saved selections remain visible long enough for the seller to replace them with an enabled choice.
-
 ### Deal eligibility
 
 - New business enabled: default `true`.

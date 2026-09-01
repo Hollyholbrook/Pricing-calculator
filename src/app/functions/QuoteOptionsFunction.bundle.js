@@ -1955,6 +1955,9 @@ var require_configurationDefaults = __commonJS({
         enterprise: "46037350773"
       }),
       dealProperties: Object.freeze({
+        optionsPayload: "pricing_quote_options_payload",
+        selectedOptionId: "pricing_selected_option_id",
+        selectedOptionName: "pricing_selected_option_name",
         paymentMethod: "payment_method",
         paymentFrequency: "payment_frequency",
         autoRenewal: "auto_renewal__c",
@@ -2747,20 +2750,13 @@ var choiceProperty = ({ property, values }, choice) => {
   const value = values[String(choice)];
   return value ? { [property]: value } : {};
 };
-var mappedChoice = (definition, property) => ({
-  ...definition,
-  property: property || definition.property
-});
-var paymentMethodProperties = (paymentMethod, property) => choiceProperty(mappedChoice(DEAL_PAYMENT_METHOD, property), paymentMethod);
-var paymentFrequencyProperties = (paymentFrequency, property) => choiceProperty(mappedChoice(DEAL_PAYMENT_FREQUENCY, property), paymentFrequency);
-var autoRenewalProperties = (autoRenewal, property) => choiceProperty(
-  mappedChoice(DEAL_AUTO_RENEWAL, property),
-  autoRenewal === true ? "yes" : "no"
-);
-var contractTermProperties = (termMonths, property = DEAL_CONTRACT_TERM_PROPERTY) => {
+var paymentMethodProperties = (paymentMethod) => choiceProperty(DEAL_PAYMENT_METHOD, paymentMethod);
+var paymentFrequencyProperties = (paymentFrequency) => choiceProperty(DEAL_PAYMENT_FREQUENCY, paymentFrequency);
+var autoRenewalProperties = (autoRenewal) => choiceProperty(DEAL_AUTO_RENEWAL, autoRenewal === true ? "yes" : "no");
+var contractTermProperties = (termMonths) => {
   const months = Number(termMonths);
   if (!Number.isFinite(months) || months <= 0) return {};
-  return { [property]: String(months) };
+  return { [DEAL_CONTRACT_TERM_PROPERTY]: String(months) };
 };
 var DISCOUNT_REASON_MAX_LENGTH = 4e3;
 var discountReasonProperties = (discountReason) => {
@@ -2945,31 +2941,6 @@ var serializeDocument = (document) => {
   if (serialized.length > MAX_PAYLOAD_LENGTH) throw new Error("PAYLOAD_TOO_LARGE");
   return serialized;
 };
-var assertConfiguredInput = (input, settings) => {
-  const configuration = settings?.catalogConfiguration;
-  if (!configuration) return;
-  const term = configuration.contractTerms?.[String(input?.termMonths)];
-  const payment = configuration.paymentOptions?.[String(input?.paymentFrequency || "")];
-  if (!term?.enabled || !payment?.enabled) throw new Error("INVALID_OPTION");
-  const support = configuration.options?.support?.[String(input?.supportLevel || "")];
-  const onboarding = configuration.options?.onboarding?.[String(input?.onboardingPackage || "")];
-  if (!support?.enabled || !onboarding?.enabled) throw new Error("INVALID_OPTION");
-  for (const key of input?.addOns || []) {
-    if (!configuration.options?.addOns?.[String(key)]?.enabled) {
-      throw new Error("INVALID_OPTION");
-    }
-  }
-  for (const key of input?.professionalServices || []) {
-    if (!configuration.options?.professionalServices?.[String(key)]?.enabled) {
-      throw new Error("INVALID_OPTION");
-    }
-  }
-  for (const [key, product] of Object.entries(configuration.products || {})) {
-    if (product.enabled) continue;
-    if (Number(input?.volumes?.[key] || 0) > 0) throw new Error("INVALID_OPTION");
-    if (Number(input?.productDiscounts?.[key] || 0) > 0) throw new Error("INVALID_OPTION");
-  }
-};
 var assertRevision = (document, expectedRevision) => {
   if (expectedRevision == null) return;
   if (!Number.isInteger(expectedRevision) || expectedRevision !== document.revision) {
@@ -2989,7 +2960,6 @@ var calculateAndSaveOption = async (client, dealId, state, parameters, settings)
   if (!incoming || typeof incoming !== "object" || Array.isArray(incoming)) {
     throw new Error("INVALID_OPTION");
   }
-  assertConfiguredInput(incoming.input, settings);
   const result = calculateQuote(
     incoming.input,
     settings.pricingPolicy,
@@ -3219,7 +3189,6 @@ var chooseOption = async (client, dealId, state, parameters, settings) => {
   };
 };
 var lockLiveCalculation = async (client, dealId, state, parameters, portalId, settings) => {
-  assertConfiguredInput(parameters.input, settings);
   const category = dealCategory(settings, state.dealType, state.pipelineId);
   const result = calculateQuote(
     parameters.input,
@@ -3273,20 +3242,10 @@ var lockLiveCalculation = async (client, dealId, state, parameters, portalId, se
   const properties = buildSelectedProperties(liveOption, "draft");
   properties[SELECTED_OPTION_ID_PROPERTY] = liveOption.id;
   properties[SELECTED_OPTION_NAME_PROPERTY] = liveOption.name;
-  const dealMappings = settings.catalogConfiguration?.hubspotMappings?.dealProperties || {};
-  Object.assign(
-    properties,
-    paymentMethodProperties(parameters.paymentMethod, dealMappings.paymentMethod)
-  );
-  Object.assign(
-    properties,
-    paymentFrequencyProperties(input.paymentFrequency, dealMappings.paymentFrequency)
-  );
-  Object.assign(properties, autoRenewalProperties(input.autoRenewal, dealMappings.autoRenewal));
-  Object.assign(
-    properties,
-    contractTermProperties(input.termMonths, dealMappings.contractTermMonths)
-  );
+  Object.assign(properties, paymentMethodProperties(parameters.paymentMethod));
+  Object.assign(properties, paymentFrequencyProperties(input.paymentFrequency));
+  Object.assign(properties, autoRenewalProperties(input.autoRenewal));
+  Object.assign(properties, contractTermProperties(input.termMonths));
   Object.assign(properties, discountReasonProperties(parameters.discountReason));
   properties.pricing_approval_timestamp = String(Date.now());
   const document = {
@@ -3414,15 +3373,11 @@ var HUBSPOT_LINE_ITEM_PROPERTIES = /* @__PURE__ */ new Set([
   // Drives display order on the Deal and the Quote.
   "hs_position_on_quote"
 ]);
-var configuredLineItemPropertyNames = (catalogConfiguration) => new Set(Object.values(catalogConfiguration?.hubspotMappings?.lineItemProperties || {}));
-var hubSpotLineItemProperties = (properties, catalogConfiguration) => {
-  const configuredNames = configuredLineItemPropertyNames(catalogConfiguration);
-  return Object.fromEntries(
-    Object.entries(properties).filter(
-      ([key, value]) => (HUBSPOT_LINE_ITEM_PROPERTIES.has(key) || configuredNames.has(key)) && value != null
-    )
-  );
-};
+var hubSpotLineItemProperties = (properties) => Object.fromEntries(
+  Object.entries(properties).filter(
+    ([key, value]) => HUBSPOT_LINE_ITEM_PROPERTIES.has(key) && value != null
+  )
+);
 var isProductBundleRejection = (error) => {
   const message = String(
     error?.body?.message || error?.response?.body?.message || error?.message || ""
@@ -3622,14 +3577,14 @@ var VERIFIED_LINE_ITEM_PROPERTIES = ["one_time_fees", "recurring_fees", "total_f
 var syncDealLineItems = async (client, dealId, state, settings) => {
   const option = selectedOptionForDraft(state);
   assertCurrentSettings(option, settings);
-  const desired = buildDealLineItems(option, settings.catalogConfiguration);
+  const desired = buildDealLineItems(option);
   const createdIds = [];
   let archivedCount = 0;
   let archiveStarted = false;
   try {
     const existingIds = await associatedIds(client, "deals", dealId, "line_items", 1e3);
     const sending = desired.map((item) => ({
-      properties: hubSpotLineItemProperties(item.properties, settings.catalogConfiguration),
+      properties: hubSpotLineItemProperties(item.properties),
       associations: [createAssociation(dealId, 20)]
     }));
     const created = await createLineItemsBatch(client, sending, createdIds);
@@ -4379,7 +4334,7 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
   console.info(
     `Nylas pricing: quote seller resolved -- deal owner=${dealOwnerId || "NONE"} fields=[${Object.keys(sender).join(", ") || "NONE"}]`
   );
-  const lineItems = buildQuoteLineItems(option, content, settings.catalogConfiguration);
+  const lineItems = buildQuoteLineItems(option, content);
   let quote;
   const createdLineItemIds = [];
   try {
@@ -4465,7 +4420,7 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
       [{ associationCategory: "HUBSPOT_DEFINED", associationTypeId: 286 }]
     );
     const sendingQuoteLines = lineItems.map((item) => ({
-      properties: hubSpotLineItemProperties(item.properties, settings.catalogConfiguration),
+      properties: hubSpotLineItemProperties(item.properties),
       // 68, not 67. Association type ids are directional: 67 is defined FROM the quote (0-14) TO
       // the line item, but this association is declared on the line item's own create, so the
       // "from" side is the line item (0-8). HubSpot rejected it with "invalid from object type

@@ -2,7 +2,6 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 
 const { calculateQuote } = require('./calculator');
-const { defaultCatalogConfiguration } = require('./configurationDefaults');
 const {
   _test: lineItemInternals,
   buildDealLineItems,
@@ -10,25 +9,6 @@ const {
   netPrice,
   normalizeQuoteContent,
 } = require('./lineItemModel');
-
-test('catalog settings control product ids, metered order, and custom property names', () => {
-  const configuration = defaultCatalogConfiguration();
-  configuration.products.connect_ca.productId = '999001';
-  configuration.products.connect_ca.order = 80;
-  configuration.products.agent_email_thousands.order = 5;
-  configuration.hubspotMappings.lineItemProperties.proposedRate = 'customer_rate';
-  const lines = buildDealLineItems(option(), configuration);
-  const metered = lines.filter(({ key }) => key.startsWith('metered:'));
-  assert.equal(metered[0].key, 'metered:agent_email_thousands');
-  assert.equal(metered.at(-1).key, 'metered:connect_ca');
-  const connect = lines.find(({ key }) => key === 'metered:connect_ca');
-  assert.equal(connect.properties.hs_product_id, '999001');
-  assert.equal(connect.properties.proposed_rate, undefined);
-  assert.equal(connect.properties.customer_rate, String(option().result.lines[0].billingUnitRate));
-  lines.forEach((line, index) =>
-    assert.equal(line.properties.hs_position_on_quote, String(index)),
-  );
-});
 
 const option = () => {
   const input = {

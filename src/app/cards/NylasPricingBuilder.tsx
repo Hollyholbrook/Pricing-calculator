@@ -660,37 +660,6 @@ const emptyInput = (): QuoteInput => ({
   specialTerms: "",
 });
 
-const firstEnabledKey = <T extends { enabled: boolean; order: number }>(
-  values: Record<string, T>,
-  fallback: string,
-) =>
-  Object.entries(values)
-    .filter(([, entry]) => entry.enabled)
-    .sort(([, left], [, right]) => left.order - right.order)[0]?.[0] ||
-  fallback;
-
-const applyConfigurationDefaults = (
-  input: QuoteInput,
-  configuration: CatalogConfiguration,
-): QuoteInput => ({
-  ...input,
-  termMonths: Number(
-    firstEnabledKey(configuration.contractTerms, String(input.termMonths)),
-  ),
-  paymentFrequency: firstEnabledKey(
-    configuration.paymentOptions,
-    input.paymentFrequency,
-  ),
-  supportLevel: firstEnabledKey(
-    configuration.options.support,
-    input.supportLevel,
-  ),
-  onboardingPackage: firstEnabledKey(
-    configuration.options.onboarding,
-    input.onboardingPackage,
-  ),
-});
-
 const currency = (value?: number) =>
   new Intl.NumberFormat("en-US", {
     style: "currency",
@@ -1035,17 +1004,6 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
   const updateFromBody = (body: ServerlessBody) => {
     if (body.catalogConfiguration) {
       setCatalogConfiguration(body.catalogConfiguration);
-      setEditing((current) =>
-        current.restoredFromDeal
-          ? current
-          : {
-              ...current,
-              input: applyConfigurationDefaults(
-                current.input,
-                body.catalogConfiguration as CatalogConfiguration,
-              ),
-            },
-      );
     }
     if (body.dealName) setDealName(body.dealName);
     if (body.companyName !== undefined) setCompanyName(body.companyName);

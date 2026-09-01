@@ -104,6 +104,9 @@ const DEFAULT_HUBSPOT_MAPPINGS = Object.freeze({
     enterprise: '46037350773',
   }),
   dealProperties: Object.freeze({
+    optionsPayload: 'pricing_quote_options_payload',
+    selectedOptionId: 'pricing_selected_option_id',
+    selectedOptionName: 'pricing_selected_option_name',
     paymentMethod: 'payment_method',
     paymentFrequency: 'payment_frequency',
     autoRenewal: 'auto_renewal__c',

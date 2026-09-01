@@ -9,7 +9,6 @@ import {
   Checkbox,
   Flex,
   Heading,
-  Input,
   LoadingButton,
   LoadingSpinner,
   MultiSelect,
@@ -18,6 +17,7 @@ import {
   Stack,
   StatusTag,
   Text,
+  TextInput,
   hubspot,
 } from "@hubspot/ui-extensions";
 
@@ -1229,7 +1229,7 @@ const CatalogText = ({
   disabled: boolean;
   onChange: (value: string) => void;
 }) => (
-  <Input
+  <TextInput
     label={label}
     name={name}
     value={value}
