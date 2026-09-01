@@ -299,23 +299,6 @@ interface ServerlessBody {
   quoteStatusExpected?: string;
   quoteStatusRepaired?: boolean;
   needsApproval?: boolean;
-  // What the contracts probe actually observed. Printed on the card when the picker is empty:
-  // three rounds were spent reading error strings and inferring, and the card is where the person
-  // who needs it is already looking.
-  contractDiagnostics?: {
-    build?: number;
-    listed?: number;
-    discoveredType?: string | null;
-    discoveredName?: string | null;
-    objectPath?: string | null;
-    readPath?: string | null;
-    readStrategy?: string | null;
-    readReason?: string | null;
-    associatedCount?: number;
-    sawRecords?: boolean;
-    dealAssociationType?: string | null;
-    companyAssociationType?: string | null;
-  };
   dealContactIds?: string[];
   defaultQuoteTemplateId?: string;
   // The flow the server resolved from the Deal's pipeline, and which kind claims each template.
@@ -880,8 +863,6 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
   const [contractsUnavailable, setContractsUnavailable] = useState<
     string | null
   >(null);
-  const [contractDiagnostics, setContractDiagnostics] =
-    useState<ServerlessBody["contractDiagnostics"]>(undefined);
   // Which kind claims each template, from Settings. The rep picks a TEMPLATE and the kind is read
   // off it -- there is no separate Quote Type control. One existed briefly and it let the two
   // disagree on screen (Quote Type "Change" beside the New Business template); the template is
@@ -1038,8 +1019,6 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
     if (body.contractsUnavailable !== undefined) {
       setContractsUnavailable(body.contractsUnavailable);
     }
-    if (body.contractDiagnostics)
-      setContractDiagnostics(body.contractDiagnostics);
     if (body.quoteTemplates) {
       setQuoteTemplates(body.quoteTemplates);
       // Preselect the configured default when it is one of the usable templates, so the picker
@@ -1085,9 +1064,6 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
           ? `HTTP ${d.providerStatus}`
           : undefined,
         d?.providerCategory !== "unknown" ? d?.providerCategory : undefined,
-        d?.quoteTemplateType
-          ? `template ${d.quoteTemplateId} is ${d.quoteTemplateType}`
-          : undefined,
         d?.providerMessage,
       ].filter(Boolean);
       const detail = diagnostic.length ? ` (${diagnostic.join(" · ")})` : "";
@@ -1271,7 +1247,6 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
         contracts={contracts}
         contractId={contractId}
         contractsUnavailable={contractsUnavailable}
-        contractDiagnostics={contractDiagnostics}
         onContractChange={setContractId}
         replaceExistingQuote={replaceExistingQuote}
         onReplaceExistingQuoteChange={setReplaceExistingQuote}
@@ -1307,7 +1282,6 @@ const OptionEditor = ({
   contracts,
   contractId,
   contractsUnavailable,
-  contractDiagnostics,
   onContractChange,
   replaceExistingQuote,
   onReplaceExistingQuoteChange,
@@ -1354,7 +1328,6 @@ const OptionEditor = ({
   }[];
   contractId: string;
   contractsUnavailable: string | null;
-  contractDiagnostics: ServerlessBody["contractDiagnostics"];
   onContractChange: (value: string) => void;
   replaceExistingQuote: boolean;
   onReplaceExistingQuoteChange: (checked: boolean) => void;
@@ -1870,24 +1843,6 @@ const OptionEditor = ({
                                 : contractsUnavailable
                                   ? "Contracts could not be listed. You can still lock in."
                                   : "No contract was found for this Deal or its company."}
-                    </Text>
-                  )}
-                  {/* What the probe actually observed. On the card rather than in the logs,
-                      because three rounds were spent reading error strings and inferring
-                      instead of looking at the numbers. */}
-                  {contracts.length === 0 && contractDiagnostics && (
-                    <Text variant="microcopy">
-                      {`Probe v${contractDiagnostics.build ?? "?"}: ` +
-                        `${contractDiagnostics.associatedCount ?? 0} associated · ` +
-                        `list ${contractDiagnostics.objectPath || "none answered"} ` +
-                        `(${contractDiagnostics.listed ?? 0} records) · ` +
-                        `read ${contractDiagnostics.readPath || "none answered"} ` +
-                        `(${contractDiagnostics.readStrategy || contractDiagnostics.readReason || "no strategy"}) · ` +
-                        `deal assoc ${contractDiagnostics.dealAssociationType || "none"} · ` +
-                        `company assoc ${contractDiagnostics.companyAssociationType || "none"}` +
-                        (contractDiagnostics.discoveredType
-                          ? ` · schema says ${contractDiagnostics.discoveredType}`
-                          : "")}
                     </Text>
                   )}
                 </Flex>
