@@ -1390,7 +1390,7 @@ test('the template picker is narrowed per kind, and never left empty', () => {
 // THE TEMPLATE DECIDES THE KIND. There is no separate Quote Type control -- one existed briefly
 // and let the two disagree on screen: Quote Type "Change" beside the New Business template. The
 // template is what actually prints, so it is the input and the kind is read off it.
-test('a deal is handed one merged template list plus which kind claims each', () => {
+test('every Deal is offered every claimed template, with which kind claims each', () => {
   const settings = normalizeSettings({
     ...defaultSettings(),
     allowRenewals: true,
@@ -1406,20 +1406,24 @@ test('a deal is handed one merged template list plus which kind claims each', ()
     { id: '583243745379', name: 'Renewal' },
   ];
 
-  // A renewal Deal sees BOTH its documents in one list -- no toggle to get from one to the other.
+  // EVERY claimed template, on every Deal. The pipeline used to narrow this list before a rep saw
+  // it, which meant an upsell sitting in the new business pipeline could not be quoted from the
+  // Change template no matter what was selected. Holly, 2026-09-01: the calculator's selection is
+  // what has to be used. The category still picks the DEFAULT -- see below -- and still drives
+  // approval routing; it no longer decides what a rep is allowed to choose.
   const renewal = _test.quoteTemplatesForCategory(all, settings, 'renewal');
   assert.deepEqual(
     renewal.templates.map(({ id }) => id),
-    ['583243623796', '583243745379'],
+    ['567553820432', '583243623796', '583243745379'],
   );
-  // ...and the new-business template is not among them, because its kind is not one a renewal
-  // Deal can quote.
-  assert.equal(renewal.templates.some(({ id }) => id === '567553820432'), false);
   // The claim map is what tells the card whether a contract applies.
   assert.deepEqual(renewal.templateKinds, {
+    '567553820432': 'new_business',
     '583243623796': 'change',
     '583243745379': 'renewal',
   });
+  // The default still comes from the DEAL's own category, so nothing moves unless a rep chooses.
+  assert.equal(renewal.defaultTemplateId, '583243623796');
 
   // A template listed under BOTH kinds is claimed by the FIRST, deterministically. Without that
   // rule the label a rep sees would depend on object key order.
@@ -1435,18 +1439,31 @@ test('a deal is handed one merged template list plus which kind claims each', ()
   const merged = _test.quoteTemplatesForCategory(all, shared, 'renewal');
   assert.equal(merged.templateKinds['583243623796'], 'change', 'first kind claims it');
   assert.equal(merged.templateKinds['583243745379'], 'renewal');
-  // ...and it appears once in the list, not twice.
+  // ...and it appears once in the list, not twice. new_business has an EMPTY enabled list here,
+  // which means "offer everything", so every template is in the merged list once.
   assert.deepEqual(
     merged.templates.map(({ id }) => id),
-    ['583243623796', '583243745379'],
+    ['567553820432', '583243623796', '583243745379'],
   );
 
+  // THE CASE THIS CHANGE EXISTS FOR: a Deal in the new business pipeline is still offered the
+  // Change and Renewal templates, so an upsell can be quoted as a change without moving the Deal.
   const newBusiness = _test.quoteTemplatesForCategory(all, settings, 'new_business');
-  assert.deepEqual(newBusiness.templates.map(({ id }) => id), ['567553820432']);
-  assert.deepEqual(newBusiness.templateKinds, { '567553820432': 'new_business' });
+  assert.deepEqual(newBusiness.templates.map(({ id }) => id), [
+    '567553820432',
+    '583243623796',
+    '583243745379',
+  ]);
+  assert.deepEqual(newBusiness.templateKinds, {
+    '567553820432': 'new_business',
+    '583243623796': 'change',
+    '583243745379': 'renewal',
+  });
+  // ...and it still DEFAULTS to the new business document, so nothing changes by accident.
+  assert.equal(newBusiness.defaultTemplateId, '567553820432');
 });
 
-test('the kind is looked up from the template, and only among the kinds the category allows', () => {
+test('the kind is looked up from the template, across every kind', () => {
   const settings = normalizeSettings({
     ...defaultSettings(),
     allowRenewals: true,
@@ -1463,9 +1480,11 @@ test('the kind is looked up from the template, and only among the kinds the cate
     'new_business',
   );
 
-  // A new-business Deal cannot produce a change quote, whatever template id arrives. Otherwise a
-  // stale card could make one ask for a contract that does not apply.
-  assert.equal(_test.quoteKindForTemplate(settings, 'new_business', '583243623796'), null);
+  // THE TEMPLATE DECIDES THE KIND, and the Deal's pipeline gets no veto. A new business Deal
+  // quoting from the Change template IS producing a change document, and it has to be told so --
+  // otherwise the contract picker would not appear on the one quote that needs it.
+  assert.equal(_test.quoteKindForTemplate(settings, 'new_business', '583243623796'), 'change');
+  assert.equal(_test.quoteKindForTemplate(settings, 'new_business', '583243745379'), 'renewal');
   // A template no kind claims -- normal on a portal where Settings has not assigned them yet.
   assert.equal(_test.quoteKindForTemplate(settings, 'renewal', '999999999999'), null);
   assert.equal(_test.quoteKindForTemplate(settings, 'renewal', ''), null);

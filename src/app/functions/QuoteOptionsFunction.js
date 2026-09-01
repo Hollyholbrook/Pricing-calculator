@@ -15,6 +15,7 @@ const {
   dealCategory,
   quoteKindsForCategory,
   quoteTemplateSettings,
+  QUOTE_KINDS,
 } = require('./appSettings');
 const {
   buildDealLineItems,
@@ -1494,7 +1495,7 @@ const quoteKindForTemplate = (settings, category, templateId) => {
   const id = String(templateId || '');
   if (!id) return null;
   return (
-    quoteKindsForCategory(category).find((kind) =>
+    QUOTE_KINDS.find((kind) =>
       quoteTemplateSettings(settings, kind).enabledIds.map(String).includes(id),
     ) || null
   );
@@ -1510,7 +1511,7 @@ const quoteKindForTemplate = (settings, category, templateId) => {
 // template", which is what an unconfigured portal has. Those templates simply carry no kind, and
 // no contract is asked for -- see the comment on contractApplies below.
 const quoteTemplatesForCategory = (templates, settings, category) => {
-  const kinds = quoteKindsForCategory(category);
+  const kinds = QUOTE_KINDS;
   const seen = new Set();
   const merged = [];
   const templateKinds = {};
@@ -1527,7 +1528,7 @@ const quoteTemplatesForCategory = (templates, settings, category) => {
   return {
     templates: merged,
     templateKinds,
-    defaultTemplateId: defaultQuoteTemplateFor(settings, kinds[0]),
+    defaultTemplateId: defaultQuoteTemplateFor(settings, quoteKindsForCategory(category)[0]),
   };
 };
 
@@ -2124,6 +2125,35 @@ const assertContractChosen = async (client, dealId, quoteKind, contractId) => {
 // straight after the confirmation alert, so a message printed there is gone before it can be read.
 // Three rounds of "the seller contact isn't coming through" produced no usable evidence for
 // exactly that reason. This survives the reload, because it re-reads the quote.
+// TEMP DIAGNOSTIC -- REMOVE WHEN THE TEMPLATE CHOICE IS SETTLED.
+//
+// Which template the LIVE quote was actually built from, read back from HubSpot's own
+// association rather than from what the card believes it sent. The whole point is that it is
+// evidence, not an echo: if the card says one thing and the quote says another, this is what
+// shows it.
+//
+// The name is resolved from the template list the picker already loaded, so this costs ONE
+// association read per card load and no extra name lookup.
+//
+// To remove: delete this function, the `latestQuoteTemplate:` line in the list response, and the
+// block on the card marked TEMP.
+const latestQuoteTemplate = async (client, quoteId, templates) => {
+  if (!quoteId) return null;
+  try {
+    const ids = await associatedIds(client, 'quotes', String(quoteId), 'quote_template', 1);
+    const id = ids[0] ? String(ids[0]) : '';
+    if (!id) return { quoteId: String(quoteId), id: '', name: '' };
+    const match = (templates || []).find((template) => String(template.id) === id);
+    return { quoteId: String(quoteId), id, name: match?.name || '' };
+  } catch (error) {
+    console.warn(
+      `Nylas pricing: could not read the template on quote ${quoteId}. ` +
+        `${String(error?.body?.message || error?.message || error)}`,
+    );
+    return null;
+  }
+};
+
 const quoteContactOptions = async (client, dealId) => {
   const readContacts = async (ids) => {
     if (ids.length === 0) return [];
@@ -3013,11 +3043,8 @@ exports.main = async (context) => {
 
     if (action === 'list') {
       const listCategory = dealCategory(settings, state.dealType, state.pipelineId);
-      const listTemplates = quoteTemplatesForCategory(
-        await usableQuoteTemplates(client),
-        settings,
-        listCategory,
-      );
+      const allTemplates = await usableQuoteTemplates(client);
+      const listTemplates = quoteTemplatesForCategory(allTemplates, settings, listCategory);
       return response(200, {
         success: true,
         ...stateResponse(state),
@@ -3032,8 +3059,10 @@ exports.main = async (context) => {
         ...(await quoteContactOptions(client, dealId)),
         // Only where a contract can apply. A new-business Deal has no change or renewal kind, so
         // asking its company for contracts is a wasted round trip on every card load.
-        ...(listCategory === 'renewal' ? await contractOptions(client, dealId) : {}),
+        ...(await contractOptions(client, dealId)),
         dealOwnerId: state.dealOwnerId,
+        // TEMP DIAGNOSTIC -- see latestQuoteTemplate. Remove with it.
+        latestQuoteTemplate: await latestQuoteTemplate(client, state.latestQuoteId, allTemplates),
         // The card shows this as the Quote title placeholder, so a rep who leaves the field
         // blank can see the name the quote will actually get rather than being surprised by it.
         dealName: state.dealName,

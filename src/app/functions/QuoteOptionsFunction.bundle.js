@@ -1952,7 +1952,7 @@ var require_appSettings = __commonJS({
       if (!/^\d{1,20}$/.test(id)) throw new Error(`INVALID_SETTINGS:${field}`);
       return id;
     };
-    var QUOTE_KINDS = Object.freeze(["new_business", "change", "renewal"]);
+    var QUOTE_KINDS2 = Object.freeze(["new_business", "change", "renewal"]);
     var quoteKindsForCategory2 = (category) => category === "renewal" ? ["change", "renewal"] : ["new_business"];
     var hasPerKindKey = (byKind) => Boolean(byKind) && typeof byKind === "object" && !Array.isArray(byKind);
     var legacyTemplateIds = (legacyEnabled, kind) => {
@@ -1970,7 +1970,7 @@ var require_appSettings = __commonJS({
     var normalizeQuoteTemplatesByKind = (byKind, legacyEnabled, legacyDefault) => {
       const canonical = hasPerKindKey(byKind);
       return Object.fromEntries(
-        QUOTE_KINDS.map((kind) => [
+        QUOTE_KINDS2.map((kind) => [
           kind,
           {
             enabledIds: normalizePipelineIds(
@@ -1986,7 +1986,7 @@ var require_appSettings = __commonJS({
       );
     };
     var quoteTemplateSettings2 = (settings, quoteKind) => {
-      const kind = QUOTE_KINDS.includes(quoteKind) ? quoteKind : "new_business";
+      const kind = QUOTE_KINDS2.includes(quoteKind) ? quoteKind : "new_business";
       return {
         enabledIds: settings?.quoteTemplatesByKind?.[kind]?.enabledIds || [],
         defaultId: settings?.quoteTemplatesByKind?.[kind]?.defaultId || ""
@@ -2317,7 +2317,7 @@ var require_appSettings = __commonJS({
     };
     module2.exports = {
       APPROVAL_TIERS,
-      QUOTE_KINDS,
+      QUOTE_KINDS: QUOTE_KINDS2,
       accountIdFromContext: accountIdFromContext2,
       productRateDescriptors: productRateDescriptors2,
       dealCategory: dealCategory2,
@@ -2352,7 +2352,8 @@ var {
   userIdFromContext,
   dealCategory,
   quoteKindsForCategory,
-  quoteTemplateSettings
+  quoteTemplateSettings,
+  QUOTE_KINDS
 } = require_appSettings();
 var {
   buildDealLineItems,
@@ -3328,12 +3329,12 @@ var defaultQuoteTemplateFor = (settings, quoteKind) => quoteTemplateSettings(set
 var quoteKindForTemplate = (settings, category, templateId) => {
   const id = String(templateId || "");
   if (!id) return null;
-  return quoteKindsForCategory(category).find(
+  return QUOTE_KINDS.find(
     (kind) => quoteTemplateSettings(settings, kind).enabledIds.map(String).includes(id)
   ) || null;
 };
 var quoteTemplatesForCategory = (templates, settings, category) => {
-  const kinds = quoteKindsForCategory(category);
+  const kinds = QUOTE_KINDS;
   const seen = /* @__PURE__ */ new Set();
   const merged = [];
   const templateKinds = {};
@@ -3350,7 +3351,7 @@ var quoteTemplatesForCategory = (templates, settings, category) => {
   return {
     templates: merged,
     templateKinds,
-    defaultTemplateId: defaultQuoteTemplateFor(settings, kinds[0])
+    defaultTemplateId: defaultQuoteTemplateFor(settings, quoteKindsForCategory(category)[0])
   };
 };
 var contractApplies = (quoteKind) => quoteKind === "change" || quoteKind === "renewal";
@@ -3719,6 +3720,21 @@ var assertContractChosen = async (client, dealId, quoteKind, contractId) => {
     throw new Error("QUOTE_CONTRACT_REQUIRED");
   }
   return chosen;
+};
+var latestQuoteTemplate = async (client, quoteId, templates) => {
+  if (!quoteId) return null;
+  try {
+    const ids = await associatedIds(client, "quotes", String(quoteId), "quote_template", 1);
+    const id = ids[0] ? String(ids[0]) : "";
+    if (!id) return { quoteId: String(quoteId), id: "", name: "" };
+    const match = (templates || []).find((template) => String(template.id) === id);
+    return { quoteId: String(quoteId), id, name: match?.name || "" };
+  } catch (error) {
+    console.warn(
+      `Nylas pricing: could not read the template on quote ${quoteId}. ${String(error?.body?.message || error?.message || error)}`
+    );
+    return null;
+  }
 };
 var quoteContactOptions = async (client, dealId) => {
   const readContacts = async (ids) => {
@@ -4315,11 +4331,8 @@ exports.main = async (context) => {
     if (!isDealAllowed(settings, state.dealType, state.pipelineId)) throw new Error("INVALID_DEAL");
     if (action === "list") {
       const listCategory = dealCategory(settings, state.dealType, state.pipelineId);
-      const listTemplates = quoteTemplatesForCategory(
-        await usableQuoteTemplates(client),
-        settings,
-        listCategory
-      );
+      const allTemplates = await usableQuoteTemplates(client);
+      const listTemplates = quoteTemplatesForCategory(allTemplates, settings, listCategory);
       return response(200, {
         success: true,
         ...stateResponse(state),
@@ -4334,8 +4347,10 @@ exports.main = async (context) => {
         ...await quoteContactOptions(client, dealId),
         // Only where a contract can apply. A new-business Deal has no change or renewal kind, so
         // asking its company for contracts is a wasted round trip on every card load.
-        ...listCategory === "renewal" ? await contractOptions(client, dealId) : {},
+        ...await contractOptions(client, dealId),
         dealOwnerId: state.dealOwnerId,
+        // TEMP DIAGNOSTIC -- see latestQuoteTemplate. Remove with it.
+        latestQuoteTemplate: await latestQuoteTemplate(client, state.latestQuoteId, allTemplates),
         // The card shows this as the Quote title placeholder, so a rep who leaves the field
         // blank can see the name the quote will actually get rather than being surprised by it.
         dealName: state.dealName,
