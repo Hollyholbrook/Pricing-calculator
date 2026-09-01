@@ -187,8 +187,26 @@ const QUOTE_KINDS = Object.freeze(['new_business', 'change', 'renewal']);
 // Which kinds a resolved category may choose between. dealCategory also returns 'unsupported';
 // isDealAllowed refuses those Deals before this is reached, so they fall to the new-business kind
 // as a safety net rather than as a route anything takes.
+//
+// A RENEWAL DEAL MAY ALSO QUOTE FROM THE NEW BUSINESS KIND. Holly, 2026-09-01: "make it so I can
+// submit a new business template from renewals."
+//
+// This is not a widening of the new-business rule, which still holds in the direction it was
+// written: a NEW BUSINESS Deal offers new-business templates only, and nothing here changes that.
+// This is the other direction -- a renewal-pipeline Deal that needs to send an ordinary quote.
+//
+// It has real teeth now rather than being a convenience. HubSpot refuses to create a change or
+// renewal quote through the public API at all, so on a renewal Deal those two kinds hand off to
+// HubSpot and produce no quote. Without new_business here, a renewal Deal has no path that ends
+// in a quote this app can create.
+//
+// ORDER MATTERS AND new_business GOES LAST. kinds[0] is what the category's default template is
+// read from, so appending rather than prepending leaves the renewal Deal still defaulting to the
+// change template. It also matches quoteKindForTemplate's own precedence, which puts change and
+// renewal ahead of new_business so a template listed under both keeps the identity of the
+// document it actually is.
 const quoteKindsForCategory = (category) =>
-  category === 'renewal' ? ['change', 'renewal'] : ['new_business'];
+  category === 'renewal' ? ['change', 'renewal', 'new_business'] : ['new_business'];
 
 // The per-kind template settings went under their own key, `quoteTemplatesByKind`, on 2026-08-30.
 // Two older shapes have to keep working:

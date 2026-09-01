@@ -1670,20 +1670,29 @@ test('the template list is narrowed to the Deal, and the kind still comes from t
     { id: '583243745379', name: 'Renewal' },
   ];
 
-  // A renewal Deal sees BOTH its documents in one list -- and NOT the new-business one. Holly,
-  // 2026-09-01: "I don't want all three to be seen on each." Which templates a pipeline may quote
-  // from is a Settings decision, made by putting the id in that kind's enabled list.
+  // A renewal Deal sees its two documents AND the new-business one. Holly, 2026-09-01: "make it
+  // so I can submit a new business template from renewals."
+  //
+  // The earlier instruction -- "I don't want all three to be seen on each" -- still holds in the
+  // direction it was given: a NEW BUSINESS Deal sees new-business templates only, asserted below.
+  // What changed is the other direction, and it has teeth: HubSpot will not create a change or
+  // renewal quote through the API at all, so without the new-business kind a renewal Deal has no
+  // path that ends in a quote this app can create.
   const renewal = _test.quoteTemplatesForCategory(all, settings, 'renewal');
   assert.deepEqual(
     renewal.templates.map(({ id }) => id),
-    ['583243623796', '583243745379'],
+    ['583243623796', '583243745379', '567553820432'],
   );
-  assert.equal(renewal.templates.some(({ id }) => id === '567553820432'), false);
-  // The claim map is what tells the card whether a contract applies.
+  assert.equal(renewal.templates.some(({ id }) => id === '567553820432'), true);
+  // The claim map is what tells the card whether a contract applies. The new-business template
+  // carries its own kind, so choosing it does NOT ask for a contract.
   assert.deepEqual(renewal.templateKinds, {
     '583243623796': 'change',
     '583243745379': 'renewal',
+    '567553820432': 'new_business',
   });
+  // The DEFAULT is unchanged: new_business is appended last, and the default is read from the
+  // category's first kind.
   assert.equal(renewal.defaultTemplateId, '583243623796');
 
   // A template listed under BOTH kinds is claimed by the FIRST, deterministically. Without that
@@ -1700,10 +1709,19 @@ test('the template list is narrowed to the Deal, and the kind still comes from t
   const merged = _test.quoteTemplatesForCategory(all, shared, 'renewal');
   assert.equal(merged.templateKinds['583243623796'], 'change', 'first kind claims it');
   assert.equal(merged.templateKinds['583243745379'], 'renewal');
-  // ...and it appears once in the list, not twice.
+  // ...and it appears ONCE in the list, not twice, which is the point of this case.
+  assert.equal(
+    merged.templates.filter(({ id }) => id === '583243623796').length,
+    1,
+    'a template claimed by two kinds is still offered once',
+  );
+  // The new-business template comes along because this fixture leaves new_business's enabledIds
+  // EMPTY, and empty means "offer every usable template" -- the unconfigured-portal reading, which
+  // now reaches renewal Deals too since they may quote from the new-business kind. A portal that
+  // lists its new-business templates explicitly offers only those.
   assert.deepEqual(
     merged.templates.map(({ id }) => id),
-    ['583243623796', '583243745379'],
+    ['583243623796', '583243745379', '567553820432'],
   );
 
   const newBusiness = _test.quoteTemplatesForCategory(all, settings, 'new_business');
@@ -3299,7 +3317,10 @@ test('per-kind template settings win over the legacy flat keys', () => {
   assert.equal(dealCategory(settings, '', 'db8895ce-da7b-4843-8d7b-4be80a0b7d7b'), 'new_business');
   // The PIPELINE outranks dealtype. Deal 63835136345 is dealtype "newbusiness" in the renewal
   // pipeline, and it is a renewal Deal.
-  assert.deepEqual(quoteKindsForCategory('renewal'), ['change', 'renewal']);
+  // new_business is LAST, deliberately: the category's default template is read from kinds[0], so
+  // a renewal Deal still defaults to the change template. Holly, 2026-09-01: "make it so I can
+  // submit a new business template from renewals."
+  assert.deepEqual(quoteKindsForCategory('renewal'), ['change', 'renewal', 'new_business']);
   assert.deepEqual(quoteKindsForCategory('new_business'), ['new_business']);
 });
 

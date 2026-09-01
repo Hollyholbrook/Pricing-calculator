@@ -402,9 +402,13 @@ test('a kind an admin deliberately cleared stays cleared', () => {
   assert.deepEqual(quoteTemplateSettings(partial, 'renewal'), { enabledIds: [], defaultId: '' });
 });
 
-// The kinds are not the categories: the renewal CATEGORY prints two different documents.
-test('a renewal deal chooses between two kinds; new business has one', () => {
-  assert.deepEqual(quoteKindsForCategory('renewal'), ['change', 'renewal']);
+// The kinds are not the categories: the renewal CATEGORY prints two different documents, and
+// may also send an ordinary new-business one.
+test('a renewal deal may choose any kind; new business has one', () => {
+  // new_business is LAST, deliberately: the category's default template is read from kinds[0], so
+  // a renewal Deal still defaults to the change template. Holly, 2026-09-01: "make it so I can
+  // submit a new business template from renewals."
+  assert.deepEqual(quoteKindsForCategory('renewal'), ['change', 'renewal', 'new_business']);
   assert.deepEqual(quoteKindsForCategory('new_business'), ['new_business']);
   // 'unsupported' never reaches this -- isDealAllowed refuses those Deals -- but it must not
   // resolve to an empty list, which would leave the card with no picker at all.

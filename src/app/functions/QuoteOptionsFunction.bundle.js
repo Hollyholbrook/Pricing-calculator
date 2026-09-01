@@ -1953,7 +1953,7 @@ var require_appSettings = __commonJS({
       return id;
     };
     var QUOTE_KINDS2 = Object.freeze(["new_business", "change", "renewal"]);
-    var quoteKindsForCategory2 = (category) => category === "renewal" ? ["change", "renewal"] : ["new_business"];
+    var quoteKindsForCategory2 = (category) => category === "renewal" ? ["change", "renewal", "new_business"] : ["new_business"];
     var hasPerKindKey = (byKind) => Boolean(byKind) && typeof byKind === "object" && !Array.isArray(byKind);
     var legacyTemplateIds = (legacyEnabled, kind) => {
       if (Array.isArray(legacyEnabled)) return legacyEnabled;
