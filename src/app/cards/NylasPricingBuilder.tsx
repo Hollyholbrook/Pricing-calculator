@@ -594,7 +594,17 @@ const canonical = (value: unknown): string =>
 const usableStartDate = (saved?: string | null) => {
   if (!saved || !/^\d{4}-\d{2}-\d{2}$/.test(saved))
     return firstDayOfFollowingMonth();
-  return saved >= todayIso() ? saved : firstDayOfFollowingMonth();
+  // STRICTLY AFTER TODAY. Holly, 2026-09-01: "It can't be today. So if it's the 1st of the month
+  // set it to the next month."
+  //
+  // This was `saved >= todayIso()`, which accepted a start date of TODAY. That is invisible most
+  // of the month -- a stale date is in the past and gets replaced anyway -- and shows up on
+  // exactly one day: when a configuration was saved on the 1st, "the 1st of this month" is both
+  // today and a first-of-month, so it looked like a legitimate start date and was kept.
+  //
+  // Anything at or before today falls through to the first of NEXT month, which is what the
+  // default already is. A saved date genuinely in the future is still kept.
+  return saved > todayIso() ? saved : firstDayOfFollowingMonth();
 };
 
 const emptyInput = (): QuoteInput => ({

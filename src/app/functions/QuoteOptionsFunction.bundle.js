@@ -4265,7 +4265,26 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
         // string for a date in HubSpot -- that is not "no date", it lands on the epoch and prints
         // as January 1, 1970.
         hs_expiration_date: quoteExpirationDate(option.result.dates.contractStartDate),
-        ...option.result.dates.contractStartDate ? { hs_contract_effective_start_date: option.result.dates.contractStartDate } : {},
+        ...option.result.dates.contractStartDate ? {
+          hs_contract_effective_start_date: option.result.dates.contractStartDate,
+          // CUSTOM, sent explicitly alongside the date. Holly, 2026-09-01: "the effective date
+          // needs to be the first of the next month. there can't be where the line items date
+          // is after the effective date."
+          //
+          // All three quote templates carry hs_contract_effective_start_date_type =
+          // ON_AGREEMENT, which means "effective when the customer accepts" -- HubSpot then
+          // resolves the effective date to the acceptance date, i.e. today. Quote 42608004129
+          // (20:39, made through the contract UI) came out effective 2026-09-01 while its line
+          // items were dated 2026-10-01: the lines start a month AFTER the contract does.
+          //
+          // The line items are right. hs_recurring_billing_start_date is set from the same
+          // contractStartDate as this field (see lineItemModel), so pinning the type here is
+          // what keeps the two in agreement rather than letting acceptance move one of them.
+          //
+          // Sending the date without the type is not enough: the type is what HubSpot reads to
+          // decide whether the date it was given survives.
+          hs_contract_effective_start_date_type: "CUSTOM"
+        } : {},
         // hs_comments and hs_terms are deliberately not sent.
         //
         // hs_terms is the property the quote template's "Payment Terms:" section renders. The app

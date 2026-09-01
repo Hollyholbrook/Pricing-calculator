@@ -3182,3 +3182,84 @@ test('per-kind template settings win over the legacy flat keys', () => {
   assert.deepEqual(quoteKindsForCategory('renewal'), ['change', 'renewal']);
   assert.deepEqual(quoteKindsForCategory('new_business'), ['new_business']);
 });
+
+// THE CONTRACT START DATE IS NEVER TODAY.
+//
+// Holly, 2026-09-01: "It can't be today. So if it's the 1st of the month set it to the next
+// month." The rule was `saved >= todayIso()`, which accepted a saved start date of TODAY. That is
+// invisible on most days -- a stale date is in the past and gets replaced anyway -- and surfaces
+// on exactly one: a configuration saved on the 1st restores "the 1st of this month", which is
+// simultaneously today and a plausible first-of-month, so it was kept.
+test('a restored start date must be strictly after today', () => {
+  const card = require('node:fs').readFileSync(
+    require('node:path').join(__dirname, '..', 'cards', 'NylasPricingBuilder.tsx'),
+    'utf8',
+  );
+  const usable = card.match(/const usableStartDate = \(saved\?: string \| null\) => \{([\s\S]*?)\n\};/);
+  assert.ok(usable, 'usableStartDate must be findable');
+  const body = usable[1]
+    .split('\n')
+    .filter((line) => !line.trim().startsWith('//'))
+    .join('\n');
+
+  assert.match(body, /saved > todayIso\(\) \? saved : firstDayOfFollowingMonth\(\)/);
+  assert.doesNotMatch(
+    body,
+    /saved >= todayIso\(\)/,
+    'a start date of today must fall through to the first of next month',
+  );
+
+  // The fallback is the first of the FOLLOWING month, so "not today" can never resolve to another
+  // date in the current month either.
+  assert.match(
+    card,
+    /const firstDayOfFollowingMonth = \(\) => \{[\s\S]*?today\.getMonth\(\) \+ 1, 1\)/,
+  );
+
+  // And an unusable or missing value takes the same path.
+  assert.match(body, /if \(!saved \|\| !\/\^\\d\{4\}-\\d\{2\}-\\d\{2\}\$\/\.test\(saved\)\)/);
+});
+
+// THE EFFECTIVE DATE AND THE LINE ITEM BILLING START MUST BE THE SAME DATE.
+//
+// Holly, 2026-09-01: "the effective date needs to be the first of the next month. there can't be
+// where the line items date is after the effective date."
+//
+// All three quote templates carry hs_contract_effective_start_date_type = ON_AGREEMENT, so
+// HubSpot resolves the effective date to the acceptance date. Quote 42608004129 (20:39, created
+// through the contract UI) came out effective 2026-09-01 with line items dated 2026-10-01 -- the
+// lines starting a month after the contract. Pinning the type to CUSTOM is what makes the date the
+// app sends survive.
+test('the quote effective start date is pinned, and matches the line items', () => {
+  const source = require('node:fs').readFileSync(
+    require('node:path').join(__dirname, 'QuoteOptionsFunction.js'),
+    'utf8',
+  );
+  const create = source.match(
+    /quote = await client\.crm\.quotes\.basicApi\.create\(\{([\s\S]*?)\n      \},/,
+  );
+  assert.ok(create, 'the quote create call must be findable');
+  const body = create[1]
+    .split('\n')
+    .filter((line) => !line.trim().startsWith('//'))
+    .join('\n');
+
+  assert.match(
+    body,
+    /hs_contract_effective_start_date: option\.result\.dates\.contractStartDate,/,
+  );
+  assert.match(body, /hs_contract_effective_start_date_type: 'CUSTOM',/);
+  // Both sit inside the same guard, so the type is never sent without a date to pin.
+  assert.match(body, /\.\.\.\(option\.result\.dates\.contractStartDate\s*\n?\s*\?\s*\{/);
+
+  // ...and the line items bill from the SAME value. If these two ever read different sources the
+  // quote can go out with lines starting after the contract does.
+  const model = require('node:fs').readFileSync(
+    require('node:path').join(__dirname, 'lineItemModel.js'),
+    'utf8',
+  );
+  assert.match(
+    model,
+    /hs_recurring_billing_start_date: option\.result\.dates\.contractStartDate/,
+  );
+});
