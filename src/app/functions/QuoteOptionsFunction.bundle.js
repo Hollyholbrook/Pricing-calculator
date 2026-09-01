@@ -2454,6 +2454,7 @@ var ARCHIVABLE_QUOTE_STATUSES = Object.freeze([
   QUOTE_STATUS_APPROVAL_NOT_NEEDED,
   "REJECTED"
 ]);
+var QUOTE_ACCEPTANCE_METHOD = "clickwrap";
 var MAX_OPTIONS = 10;
 var MAX_PAYLOAD_LENGTH = 6e4;
 var SAFE_ERRORS = Object.freeze({
@@ -4300,20 +4301,28 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
         } : {},
         // The Seller block the customer reads. The owner above is the CRM record's owner; these
         // three are what the quote actually prints. Both are needed.
-        ...sender
-        // NO ACCEPTANCE METHOD. Holly, 2026-09-01: "hs_acceptance_method / hs_esign_enabled ...
-        // all 4 of those should not be sent when creating".
+        ...sender,
+        // ACCEPTANCE METHOD IS SENT, AND HAS TO BE. Removed 2026-09-01 on the instruction that the
+        // app should not set it; put back 14 minutes later, measured:
         //
-        // This was set to clickwrap from 2026-08-28 because generated quotes came out
-        // "Print and sign" while the saved template said otherwise, and HubSpot's guide says
-        // print_and_sign is the API default and is not inherited from the template. That may
-        // still be true -- if quotes come back as Print and sign, this is why, and the fix is the
-        // portal/template default rather than the app setting it per quote.
+        //   20:04:45  app sends clickwrap  -> clickwrap,      signature box OFF
+        //   20:14:58  app sends nothing    -> print_and_sign, signature box ON
+        //   20:15:34  app sends nothing    -> print_and_sign, signature box ON
+        //   20:18:04  app sends nothing    -> print_and_sign, signature box ON
         //
-        // hs_esign_enabled, hs_cover_letter and hs_executive_summary are the other three named in
-        // that instruction. The app has never sent any of them and must not start: a hand-made
-        // quote carries cover letter and executive summary because HubSpot's Quotes tool writes
-        // them, and the app is not the owner of the quote's prose.
+        // All three templates are set to clickwrap. HubSpot does NOT inherit it: print_and_sign is
+        // the API default for a quote created through the API, and it wins over the template. So
+        // "don't send it" means every generated quote asks the customer for a signature, which is
+        // the opposite of what Nylas wants -- Holly: "all are accept without signature".
+        //
+        // This is the second time this property has been removed and restored on the same
+        // evidence. Do not remove it again without first changing the portal or template default
+        // AND confirming a generated quote comes out clickwrap.
+        hs_acceptance_method: QUOTE_ACCEPTANCE_METHOD
+        // hs_esign_enabled, hs_cover_letter and hs_executive_summary stay unsent. The app has
+        // never sent any of them and must not start: a hand-made quote carries cover letter and
+        // executive summary because HubSpot's Quotes tool writes that prose, and the app is not
+        // its owner.
         // hs_status is NOT sent here. "CPQ Quotes cannot be published on create. Create as
         // draft and then update to be published." -- HubSpot, verbatim. The quote is created at
         // DRAFT and moved after its line items exist; see the transition below.

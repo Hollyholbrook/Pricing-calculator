@@ -902,17 +902,25 @@ test('the quote create sends only what a CPQ quote structurally needs', () => {
   // Guarded, because an empty string is not "no owner" to HubSpot.
   assert.match(body, /\.\.\.\(dealOwnerId\s*\n?\s*\?\s*\{/);
 
-  // NOT SENT. Holly, 2026-09-01: "all 4 of those should not be sent when creating".
+  // THE ACCEPTANCE METHOD IS SENT, AND HAS TO BE. Removed on 2026-09-01 and restored 14 minutes
+  // later on measured evidence:
   //
-  // hs_cover_letter and hs_executive_summary are what a hand-made quote carries and a generated
-  // one does not -- HubSpot's Quotes tool writes that prose, and the app is not its owner. The
-  // acceptance method and e-sign flag belong to the template and the portal, not to each quote.
-  for (const property of [
-    'hs_acceptance_method',
-    'hs_esign_enabled',
-    'hs_cover_letter',
-    'hs_executive_summary',
-  ]) {
+  //   20:04:45  app sends clickwrap  -> clickwrap,      signature box OFF
+  //   20:14:58  app sends nothing    -> print_and_sign, signature box ON
+  //   20:15:34  app sends nothing    -> print_and_sign, signature box ON
+  //   20:18:04  app sends nothing    -> print_and_sign, signature box ON
+  //
+  // All three templates are set to clickwrap and HubSpot does not inherit it. Not sending this
+  // asks every customer for a signature. Holly: "all are accept without signature."
+  assert.match(body, /hs_acceptance_method: QUOTE_ACCEPTANCE_METHOD/);
+  const method = source.match(/const QUOTE_ACCEPTANCE_METHOD = '([a-z_]+)';/);
+  assert.ok(method, 'the acceptance method must be a named constant');
+  assert.equal(method[1], 'clickwrap', 'Holly: quotes accept without a signature');
+
+  // NOT SENT. hs_cover_letter and hs_executive_summary are what a hand-made quote carries and a
+  // generated one does not -- HubSpot's Quotes tool writes that prose, and the app is not its
+  // owner. hs_esign_enabled belongs to the portal.
+  for (const property of ['hs_esign_enabled', 'hs_cover_letter', 'hs_executive_summary']) {
     assert.doesNotMatch(
       body,
       new RegExp(`${property}\\s*:`),
