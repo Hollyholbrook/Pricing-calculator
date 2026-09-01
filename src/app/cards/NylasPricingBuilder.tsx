@@ -460,14 +460,22 @@ const addOnOptions = [
 // The retired option is offered ONLY while it is still selected: reps never see it on a new
 // quote, an existing quote still renders and still prices, and unticking it is a one-way door,
 // which is what we want.
-const LEGACY_ADD_ON = {
-  value: "enterprise_accelerator",
-  label: "Enterprise Accelerator Package (retired — use Shared OAuth App)",
-};
-const addOnOptionsFor = (selected: readonly string[]) =>
-  selected.includes(LEGACY_ADD_ON.value)
-    ? [...addOnOptions, LEGACY_ADD_ON]
-    : addOnOptions;
+// The Enterprise Accelerator Package is RETIRED and is no longer offered. On Enterprise its
+// contents are already in the contract; the paid add-on is the Shared OAuth App, same $2,400.
+//
+// It used to be kept in the list while selected, because MultiSelect is given `value` and
+// `options` together and a stored value with no matching option STOPS THE CARD RENDERING -- the
+// failure that looked like "refresh stopped working" with an empty function log. So removing the
+// option means removing it from the value as well, or that blank card returns on any Deal that
+// still carries it.
+//
+// A Deal that still has it stored therefore loses the line when it is next locked in. That is the
+// intended outcome -- the SKU is retired -- but it is a $2,400/yr line disappearing, so it is
+// stated here rather than left to be discovered.
+const RETIRED_ADD_ONS = ["enterprise_accelerator"];
+
+const sellableAddOns = (selected: readonly string[]) =>
+  selected.filter((value) => !RETIRED_ADD_ONS.includes(String(value)));
 
 const professionalServiceOptions = [
   { value: "google_verification_review", label: "Google Verification Review" },
@@ -1143,8 +1151,20 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
     });
   };
 
+  // Retired add-ons are stripped from EVERY input that leaves this card, not just from the
+  // control that renders them. Filtering only the displayed value would show the Accelerator
+  // unselected on a Deal that still has it stored while the price kept charging for it -- the
+  // card and the money disagreeing is worse than either state on its own.
+  const withoutRetiredAddOns = (input: QuoteInput): QuoteInput => ({
+    ...input,
+    addOns: sellableAddOns(input.addOns),
+  });
+
   const previewQuote = async (input: QuoteInput) => {
-    const body = await runAction({ action: "preview", input });
+    const body = await runAction({
+      action: "preview",
+      input: withoutRetiredAddOns(input),
+    });
     if (!body.previewResult) {
       throw new PricingActionError("Unable to preview this pricing option.");
     }
@@ -1157,7 +1177,7 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
     try {
       const body = await runAction({
         action: "lock_live",
-        input: editing.input,
+        input: withoutRetiredAddOns(editing.input),
         quoteContent,
         paymentMethod,
         discountReason,
@@ -1448,7 +1468,7 @@ const OptionEditor = ({
           `${label} ${asPercent(option.input.productDiscounts?.[key] || 0)}` +
           ((option.input.volumes[key] || 0) > 0 ? "" : " (no volume)"),
       ),
-    ...addOnOptionsFor(option.input.addOns)
+    ...addOnOptions
       .filter(
         ({ value }) => (option.input.addOnDiscounts?.[String(value)] || 0) > 0,
       )
@@ -2069,8 +2089,8 @@ const OptionEditor = ({
                     <MultiSelect
                       label="Subscription Add-ons"
                       name="add_ons"
-                      value={option.input.addOns}
-                      options={addOnOptionsFor(option.input.addOns)}
+                      value={sellableAddOns(option.input.addOns)}
+                      options={addOnOptions}
                       onChange={(value) =>
                         onInputChange("addOns", value.map(String))
                       }
@@ -2079,9 +2099,11 @@ const OptionEditor = ({
                       option meant a column of read-only 0% inputs for things nobody is buying,
                       which is most of this section's height and reads as broken rather than
                       inactive. */}
-                    {addOnOptionsFor(option.input.addOns)
+                    {addOnOptions
                       .filter(({ value }) =>
-                        option.input.addOns.includes(String(value)),
+                        sellableAddOns(option.input.addOns).includes(
+                          String(value),
+                        ),
                       )
                       .map(({ value, label }) => (
                         <Flex key={value} direction="column" gap="xs">
