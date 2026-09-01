@@ -1032,8 +1032,21 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
       // then the first in the list.
       const preferred = body.defaultQuoteTemplateId || "";
       const templates = body.quoteTemplates || [];
+      // WHAT THE LAST QUOTE ACTUALLY USED COMES FIRST.
+      //
+      // templateId is component state and Lock in calls reloadPage(), so the card remounts with
+      // an empty selection and the preselect runs again. Before this, that meant every Lock in
+      // silently put the picker back on the category default -- pick Change, lock in, and the
+      // next lock quietly used New Business again. Holly, 2026-09-01: "Every few minutes it stops
+      // using the right template." Every few minutes was every Lock in.
+      //
+      // Read back from HubSpot's own association rather than from anything this card remembers,
+      // so the picker shows what the Deal's quote was really built from.
+      const lastUsed = body.latestQuoteTemplate?.id || "";
       setTemplateId((current) => {
         if (current) return current;
+        if (lastUsed && templates.some(({ id }) => id === lastUsed))
+          return lastUsed;
         if (templates.some(({ id }) => id === preferred)) return preferred;
         const byName = templates.find(({ name }) =>
           DEFAULT_TEMPLATE_NAME_MATCH.test(name),
