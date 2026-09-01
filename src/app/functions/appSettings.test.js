@@ -8,8 +8,8 @@ const {
   defaultSettings,
   isDealAllowed,
   normalizeSettings,
-  quoteKindsForCategory,
   quoteTemplateSettings,
+  dealCategory,
 } = require('./appSettings');
 
 test('deal eligibility defaults to New Business only', () => {
@@ -301,30 +301,6 @@ test('quote template settings default to today behaviour, for every kind', () =>
   assert.equal(settings.defaultQuoteTemplateId, '');
 });
 
-test('quote template ids are validated per kind, and blank stays meaningful', () => {
-  const base = defaultSettings();
-  const saved = normalizeSettings({
-    ...base,
-    quoteTemplatesByKind: byKind({ renewal: { enabledIds: ['123', '456'], defaultId: '123' } }),
-  });
-  assert.deepEqual(quoteTemplateSettings(saved, 'renewal'), {
-    enabledIds: ['123', '456'],
-    defaultId: '123',
-  });
-  // A kind that was not configured stays empty rather than inheriting another kind's choice.
-  assert.deepEqual(quoteTemplateSettings(saved, 'new_business').enabledIds, []);
-  assert.equal(quoteTemplateSettings(saved, 'change').defaultId, '');
-  // Junk is not accepted, and the error names the kind that carried it.
-  assert.throws(
-    () =>
-      normalizeSettings({
-        ...base,
-        quoteTemplatesByKind: byKind({ change: { enabledIds: [], defaultId: 'not-an-id' } }),
-      }),
-    /INVALID_SETTINGS:quoteTemplatesByKind\.change\.defaultId/,
-  );
-});
-
 // THE ROLLBACK GUARANTEE. The per-kind data lives under its own key so that code predating it
 // still finds a plain array and a plain id in the old fields. Without this, a record saved by the
 // new Settings screen made the OLD normalizeSettings throw INVALID_SETTINGS, which readSettings
@@ -370,68 +346,79 @@ test('a portal saved with the old flat template settings still works', () => {
   }
 });
 
-// Precedence is decided on the WHOLE key, not entry by entry: an empty enabledIds under
-// quoteTemplatesByKind is a real answer ("offer every usable template"), and must not silently
-// inherit the legacy list instead.
-test('a kind an admin deliberately cleared stays cleared', () => {
-  const saved = normalizeSettings({
-    ...defaultSettings(),
-    quoteTemplatesByKind: byKind({
-      new_business: { enabledIds: ['567553820432'], defaultId: '567553820432' },
-    }),
-    // Present, non-empty, and it must be ignored -- the canonical key wins outright.
-    enabledQuoteTemplateIds: ['999999999999'],
-    defaultQuoteTemplateId: '999999999999',
-  });
-  assert.deepEqual(quoteTemplateSettings(saved, 'change'), { enabledIds: [], defaultId: '' });
-  assert.deepEqual(quoteTemplateSettings(saved, 'new_business').enabledIds, ['567553820432']);
-
-  // Same rule where a kind is MISSING from the key rather than present-and-empty -- a record
-  // written by a partial or hand-edited save. The key is still authoritative, so the absent kind
-  // reads as empty ("offer every usable template") and does not fall back to the legacy mirror.
-  // Falling back would resurrect a list the admin had moved away from, on a kind they never set.
-  const partial = normalizeSettings({
-    ...defaultSettings(),
-    quoteTemplatesByKind: {
-      new_business: { enabledIds: ['567553820432'], defaultId: '567553820432' },
-    },
-    enabledQuoteTemplateIds: ['999999999999'],
-    defaultQuoteTemplateId: '999999999999',
-  });
-  assert.deepEqual(quoteTemplateSettings(partial, 'change'), { enabledIds: [], defaultId: '' });
-  assert.deepEqual(quoteTemplateSettings(partial, 'renewal'), { enabledIds: [], defaultId: '' });
-});
-
-// The kinds are not the categories: the renewal CATEGORY prints two different documents, and
-// may also send an ordinary new-business one.
-test('a renewal deal may choose any kind; new business has one', () => {
-  // new_business is LAST, deliberately: the category's default template is read from kinds[0], so
-  // a renewal Deal still defaults to the change template. Holly, 2026-09-01: "make it so I can
-  // submit a new business template from renewals."
-  assert.deepEqual(quoteKindsForCategory('renewal'), ['change', 'renewal', 'new_business']);
-  assert.deepEqual(quoteKindsForCategory('new_business'), ['new_business']);
-  // 'unsupported' never reaches this -- isDealAllowed refuses those Deals -- but it must not
-  // resolve to an empty list, which would leave the card with no picker at all.
-  assert.deepEqual(quoteKindsForCategory('unsupported'), ['new_business']);
-});
-
-test('an unknown quote kind reads as new business rather than as "offer everything"', () => {
+// ONE TEMPLATE LIST. The per-kind split went with the change and renewal flows on 2026-09-01:
+// HubSpot will not create either of those quotes through the public API, so the app prints one
+// document and needs one list.
+test('the flat template keys are authoritative', () => {
   const settings = normalizeSettings({
     ...defaultSettings(),
-    quoteTemplatesByKind: byKind({
-      new_business: { enabledIds: ['111'], defaultId: '111' },
-      change: { enabledIds: ['222'], defaultId: '222' },
-      renewal: { enabledIds: ['333'], defaultId: '333' },
-    }),
+    enabledQuoteTemplateIds: ['567553820432', '583243745379'],
+    defaultQuoteTemplateId: '567553820432',
   });
-  assert.deepEqual(quoteTemplateSettings(settings, 'change'), {
-    enabledIds: ['222'],
-    defaultId: '222',
+  assert.deepEqual(quoteTemplateSettings(settings).enabledIds, [
+    '567553820432',
+    '583243745379',
+  ]);
+  assert.equal(quoteTemplateSettings(settings).defaultId, '567553820432');
+});
+
+// THE MIGRATION, and it is a read-time fallback rather than a rewrite of every stored record.
+// Every settings record in the portal today carries only quoteTemplatesByKind, so its new-business
+// entry has to resolve on the FIRST read -- before anyone opens Settings and saves. Without this a
+// live portal comes back with an empty list, which means "offer every template", which is a
+// silently wider picker rather than a visible failure.
+test('a record written before the kinds were removed still reads', () => {
+  const legacy = normalizeSettings({
+    ...defaultSettings(),
+    enabledQuoteTemplateIds: [],
+    defaultQuoteTemplateId: '',
+    quoteTemplatesByKind: {
+      new_business: { enabledIds: ['567553820432'], defaultId: '567553820432' },
+      change: { enabledIds: ['583243623796'], defaultId: '583243623796' },
+      renewal: { enabledIds: ['583243745379'], defaultId: '583243745379' },
+    },
   });
-  // An empty enabledIds means "every usable template", so an unrecognised kind must NOT fall
-  // through to empty -- that would quietly widen the picker instead of narrowing it.
-  assert.deepEqual(quoteTemplateSettings(settings, 'nonsense'), {
-    enabledIds: ['111'],
-    defaultId: '111',
+  assert.deepEqual(legacy.enabledQuoteTemplateIds, ['567553820432']);
+  assert.equal(legacy.defaultQuoteTemplateId, '567553820432');
+  // The change and renewal lists are NOT merged in. They were the templates for documents this
+  // app no longer prints; carrying them over would put a Change Quote Template back in the picker.
+  assert.equal(legacy.enabledQuoteTemplateIds.includes('583243623796'), false);
+  assert.equal(legacy.enabledQuoteTemplateIds.includes('583243745379'), false);
+});
+
+// ROLLBACK SAFETY, the inverse of what this key used to be for. Code that predates the removal
+// reads quoteTemplatesByKind; if a save left it absent, that older normalizeSettings throws
+// INVALID_SETTINGS, which readSettings turns into SETTINGS_CONFIGURATION_REQUIRED -- taking the
+// whole card down, not just Settings, for anyone who rolls back.
+test('quoteTemplatesByKind is still written, mirroring the one list', () => {
+  const settings = normalizeSettings({
+    ...defaultSettings(),
+    enabledQuoteTemplateIds: ['567553820432'],
+    defaultQuoteTemplateId: '567553820432',
   });
+  for (const kind of ['new_business', 'change', 'renewal']) {
+    assert.deepEqual(settings.quoteTemplatesByKind[kind], {
+      enabledIds: ['567553820432'],
+      defaultId: '567553820432',
+    });
+  }
+});
+
+// APPROVAL ROUTING SURVIVED THE REMOVAL. Holly, 2026-09-01, choosing to keep it: a renewal
+// discount still routes to the renewal approver even though renewals no longer have their own
+// templates or documents. dealCategory exists for this and nothing else now, so a change that
+// deletes it as "unused" is deleting the approval matrix.
+test('dealCategory still resolves the renewal pipeline, for approvals', () => {
+  const settings = normalizeSettings({
+    ...defaultSettings(),
+    allowRenewals: true,
+    newBusinessPipelineIds: ['db8895ce-da7b-4843-8d7b-4be80a0b7d7b'],
+    renewalPipelineIds: ['876727403'],
+  });
+  assert.equal(dealCategory(settings, 'newbusiness', '876727403'), 'renewal');
+  assert.equal(
+    dealCategory(settings, '', 'db8895ce-da7b-4843-8d7b-4be80a0b7d7b'),
+    'new_business',
+  );
+  assert.equal(isDealAllowed(settings, 'newbusiness', '876727403'), true);
 });

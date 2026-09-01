@@ -1903,23 +1903,33 @@ var require_appSettings = __commonJS({
       //
       // Everything else in Settings stays shared: one rate card, one set of thresholds. Only the
       // templates differ, so only the templates are nested.
+      // ONE LIST. There is no longer a per-kind split.
+      //
+      // Quote kinds existed because the app printed three documents -- new business, change and
+      // renewal -- and had to know which templates belonged to which. It cannot print the other two
+      // any more: HubSpot refuses to create a change or renewal quote through the public API
+      // ("'hs_type' must be set to 'INITIAL'"), so those are made in HubSpot, from the Deal. What is
+      // left is one document and therefore one template list. Holly, 2026-09-01.
+      //
+      // These are the flat keys the app used before 2026-08-30, promoted back to being the real ones
+      // rather than derived mirrors. Empty still means "offer every usable template", and an empty
+      // default still falls back to the QUOTE_TEMPLATE_ID secret, exactly as before.
+      enabledQuoteTemplateIds: [],
+      defaultQuoteTemplateId: "",
+      // DERIVED MIRROR, the inverse of what this key used to be. Never edited, never read by this
+      // code, written on every save.
+      //
+      // It exists so a ROLLBACK is survivable, the same reason the flat keys used to exist. Code that
+      // predates this change reads quoteTemplatesByKind and would find nothing; every kind therefore
+      // mirrors the one list, which is what a single list meant before kinds existed. Without it, a
+      // record saved by this Settings screen makes the older normalizeSettings throw INVALID_SETTINGS,
+      // which readSettings turns into SETTINGS_CONFIGURATION_REQUIRED -- taking the whole card down,
+      // not just Settings, for anyone who rolls back after a save.
       quoteTemplatesByKind: {
         new_business: { enabledIds: [], defaultId: "" },
         change: { enabledIds: [], defaultId: "" },
         renewal: { enabledIds: [], defaultId: "" }
       },
-      // LEGACY MIRRORS, derived -- never edited directly, never read by this code.
-      //
-      // They exist so a ROLLBACK is survivable. The per-kind data lives under its own key, so code
-      // that predates it still finds a plain array and a plain id here and keeps working. Without
-      // this, a record saved by the new Settings screen made the old normalizeSettings throw
-      // INVALID_SETTINGS, which readSettings turns into SETTINGS_CONFIGURATION_REQUIRED -- taking the
-      // whole card down, not just Settings, for anyone who rolled back after a save.
-      //
-      // They mirror the NEW BUSINESS kind, which is what a single shared list meant before kinds
-      // existed. Empty falls back to the QUOTE_TEMPLATE_ID secret, as it always did.
-      enabledQuoteTemplateIds: [],
-      defaultQuoteTemplateId: "",
       pricingPolicy: defaultPricingPolicy()
     });
     var compactVolume = (value) => {
@@ -1952,44 +1962,13 @@ var require_appSettings = __commonJS({
       if (!/^\d{1,20}$/.test(id)) throw new Error(`INVALID_SETTINGS:${field}`);
       return id;
     };
-    var QUOTE_KINDS2 = Object.freeze(["new_business", "change", "renewal"]);
-    var quoteKindsForCategory2 = (category) => category === "renewal" ? ["change", "renewal", "new_business"] : ["new_business"];
-    var hasPerKindKey = (byKind) => Boolean(byKind) && typeof byKind === "object" && !Array.isArray(byKind);
-    var legacyTemplateIds = (legacyEnabled, kind) => {
-      if (Array.isArray(legacyEnabled)) return legacyEnabled;
-      if (legacyEnabled && typeof legacyEnabled === "object") return legacyEnabled[kind];
-      return [];
-    };
-    var legacyDefaultId = (legacyDefault, kind) => {
-      if (typeof legacyDefault === "string" || typeof legacyDefault === "number") return legacyDefault;
-      if (legacyDefault && typeof legacyDefault === "object" && !Array.isArray(legacyDefault)) {
-        return legacyDefault[kind];
-      }
-      return "";
-    };
-    var normalizeQuoteTemplatesByKind = (byKind, legacyEnabled, legacyDefault) => {
-      const canonical = hasPerKindKey(byKind);
-      return Object.fromEntries(
-        QUOTE_KINDS2.map((kind) => [
-          kind,
-          {
-            enabledIds: normalizePipelineIds(
-              (canonical ? byKind[kind]?.enabledIds : legacyTemplateIds(legacyEnabled, kind)) || [],
-              `quoteTemplatesByKind.${kind}.enabledIds`
-            ),
-            defaultId: normalizeTemplateId(
-              canonical ? byKind[kind]?.defaultId : legacyDefaultId(legacyDefault, kind),
-              `quoteTemplatesByKind.${kind}.defaultId`
-            )
-          }
-        ])
-      );
-    };
-    var quoteTemplateSettings2 = (settings, quoteKind) => {
-      const kind = QUOTE_KINDS2.includes(quoteKind) ? quoteKind : "new_business";
+    var quoteTemplateSettings2 = (settings) => {
+      const flatEnabled = settings?.enabledQuoteTemplateIds;
+      const flatDefault = settings?.defaultQuoteTemplateId;
+      const legacy = settings?.quoteTemplatesByKind?.new_business;
       return {
-        enabledIds: settings?.quoteTemplatesByKind?.[kind]?.enabledIds || [],
-        defaultId: settings?.quoteTemplatesByKind?.[kind]?.defaultId || ""
+        enabledIds: (Array.isArray(flatEnabled) && flatEnabled.length > 0 ? flatEnabled : legacy?.enabledIds) || [],
+        defaultId: flatDefault || legacy?.defaultId || ""
       };
     };
     var requireApprovalTier = (value, field) => {
@@ -2175,11 +2154,16 @@ var require_appSettings = __commonJS({
       if (!value.allowNewBusiness && !value.allowRenewals) {
         throw new Error("INVALID_SETTINGS:allowedDealTypes");
       }
-      const byKind = normalizeQuoteTemplatesByKind(
-        value.quoteTemplatesByKind,
-        value.enabledQuoteTemplateIds,
-        value.defaultQuoteTemplateId
+      const legacyNewBusiness = value.quoteTemplatesByKind?.new_business;
+      const enabledQuoteTemplateIds = normalizePipelineIds(
+        (Array.isArray(value.enabledQuoteTemplateIds) && value.enabledQuoteTemplateIds.length > 0 ? value.enabledQuoteTemplateIds : legacyNewBusiness?.enabledIds) || [],
+        "enabledQuoteTemplateIds"
       );
+      const defaultQuoteTemplateId = normalizeTemplateId(
+        value.defaultQuoteTemplateId || legacyNewBusiness?.defaultId || "",
+        "defaultQuoteTemplateId"
+      );
+      const mirrored = { enabledIds: enabledQuoteTemplateIds, defaultId: defaultQuoteTemplateId };
       return {
         schemaVersion: "1.0",
         version: currentVersion,
@@ -2189,10 +2173,14 @@ var require_appSettings = __commonJS({
           value.newBusinessPipelineIds || [],
           "newBusinessPipelineIds"
         ),
-        quoteTemplatesByKind: byKind,
-        // Derived, every save, from the new-business kind. See defaultSettings for why they exist.
-        enabledQuoteTemplateIds: byKind.new_business.enabledIds,
-        defaultQuoteTemplateId: byKind.new_business.defaultId,
+        enabledQuoteTemplateIds,
+        defaultQuoteTemplateId,
+        // Derived, every save. See defaultSettings for why this is still written.
+        quoteTemplatesByKind: {
+          new_business: mirrored,
+          change: mirrored,
+          renewal: mirrored
+        },
         renewalPipelineIds: normalizePipelineIds(
           value.renewalPipelineIds || [],
           "renewalPipelineIds"
@@ -2317,7 +2305,6 @@ var require_appSettings = __commonJS({
     };
     module2.exports = {
       APPROVAL_TIERS,
-      QUOTE_KINDS: QUOTE_KINDS2,
       accountIdFromContext: accountIdFromContext2,
       productRateDescriptors: productRateDescriptors2,
       dealCategory: dealCategory2,
@@ -2326,7 +2313,6 @@ var require_appSettings = __commonJS({
       isDealAllowed: isDealAllowed2,
       isSettingsAdmin: isSettingsAdmin2,
       normalizeSettings,
-      quoteKindsForCategory: quoteKindsForCategory2,
       quoteTemplateSettings: quoteTemplateSettings2,
       readDealPipelines: readDealPipelines2,
       readSettings: readSettings2,
@@ -2352,9 +2338,7 @@ var {
   saveSettings,
   userIdFromContext,
   dealCategory,
-  quoteKindsForCategory,
-  quoteTemplateSettings,
-  QUOTE_KINDS
+  quoteTemplateSettings
 } = require_appSettings();
 var {
   buildDealLineItems,
@@ -2468,8 +2452,6 @@ var SAFE_ERRORS = Object.freeze({
   DISCOUNT_REASON_REQUIRED: "A discount reason is required when any discount is applied. Add one and try again.",
   QUOTE_CONTACT_REQUIRED: "A contact is required on the Quote. Choose one on the pricing card, or associate a contact with this Deal.",
   QUOTE_TEMPLATE_NOT_CPQ: "That quote template is a legacy template and cannot be used. Choose a CPQ template on the card, or change which templates are offered in Settings > Quote Templates.",
-  QUOTE_CONTRACT_REQUIRED: "Choose which contract this change or renewal is for before locking in.",
-  QUOTE_KIND_NOT_API_CREATABLE: "Everything is saved on the Deal -- line items, pricing and approval tier. HubSpot does not allow a change or renewal quote to be created by an app, so make this one from the Deal: click Add quote and choose Change or Renewal. It will pick up the line items and pricing from this Deal.",
   OPTION_BLOCKED: "This option has blocking policy issues and cannot be selected.",
   PAYMENT_METHOD_REQUIRES_BANK_TRANSFER: "Credit card is not permitted on an invoice above the limit. Set Payment Method to Bank transfer / ACH before locking in.",
   OPTION_NOT_FOUND: "The selected quote option could not be found.",
@@ -3063,35 +3045,13 @@ var lockLiveCalculation = async (client, dealId, state, parameters, portalId, se
     );
     throw new Error("DISCOUNT_REASON_REQUIRED");
   }
-  const lockedQuoteKind = resolveQuoteKind(
-    settings,
-    category,
-    parameters.quoteContent?.templateId,
-    null
-  );
-  const chosenContractId = await assertContractChosen(
-    client,
-    dealId,
-    quoteKindForTemplate(settings, category, parameters.quoteContent?.templateId),
-    parameters.contractId
-  );
   const input = normalizeStoredInput(parameters.input, settings.pricingPolicy);
   const liveOption = {
     id: `live-${result.stateHash.slice(0, 16)}`,
     name: "Live calculation",
     status: "draft",
     input,
-    result,
-    // Change or renewal -- which of the two documents a renewal Deal prints. Kept on the OPTION
-    // and deliberately NOT on option.input, for the same reason dealCategory is an argument to
-    // calculateQuote rather than an input field (see the comment above calculateQuote): the input
-    // is hashed, so putting it there would make the identical configuration hash differently on a
-    // change and a renewal and mark the line items stale over a choice that moves no number.
-    //
-    // No new Deal property either. The option document already rides in a property this portal is
-    // known to have, and readDealState hands it back, so the choice survives a reload without
-    // sending a property name nobody has verified.
-    quoteKind: lockedQuoteKind
+    result
   };
   const properties = buildSelectedProperties(liveOption, "draft");
   properties[SELECTED_OPTION_ID_PROPERTY] = liveOption.id;
@@ -3129,9 +3089,7 @@ var lockLiveCalculation = async (client, dealId, state, parameters, portalId, se
       // The destructive reading must be the one that has to be asked for.
       replaceExistingQuote: parameters.replaceExistingQuote === true,
       // The contact the rep picked on the card. Required on a CPQ quote; see generateQuote.
-      contactId: parameters.contactId,
-      // Validated above, so this is an id that exists on the company or nothing at all.
-      contractId: chosenContractId
+      contactId: parameters.contactId
     },
     portalId,
     settings
@@ -3492,275 +3450,20 @@ var readQuoteTemplatePage = async (client, after) => {
   }
   throw lastError;
 };
-var offeredQuoteTemplates = (templates, settings, quoteKind) => {
-  const { enabledIds } = quoteTemplateSettings(settings, quoteKind);
+var offeredQuoteTemplates = (templates, settings) => {
+  const { enabledIds } = quoteTemplateSettings(settings);
   if (enabledIds.length === 0) return templates;
   const allowed = new Set(enabledIds.map(String));
   const narrowed = templates.filter(({ id }) => allowed.has(String(id)));
   if (narrowed.length === 0) {
     console.warn(
-      `Nylas pricing: none of the quote templates chosen in Settings for ${quoteKind} still exist. Offering every usable template instead.`
+      "Nylas pricing: none of the quote templates chosen in Settings still exist. Offering every usable template instead."
     );
     return templates;
   }
   return narrowed;
 };
-var defaultQuoteTemplateFor = (settings, quoteKind) => quoteTemplateSettings(settings, quoteKind).defaultId || configuredQuoteTemplateId();
-var quoteKindForTemplate = (settings, category, templateId) => {
-  const id = String(templateId || "");
-  if (!id) return null;
-  return ["change", "renewal", "new_business"].find(
-    (kind) => quoteTemplateSettings(settings, kind).enabledIds.map(String).includes(id)
-  ) || null;
-};
-var quoteTemplatesForCategory = (templates, settings, category) => {
-  const kinds = quoteKindsForCategory(category);
-  const seen = /* @__PURE__ */ new Set();
-  const merged = [];
-  const templateKinds = {};
-  for (const kind of kinds) {
-    for (const template of offeredQuoteTemplates(templates, settings, kind)) {
-      if (seen.has(String(template.id))) continue;
-      seen.add(String(template.id));
-      merged.push(template);
-    }
-    for (const id of quoteTemplateSettings(settings, kind).enabledIds) {
-      if (!(String(id) in templateKinds)) templateKinds[String(id)] = kind;
-    }
-  }
-  return {
-    templates: merged,
-    templateKinds,
-    defaultTemplateId: defaultQuoteTemplateFor(settings, kinds[0])
-  };
-};
-var contractApplies = (quoteKind) => quoteKind === "change" || quoteKind === "renewal";
-var resolveQuoteKind = (settings, category, templateId, storedOption) => quoteKindForTemplate(settings, category, templateId) || (storedOption?.quoteKind && quoteKindsForCategory(category).includes(String(storedOption.quoteKind)) ? String(storedOption.quoteKind) : quoteKindsForCategory(category)[0]);
-var CONTRACT_PATH_CANDIDATES = Object.freeze([
-  "/crm/v3/objects/0-721",
-  "/crm/v3/objects/contracts",
-  "/crm/objects/2026-03/contracts"
-]);
-var CONTRACT_ASSOCIATION_TYPES = Object.freeze(["contracts", "contract"]);
-var CONTRACT_SINGLE_PATHS = Object.freeze([
-  "/commerce/contracts/2026-09-beta/contracts",
-  ...CONTRACT_PATH_CANDIDATES
-]);
-var CONTRACT_STATUS_PROPERTY = "hs_status";
-var CONTRACT_PROPERTIES = [
-  "hs_name",
-  CONTRACT_STATUS_PROPERTY,
-  "hs_contract_effective_date",
-  "hs_start_date",
-  "hs_createdate"
-];
-var QUOTABLE_CONTRACT_STATUSES = Object.freeze(["ACTIVE", "DRAFT"]);
-var contractStatusRank = (status) => QUOTABLE_CONTRACT_STATUSES.indexOf(String(status || "").trim().toUpperCase());
-var isQuotableContract = (status) => contractStatusRank(status) >= 0;
-var contractUnavailableReason = (error) => {
-  const status = error?.code ?? error?.statusCode ?? error?.response?.status;
-  if (status === 403) return "scope_missing";
-  if (status === 400 || status === 404) return "not_supported";
-  return "error";
-};
-var readContractDetails = async (client, ids, preferredPath) => {
-  if (ids.length === 0) return { contracts: [], readPath: null };
-  const paths = [
-    preferredPath,
-    ...CONTRACT_PATH_CANDIDATES.filter((path) => path !== preferredPath)
-  ].filter(Boolean);
-  let usedPath = null;
-  let usedStrategy = null;
-  let lastReadReason = null;
-  const readBatch = async (path, properties) => {
-    const response2 = await client.apiRequest({
-      method: "POST",
-      path: `${path}/batch/read`,
-      body: { inputs: ids.map((id) => ({ id: String(id) })), properties }
-    });
-    return (await response2.json())?.results || [];
-  };
-  const readOneByOne = async (path, properties) => {
-    const found = [];
-    for (const id of ids.slice(0, 25)) {
-      try {
-        const response2 = await client.apiRequest({
-          method: "GET",
-          path: `${path}/${encodeURIComponent(String(id))}?properties=${properties.join(",")}`
-        });
-        const contract = await response2.json();
-        if (contract?.id) found.push(contract);
-      } catch (error) {
-        lastReadReason = contractUnavailableReason(error);
-        console.warn(
-          `Nylas pricing: contract ${id} could not be read from ${path} (${lastReadReason}).`,
-          safeProviderDiagnostics(error, "read_contract")
-        );
-      }
-    }
-    return found;
-  };
-  const readByListing = async (path, properties) => {
-    const wanted = new Set(ids.map(String));
-    const found = [];
-    let after;
-    for (let page = 0; page < 5 && wanted.size > 0; page += 1) {
-      const query = `${path}?limit=100&properties=${properties.join(",")}` + (after ? `&after=${encodeURIComponent(after)}` : "");
-      const response2 = await client.apiRequest({ method: "GET", path: query });
-      const body = await response2.json();
-      for (const contract of body?.results || []) {
-        if (!wanted.has(String(contract?.id))) continue;
-        wanted.delete(String(contract.id));
-        found.push(contract);
-      }
-      after = body?.paging?.next?.after;
-      if (!after) break;
-    }
-    return found;
-  };
-  const read = async (properties) => {
-    let lastError = null;
-    for (const [name, strategy, strategyPaths] of [
-      ["batch", readBatch, paths],
-      ["single", readOneByOne, CONTRACT_SINGLE_PATHS],
-      ["listing", readByListing, paths]
-    ]) {
-      for (const path of strategyPaths) {
-        try {
-          const results2 = await strategy(path, properties);
-          if (results2.length > 0) {
-            usedPath = path;
-            usedStrategy = name;
-            return results2;
-          }
-        } catch (error) {
-          lastError = error;
-          lastReadReason = contractUnavailableReason(error);
-        }
-      }
-    }
-    if (lastError) throw lastError;
-    return [];
-  };
-  let results;
-  try {
-    results = await read(CONTRACT_PROPERTIES);
-  } catch (error) {
-    if (!isUnknownPropertyRejection(error, CONTRACT_STATUS_PROPERTY)) throw error;
-    console.warn(
-      `Nylas pricing: this portal has no ${CONTRACT_STATUS_PROPERTY} on contracts. Listing them without status rather than showing no contracts at all.`
-    );
-    results = await read(CONTRACT_PROPERTIES.filter((name) => name !== CONTRACT_STATUS_PROPERTY));
-  }
-  const contracts = results.map((contract) => {
-    const name = contract?.properties?.hs_name || "";
-    const status = contract?.properties?.[CONTRACT_STATUS_PROPERTY] || "";
-    const effective = String(
-      contract?.properties?.hs_contract_effective_date || contract?.properties?.hs_start_date || ""
-    ).slice(0, 10);
-    return {
-      id: String(contract.id),
-      // Never blank: a nameless option is unpickable. The status and effective date are what tell
-      // two contracts for the same customer apart, so they are in the label, not a tooltip.
-      label: [
-        name || `Contract ${contract.id}`,
-        status || "",
-        effective ? `effective ${effective}` : ""
-      ].filter(Boolean).join(" \u2014 "),
-      status,
-      effectiveDate: effective
-    };
-  });
-  return {
-    contracts,
-    readPath: usedPath,
-    readStrategy: usedStrategy,
-    readReason: lastReadReason
-  };
-};
-var probeContractPaths = async (client) => {
-  const attempts = [];
-  for (const path of CONTRACT_PATH_CANDIDATES) {
-    try {
-      const response2 = await client.apiRequest({ method: "GET", path: `${path}?limit=1` });
-      const count = ((await response2.json())?.results || []).length;
-      attempts.push({ path, ok: true, count });
-      if (count > 0) return { path, attempts };
-    } catch (error) {
-      attempts.push({
-        path,
-        ok: false,
-        reason: contractUnavailableReason(error),
-        detail: String(error?.body?.message || error?.message || error).slice(0, 200)
-      });
-    }
-  }
-  return { path: null, attempts };
-};
-var CONTRACT_PROBE_BUILD = 8;
-var discoverContractObjectType = async (client) => {
-  for (const path of ["/crm/v3/schemas", "/crm-object-schemas/v3/schemas"]) {
-    try {
-      const response2 = await client.apiRequest({ method: "GET", path });
-      const body = await response2.json();
-      const match = (body?.results || []).find(
-        (schema) => [
-          schema?.name,
-          schema?.fullyQualifiedName,
-          schema?.labels?.singular,
-          schema?.labels?.plural
-        ].filter(Boolean).some((value) => String(value).toLowerCase().includes("contract"))
-      );
-      if (match?.objectTypeId) {
-        return {
-          objectTypeId: String(match.objectTypeId),
-          name: String(match.fullyQualifiedName || match.name || ""),
-          from: path
-        };
-      }
-    } catch (error) {
-      console.warn(
-        `Nylas pricing: could not read object schemas from ${path}.`,
-        safeProviderDiagnostics(error, "discover_contract_type")
-      );
-    }
-  }
-  return null;
-};
-var readContractProbe = (probe) => ({
-  // Best path to read properties from: one that returned records, else one that at least answered.
-  path: probe.path || probe.attempts.find(({ ok }) => ok)?.path || null,
-  sawRecords: probe.attempts.some(({ ok, count }) => ok && count > 0),
-  // How many records the LIST actually returned. "A path answered" and "a path answered with
-  // records" are different facts, and only the second one means the object is readable there.
-  listed: probe.attempts.reduce((total, { count }) => total + (count || 0), 0),
-  answered: probe.attempts.some(({ ok }) => ok),
-  // Why nothing answered, when nothing did. A 403 here means the scope, and saying so is the
-  // difference between an actionable message and a shrug.
-  reason: probe.attempts.some(({ ok }) => ok) ? null : probe.attempts.find(({ reason }) => reason)?.reason || null
-});
-var associatedContractIds = async (client, fromType, fromId) => {
-  let rejections = 0;
-  let lastReason = null;
-  for (const toType of CONTRACT_ASSOCIATION_TYPES) {
-    try {
-      const ids = await associatedIds(client, fromType, fromId, toType, 50);
-      if (ids.length > 0) return { ids, associationType: toType, failed: null };
-    } catch (error) {
-      rejections += 1;
-      lastReason = contractUnavailableReason(error);
-      console.warn(
-        `Nylas pricing: ${fromType} -> ${toType} association rejected.`,
-        safeProviderDiagnostics(error, "associate_contracts")
-      );
-    }
-  }
-  return {
-    ids: [],
-    associationType: null,
-    failed: rejections === CONTRACT_ASSOCIATION_TYPES.length ? lastReason : null
-  };
-};
+var defaultQuoteTemplate = (settings) => quoteTemplateSettings(settings).defaultId || configuredQuoteTemplateId();
 var dealCompanyName = async (client, dealId) => {
   try {
     const companyIds = await associatedIds(client, "deals", dealId, "companies", 1);
@@ -3774,132 +3477,6 @@ var dealCompanyName = async (client, dealId) => {
     );
     return "";
   }
-};
-var finishContractOptions = ({ contracts }, fromDeal, contractDiagnostics) => {
-  const sorted = [...contracts].sort(
-    (a, b) => (contractStatusRank(a.status) < 0 ? 99 : contractStatusRank(a.status)) - (contractStatusRank(b.status) < 0 ? 99 : contractStatusRank(b.status)) || String(b.effectiveDate).localeCompare(String(a.effectiveDate))
-  );
-  const quotable = sorted.filter(({ status }) => isQuotableContract(status));
-  return {
-    contracts: quotable.length > 0 ? quotable : sorted,
-    contractSource: fromDeal.ids.length > 0 ? "deal" : "company",
-    contractsUnavailable: null,
-    contractDiagnostics
-  };
-};
-var contractOptions = async (client, dealId) => {
-  try {
-    const companyIds = await associatedIds(client, "deals", dealId, "companies", 1);
-    const [fromDeal, fromCompany] = await Promise.all([
-      associatedContractIds(client, "deals", dealId),
-      companyIds[0] ? associatedContractIds(client, "companies", companyIds[0]) : Promise.resolve({ ids: [], associationType: null, failed: null })
-    ]);
-    const contractIds = [.../* @__PURE__ */ new Set([...fromDeal.ids, ...fromCompany.ids])];
-    const probe = readContractProbe(await probeContractPaths(client));
-    const contractDiagnostics = {
-      build: CONTRACT_PROBE_BUILD,
-      listed: probe.listed,
-      sawRecords: probe.sawRecords,
-      readPath: null,
-      readStrategy: null,
-      associatedCount: contractIds.length,
-      objectPath: probe.path,
-      dealAssociationType: fromDeal.associationType,
-      companyAssociationType: fromCompany.associationType
-    };
-    console.log("Nylas pricing contracts probe:", JSON.stringify(contractDiagnostics));
-    const readFailure = fromDeal.failed || fromCompany.failed;
-    if (contractIds.length === 0 && readFailure) {
-      return {
-        contracts: [],
-        contractSource: "none",
-        contractsUnavailable: readFailure,
-        contractDiagnostics
-      };
-    }
-    if (contractIds.length === 0 || !probe.path) {
-      return {
-        contracts: [],
-        contractSource: "none",
-        // Three genuinely different answers, and saying the wrong one is what cost today:
-        //   none_associated  contracts demonstrably exist -- none is linked here. The rep's to fix
-        //   none_found       nothing linked and none listed. Either there are none, or the read is
-        //                    not finding them, and a 200-and-empty cannot tell those apart
-        //   not_supported    no candidate path answered at all
-        contractsUnavailable: probe.sawRecords ? "none_associated" : probe.answered ? "none_found" : probe.reason || "not_supported",
-        contractDiagnostics
-      };
-    }
-    const { contracts, readPath, readStrategy, readReason } = await readContractDetails(
-      client,
-      contractIds,
-      probe.path
-    );
-    contractDiagnostics.readPath = readPath;
-    contractDiagnostics.readStrategy = readStrategy;
-    contractDiagnostics.readReason = readReason || (contracts.length === 0 ? "answered_empty" : null);
-    contractDiagnostics.associatedCount = contractIds.length;
-    if (contracts.length === 0) {
-      const discovered = await discoverContractObjectType(client);
-      contractDiagnostics.discoveredType = discovered?.objectTypeId || null;
-      contractDiagnostics.discoveredName = discovered?.name || null;
-      if (discovered?.objectTypeId) {
-        const byTypeId = await readContractDetails(
-          client,
-          contractIds,
-          `/crm/v3/objects/${discovered.objectTypeId}`
-        );
-        if (byTypeId.contracts.length > 0) {
-          console.log(
-            `Nylas pricing: contracts read by object type id ${discovered.objectTypeId} (${discovered.name}). Add that path to CONTRACT_PATH_CANDIDATES.`
-          );
-          return finishContractOptions(byTypeId, fromDeal, {
-            ...contractDiagnostics,
-            readPath: byTypeId.readPath,
-            readStrategy: byTypeId.readStrategy
-          });
-        }
-      }
-      console.error(
-        `Nylas pricing: ${contractIds.length} contract association(s) found, but none could be read from ${CONTRACT_PATH_CANDIDATES.join(" or ")}. Associations resolving while object reads return nothing is what a MISSING crm.objects.contracts.read scope looks like on this object -- it answers 200-and-empty rather than 403. Check the granted scopes on the app before suspecting the path.`
-      );
-      return {
-        contracts: [],
-        contractSource: "none",
-        contractsUnavailable: "unreadable",
-        contractDiagnostics
-      };
-    }
-    return finishContractOptions({ contracts }, fromDeal, contractDiagnostics);
-  } catch (error) {
-    const reason = contractUnavailableReason(error);
-    console.warn(
-      `Nylas pricing: could not list contracts (${reason}).`,
-      safeProviderDiagnostics(error, "list_contracts")
-    );
-    return { contracts: [], contractSource: "none", contractsUnavailable: reason };
-  }
-};
-var assertContractChosen = async (client, dealId, quoteKind, contractId) => {
-  if (!contractApplies(quoteKind)) return null;
-  const { contracts, contractsUnavailable } = await contractOptions(client, dealId);
-  if (contractsUnavailable) {
-    console.warn(
-      `Nylas pricing: locking a ${quoteKind} quote without a contract -- contracts could not be listed (${contractsUnavailable}). Not blocking: the rep has no way to resolve this.`
-    );
-    return null;
-  }
-  if (contracts.length === 0) {
-    console.warn(
-      `Nylas pricing: locking a ${quoteKind} quote without a contract -- this company has none. Not blocking: a contract cannot be created from here.`
-    );
-    return null;
-  }
-  const chosen = String(contractId || "");
-  if (!chosen || !contracts.some(({ id }) => id === chosen)) {
-    throw new Error("QUOTE_CONTRACT_REQUIRED");
-  }
-  return chosen;
 };
 var latestQuoteTemplate = async (client, quoteId, templates) => {
   if (!quoteId) return null;
@@ -4185,36 +3762,16 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
   );
   const needsApproval = String(option.result?.approvalTierRequired || "none") !== "none";
   const desiredQuoteStatus = needsApproval ? QUOTE_STATUS_PENDING_APPROVAL : QUOTE_STATUS_DRAFT;
-  const category = dealCategory(settings, state.dealType, state.pipelineId);
-  const requestedTemplateId = content.templateId || defaultQuoteTemplateFor(settings, quoteKindsForCategory(category)[0]);
+  const requestedTemplateId = content.templateId || defaultQuoteTemplate(settings);
   if (!/^\d+$/.test(requestedTemplateId)) throw new Error("QUOTE_CONFIGURATION_REQUIRED");
-  const allowedKinds = quoteKindsForCategory(category);
-  const allowedTemplateIds = new Set(
-    allowedKinds.flatMap(
-      (kind) => quoteTemplateSettings(settings, kind).enabledIds.map(String)
-    )
-  );
+  const allowedTemplateIds = new Set(quoteTemplateSettings(settings).enabledIds.map(String));
   let templateId = requestedTemplateId;
   if (allowedTemplateIds.size > 0 && !allowedTemplateIds.has(String(requestedTemplateId))) {
-    const categoryDefault = defaultQuoteTemplateFor(settings, allowedKinds[0]);
+    const configuredDefault = defaultQuoteTemplate(settings);
     console.error(
-      `Nylas pricing: template ${requestedTemplateId} is not assigned to a ${category} Deal (${allowedKinds.join("/")}: ${[...allowedTemplateIds].join(", ")}). Using ${categoryDefault} instead. The card most likely still held a template from before this Deal changed pipeline, or is a cached older bundle.`
+      `Nylas pricing: template ${requestedTemplateId} is not one of the templates chosen in Settings (${[...allowedTemplateIds].join(", ")}). Using ${configuredDefault} instead. The card is most likely a cached older bundle, or Settings changed while it was open.`
     );
-    if (/^\d+$/.test(String(categoryDefault))) templateId = String(categoryDefault);
-  }
-  const quoteKind = quoteKindForTemplate(settings, category, templateId);
-  if (!quoteKind) {
-    console.warn(
-      `Nylas pricing: quote template ${templateId} is not listed under any quote kind in Settings, so this quote carries no kind. Assign it under Settings > Quote Templates to make it a change or renewal document.`
-    );
-  }
-  if (quoteKind === "change" || quoteKind === "renewal") {
-    console.info(
-      `Nylas pricing: deal ${dealId} is a ${quoteKind} and its Deal-side work is complete. Handing the quote itself to HubSpot -- the public API cannot create a change or renewal quote (hs_type must be INITIAL). Template ${templateId} was selected and is the one to choose on the Deal.`
-    );
-    const handoff = new Error("QUOTE_KIND_NOT_API_CREATABLE");
-    handoff.diagnostics = { quoteKind, quoteTemplateId: templateId, dealId: String(dealId) };
-    throw handoff;
+    if (/^\d+$/.test(String(configuredDefault))) templateId = String(configuredDefault);
   }
   const { type: templateType, name: templateName } = await describeQuoteTemplate(
     client,
@@ -4261,7 +3818,6 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
     `Nylas pricing: quote seller resolved -- deal owner=${dealOwnerId || "NONE"} fields=[${Object.keys(sender).join(", ") || "NONE"}]`
   );
   const lineItems = buildQuoteLineItems(option, content);
-  const quoteContractId = String(parameters.contractId || "");
   const quoteCreateAssociations = [
     // 286, quote template. The one this whole block exists for.
     createAssociation(templateId, 286),
@@ -4462,25 +4018,6 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
         [{ associationCategory: "HUBSPOT_DEFINED", associationTypeId: 71 }]
       );
     }
-    let contractAssociated = null;
-    const contractId = quoteContractId;
-    if (contractId) {
-      try {
-        await client.crm.associations.v4.basicApi.createDefault(
-          "quotes",
-          String(quote.id),
-          "contracts",
-          contractId
-        );
-        contractAssociated = true;
-      } catch (error) {
-        contractAssociated = false;
-        console.error(
-          `Nylas pricing: could not associate contract ${contractId} to quote ${quote.id}. The quote was created without it, so a change or renewal template may not render. ${String(error?.body?.message || error?.message || error)}`,
-          safeProviderDiagnostics(error, "associate_quote_contract")
-        );
-      }
-    }
     const finalized = await client.crm.quotes.basicApi.getById(String(quote.id), [
       "hs_quote_link",
       "hs_status",
@@ -4581,11 +4118,6 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
       generatedAt,
       templateId,
       templateName,
-      // null when no contract applied, true when the association stuck, false when HubSpot
-      // refused it. The card prints all three, because "the quote was made but the contract did
-      // not attach" is exactly the silent half-success section 3 warns about.
-      contractId: contractId || null,
-      contractAssociated,
       // What the Internal quote status actually ended up as, and whether it took a second write.
       // The card prints it: this is the field the approval workflow watches, so a silent failure
       // here means an approval nobody is asked for.
@@ -4671,26 +4203,14 @@ exports.main = async (context) => {
     const settings = settingsState.settings;
     if (!isDealAllowed(settings, state.dealType, state.pipelineId)) throw new Error("INVALID_DEAL");
     if (action === "list") {
-      const listCategory = dealCategory(settings, state.dealType, state.pipelineId);
       const allTemplates = await usableQuoteTemplates(client);
-      const listTemplates = quoteTemplatesForCategory(allTemplates, settings, listCategory);
+      const listTemplates = offeredQuoteTemplates(allTemplates, settings);
       return response(200, {
         success: true,
         ...stateResponse(state),
-        // The resolved flow, so the card renders that flow's view rather than guessing from a
-        // deal type it never sees.
-        dealCategory: listCategory,
-        quoteTemplates: listTemplates.templates,
-        defaultQuoteTemplateId: listTemplates.defaultTemplateId,
-        // Which kind claims each template. The card reads this to decide whether the contract
-        // picker applies, the instant the rep changes template and without another round trip.
-        templateKinds: listTemplates.templateKinds,
+        quoteTemplates: listTemplates,
+        defaultQuoteTemplateId: defaultQuoteTemplate(settings),
         ...await quoteContactOptions(client, dealId),
-        // Only where a contract can apply. A new-business Deal has no change or renewal kind, so
-        // asking its company for contracts is a wasted round trip on every card load.
-        ...Object.values(listTemplates.templateKinds).some(
-          (kind) => kind === "change" || kind === "renewal"
-        ) ? await contractOptions(client, dealId) : {},
         dealOwnerId: state.dealOwnerId,
         // TEMP DIAGNOSTIC -- see latestQuoteTemplate. Remove with it.
         latestQuoteTemplate: await latestQuoteTemplate(client, state.latestQuoteId, allTemplates),
@@ -4699,44 +4219,6 @@ exports.main = async (context) => {
         dealName: state.dealName,
         companyName: await dealCompanyName(client, dealId)
       });
-    }
-    if (action === "inspect_contracts") {
-      const attempt = async (label, run) => {
-        try {
-          return { [label]: await run() };
-        } catch (error) {
-          return {
-            [label]: {
-              failed: contractUnavailableReason(error),
-              detail: String(error?.body?.message || error?.message || error).slice(0, 400)
-            }
-          };
-        }
-      };
-      const properties = await attempt("properties", async () => {
-        const read = await client.apiRequest({
-          method: "GET",
-          path: "/crm/v3/properties/contracts"
-        });
-        const body = await read.json();
-        return (body?.results || []).map(({ name, label, type, options }) => ({
-          name,
-          label,
-          type,
-          // The values matter as much as the name: a status field is only useful here if we know
-          // which of its options means active in this portal.
-          options: (options || []).map((option) => option?.value).filter(Boolean).slice(0, 25)
-        }));
-      });
-      const sample = await attempt("sample", async () => {
-        const read = await client.apiRequest({
-          method: "GET",
-          path: `${CONTRACT_PATH_CANDIDATES[0]}?limit=3&properties=${CONTRACT_PROPERTIES.join(",")}`
-        });
-        const body = await read.json();
-        return (body?.results || []).map(({ id, properties: props }) => ({ id, ...props }));
-      });
-      return response(200, { success: true, contracts: { ...properties, ...sample } });
     }
     if (action === "inspect_products") {
       return response(200, {
@@ -4849,21 +4331,10 @@ exports.main = async (context) => {
 exports._test = Object.freeze({
   archiveSupersededQuote,
   quoteExpirationDate,
-  assertContractChosen,
-  contractOptions,
-  contractUnavailableReason,
   defaultQuoteTitle,
-  associatedContractIds,
-  probeContractPaths,
-  readContractProbe,
-  isQuotableContract,
   offeredQuoteTemplates,
   usableQuoteTemplates,
-  defaultQuoteTemplateFor,
-  quoteTemplatesForCategory,
-  quoteKindForTemplate,
-  contractApplies,
-  resolveQuoteKind,
+  defaultQuoteTemplate,
   repairLineItemsBatch,
   createLineItemsBatch,
   archiveLineItemsBatch,

@@ -7,7 +7,6 @@ const {
   defaultSettings,
   normalizeSettings,
   quoteTemplateSettings,
-  quoteKindsForCategory,
   dealCategory,
 } = require('./appSettings');
 const { _test } = require('./QuoteOptionsFunction');
@@ -1482,34 +1481,6 @@ test('the quote template is associated on the create request, never after it', (
   );
 });
 
-test('a change or renewal Deal hands the quote to HubSpot instead of creating one', () => {
-  const source = require('node:fs').readFileSync(
-    require('node:path').join(__dirname, 'QuoteOptionsFunction.js'),
-    'utf8',
-  );
-  // The API cannot create either kind -- hs_type must be INITIAL -- so producing an INITIAL quote
-  // wearing a Change or Renewal template makes a document that will not amend a contract when
-  // somebody accepts it. Holly, 2026-09-01: stop instead, and let the rep use Add quote.
-  assert.match(
-    source,
-    /if \(quoteKind === 'change' \|\| quoteKind === 'renewal'\) \{[\s\S]{0,900}?QUOTE_KIND_NOT_API_CREATABLE/,
-    'change and renewal must throw rather than create a quote',
-  );
-  assert.match(source, /QUOTE_KIND_NOT_API_CREATABLE:\s*\n\s*'Everything is saved on the Deal/);
-  // Before anything is created, like every other precondition -- no half-made quote left behind.
-  assert.ok(
-    source.indexOf("QUOTE_KIND_NOT_API_CREATABLE');") <
-      source.indexOf('quote = await client.crm.quotes.basicApi.create'),
-    'the handoff must happen before the quote create',
-  );
-  // And the Deal-side work must NOT be skipped: the sync runs before generateQuote is called.
-  assert.match(
-    source,
-    /const synced = await syncDealLineItems\([^)]*\);\s*\n\s*const quote = await generateQuote\(/,
-    "the Deal's line items are synced before the quote step, so a handoff still leaves them",
-  );
-});
-
 test('the quote is created as INITIAL, because the API refuses every other type', () => {
   const source = require('node:fs').readFileSync(
     require('node:path').join(__dirname, 'QuoteOptionsFunction.js'),
@@ -1556,47 +1527,6 @@ test("HubSpot's cloned line items are cleared before the calculator's own are cr
       source.indexOf('const sendingQuoteLines = lineItems.map'),
     "HubSpot's clones must be cleared before the calculator's own lines are created",
   );
-});
-
-// The card is offered only the templates chosen in Settings -- narrowed per QUOTE KIND.
-test('the template picker is narrowed per kind, and never left empty', () => {
-  const settings = normalizeSettings({
-    ...defaultSettings(),
-    allowNewBusiness: true,
-    allowRenewals: true,
-    quoteTemplatesByKind: {
-      new_business: { enabledIds: ['567553820432'], defaultId: '567553820432' },
-      change: { enabledIds: ['583243623796'], defaultId: '583243623796' },
-      renewal: { enabledIds: ['583243745379'], defaultId: '583243745379' },
-    },
-  });
-  const all = [
-    { id: '567553820432', name: 'New business' },
-    { id: '583243623796', name: 'Change' },
-    { id: '583243745379', name: 'Renewal' },
-  ];
-
-  // Each kind sees only its own template. Decision #1, Holly 2026-08-30: 583243623796 is CHANGE.
-  assert.deepEqual(_test.offeredQuoteTemplates(all, settings, 'change'), [all[1]]);
-  assert.deepEqual(_test.offeredQuoteTemplates(all, settings, 'renewal'), [all[2]]);
-  assert.deepEqual(_test.offeredQuoteTemplates(all, settings, 'new_business'), [all[0]]);
-  assert.equal(_test.defaultQuoteTemplateFor(settings, 'change'), '583243623796');
-  assert.equal(_test.defaultQuoteTemplateFor(settings, 'renewal'), '583243745379');
-
-  // An empty choice still means "all" -- an unconfigured kind must not empty the picker.
-  const unconfigured = normalizeSettings({ ...defaultSettings(), allowRenewals: true });
-  assert.deepEqual(_test.offeredQuoteTemplates(all, unconfigured, 'change'), all);
-
-  // A chosen template the portal no longer has must not empty it either: everything comes back.
-  const stale = normalizeSettings({
-    ...defaultSettings(),
-    quoteTemplatesByKind: {
-      new_business: { enabledIds: [], defaultId: '' },
-      change: { enabledIds: ['999999999999'], defaultId: '' },
-      renewal: { enabledIds: [], defaultId: '' },
-    },
-  });
-  assert.deepEqual(_test.offeredQuoteTemplates(all, stale, 'change'), all);
 });
 
 // THE TEMPLATE DECIDES THE KIND. There is no separate Quote Type control -- one existed briefly
@@ -1652,201 +1582,6 @@ test('the lock refuses a legacy template, before any quote is created', () => {
   );
   // And the rep gets told which thing to change, not just that something failed.
   assert.match(source, /QUOTE_TEMPLATE_NOT_CPQ:\s*\n?\s*'That quote template is a legacy template/);
-});
-
-test('the template list is narrowed to the Deal, and the kind still comes from the template', () => {
-  const settings = normalizeSettings({
-    ...defaultSettings(),
-    allowRenewals: true,
-    quoteTemplatesByKind: {
-      new_business: { enabledIds: ['567553820432'], defaultId: '567553820432' },
-      change: { enabledIds: ['583243623796'], defaultId: '583243623796' },
-      renewal: { enabledIds: ['583243745379'], defaultId: '583243745379' },
-    },
-  });
-  const all = [
-    { id: '567553820432', name: 'New business' },
-    { id: '583243623796', name: 'Change' },
-    { id: '583243745379', name: 'Renewal' },
-  ];
-
-  // A renewal Deal sees its two documents AND the new-business one. Holly, 2026-09-01: "make it
-  // so I can submit a new business template from renewals."
-  //
-  // The earlier instruction -- "I don't want all three to be seen on each" -- still holds in the
-  // direction it was given: a NEW BUSINESS Deal sees new-business templates only, asserted below.
-  // What changed is the other direction, and it has teeth: HubSpot will not create a change or
-  // renewal quote through the API at all, so without the new-business kind a renewal Deal has no
-  // path that ends in a quote this app can create.
-  const renewal = _test.quoteTemplatesForCategory(all, settings, 'renewal');
-  assert.deepEqual(
-    renewal.templates.map(({ id }) => id),
-    ['583243623796', '583243745379', '567553820432'],
-  );
-  assert.equal(renewal.templates.some(({ id }) => id === '567553820432'), true);
-  // The claim map is what tells the card whether a contract applies. The new-business template
-  // carries its own kind, so choosing it does NOT ask for a contract.
-  assert.deepEqual(renewal.templateKinds, {
-    '583243623796': 'change',
-    '583243745379': 'renewal',
-    '567553820432': 'new_business',
-  });
-  // The DEFAULT is unchanged: new_business is appended last, and the default is read from the
-  // category's first kind.
-  assert.equal(renewal.defaultTemplateId, '583243623796');
-
-  // A template listed under BOTH kinds is claimed by the FIRST, deterministically. Without that
-  // rule the label a rep sees would depend on object key order.
-  const shared = normalizeSettings({
-    ...defaultSettings(),
-    allowRenewals: true,
-    quoteTemplatesByKind: {
-      new_business: { enabledIds: [], defaultId: '' },
-      change: { enabledIds: ['583243623796'], defaultId: '' },
-      renewal: { enabledIds: ['583243623796', '583243745379'], defaultId: '' },
-    },
-  });
-  const merged = _test.quoteTemplatesForCategory(all, shared, 'renewal');
-  assert.equal(merged.templateKinds['583243623796'], 'change', 'first kind claims it');
-  assert.equal(merged.templateKinds['583243745379'], 'renewal');
-  // ...and it appears ONCE in the list, not twice, which is the point of this case.
-  assert.equal(
-    merged.templates.filter(({ id }) => id === '583243623796').length,
-    1,
-    'a template claimed by two kinds is still offered once',
-  );
-  // The new-business template comes along because this fixture leaves new_business's enabledIds
-  // EMPTY, and empty means "offer every usable template" -- the unconfigured-portal reading, which
-  // now reaches renewal Deals too since they may quote from the new-business kind. A portal that
-  // lists its new-business templates explicitly offers only those.
-  assert.deepEqual(
-    merged.templates.map(({ id }) => id),
-    ['583243623796', '583243745379', '567553820432'],
-  );
-
-  const newBusiness = _test.quoteTemplatesForCategory(all, settings, 'new_business');
-  assert.deepEqual(newBusiness.templates.map(({ id }) => id), ['567553820432']);
-  assert.deepEqual(newBusiness.templateKinds, { '567553820432': 'new_business' });
-
-  // THE SETTINGS LEVER. An upsell that lives in the new business pipeline can be given the Change
-  // template by adding it to the new_business kind's enabled list -- no code, no moving the Deal.
-  // The list stays SHORT (two, not three), and because the kind is looked up across every kind,
-  // the quote it prints is still a CHANGE document with the contract picker.
-  const upsell = normalizeSettings({
-    ...defaultSettings(),
-    allowRenewals: true,
-    quoteTemplatesByKind: {
-      new_business: {
-        enabledIds: ['567553820432', '583243623796'],
-        defaultId: '567553820432',
-      },
-      change: { enabledIds: ['583243623796'], defaultId: '583243623796' },
-      renewal: { enabledIds: ['583243745379'], defaultId: '583243745379' },
-    },
-  });
-  const upsellOffer = _test.quoteTemplatesForCategory(all, upsell, 'new_business');
-  assert.deepEqual(upsellOffer.templates.map(({ id }) => id), [
-    '567553820432',
-    '583243623796',
-  ]);
-  assert.equal(upsellOffer.defaultTemplateId, '567553820432');
-  assert.equal(
-    _test.quoteKindForTemplate(upsell, 'new_business', '583243623796'),
-    'change',
-    'the template keeps its own kind, so the change document still asks for a contract',
-  );
-});
-
-test('the kind is looked up from the template, across every kind', () => {
-  const settings = normalizeSettings({
-    ...defaultSettings(),
-    allowRenewals: true,
-    quoteTemplatesByKind: {
-      new_business: { enabledIds: ['567553820432'], defaultId: '' },
-      change: { enabledIds: ['583243623796'], defaultId: '' },
-      renewal: { enabledIds: ['583243745379'], defaultId: '' },
-    },
-  });
-  assert.equal(_test.quoteKindForTemplate(settings, 'renewal', '583243623796'), 'change');
-  assert.equal(_test.quoteKindForTemplate(settings, 'renewal', '583243745379'), 'renewal');
-  assert.equal(
-    _test.quoteKindForTemplate(settings, 'new_business', '567553820432'),
-    'new_business',
-  );
-
-  // THE TEMPLATE DECIDES THE KIND, and the Deal's pipeline gets no veto. A new business Deal
-  // quoting from the Change template IS producing a change document, and it has to be told so --
-  // otherwise the contract picker would not appear on the one quote that needs it.
-  assert.equal(_test.quoteKindForTemplate(settings, 'new_business', '583243623796'), 'change');
-  assert.equal(_test.quoteKindForTemplate(settings, 'new_business', '583243745379'), 'renewal');
-  // A template no kind claims -- normal on a portal where Settings has not assigned them yet.
-  assert.equal(_test.quoteKindForTemplate(settings, 'renewal', '999999999999'), null);
-  assert.equal(_test.quoteKindForTemplate(settings, 'renewal', ''), null);
-});
-
-// A contract applies to the DOCUMENT, not to the pipeline. A renewal-pipeline Deal quoting from
-// the new-business template is a new-business document and has no contract to point at.
-test('a contract applies only to a change or renewal template', () => {
-  assert.equal(_test.contractApplies('change'), true);
-  assert.equal(_test.contractApplies('renewal'), true);
-  assert.equal(_test.contractApplies('new_business'), false);
-  // Unclaimed template: nothing is asked for. The contract picker appears once an admin assigns
-  // the change and renewal templates in Settings, not before.
-  assert.equal(_test.contractApplies(null), false);
-  assert.equal(_test.contractApplies(undefined), false);
-});
-
-// What gets RECORDED on a locked option, which must never be blank.
-test('the recorded kind falls back rather than leaving an option kindless', () => {
-  const settings = normalizeSettings({
-    ...defaultSettings(),
-    allowRenewals: true,
-    quoteTemplatesByKind: {
-      new_business: { enabledIds: [], defaultId: '' },
-      change: { enabledIds: ['583243623796'], defaultId: '' },
-      renewal: { enabledIds: ['583243745379'], defaultId: '' },
-    },
-  });
-  // The template wins.
-  assert.equal(_test.resolveQuoteKind(settings, 'renewal', '583243745379', null), 'renewal');
-  // Then what the option already carried, so a reload does not silently relabel it.
-  assert.equal(
-    _test.resolveQuoteKind(settings, 'renewal', '999999999999', { quoteKind: 'renewal' }),
-    'renewal',
-  );
-  // Then the category's first kind. Never null.
-  assert.equal(_test.resolveQuoteKind(settings, 'renewal', '999999999999', null), 'change');
-  assert.equal(_test.resolveQuoteKind(settings, 'new_business', '', null), 'new_business');
-  // A stored kind the category does not allow is refused, not carried through.
-  assert.equal(
-    _test.resolveQuoteKind(settings, 'new_business', '', { quoteKind: 'change' }),
-    'new_business',
-  );
-});
-
-// The settings screen is where the narrowing is CHOSEN, so it must see every template.
-test('the settings screen is not narrowed', () => {
-  const source = require('node:fs').readFileSync(
-    require('node:path').join(__dirname, 'QuoteOptionsFunction.js'),
-    'utf8',
-  );
-  assert.match(
-    source,
-    /quoteTemplates: await usableQuoteTemplates\(getClient\(\)\)/,
-    'the settings screen must see every template',
-  );
-  // The card list is narrowed by the resolved category, not by anything the card asserted.
-  assert.match(source, /templateKinds: listTemplates\.templateKinds/);
-  assert.match(
-    source,
-    /const listCategory = dealCategory\(settings, state\.dealType, state\.pipelineId\);/,
-  );
-  // No Quote Type parameter survives anywhere: the card must not be able to state a kind.
-  assert.equal(
-    /parameters\.quoteKind/.test(source),
-    false,
-    'the kind must come from the template, never from the card',
-  );
 });
 
 // CONTRACTS. Read-only, dated path, and gated on a scope this app may not have yet.
@@ -1997,848 +1732,6 @@ const fail403 = () => {
   error.code = 403;
   return error;
 };
-
-test('contracts are read from the Deal AND its company, newest effective date first', async () => {
-  const client = contractClient({
-    contractIds: ['c-1', 'c-2'],
-    details: [
-      { id: 'c-1', properties: { hs_name: 'Acme MSA 2024', hs_contract_effective_date: '2024-01-01' } },
-      { id: 'c-2', properties: { hs_name: 'Acme MSA 2025', hs_contract_effective_date: '2025-06-15' } },
-    ],
-  });
-  const result = await _test.contractOptions(client, 'deal-1');
-  assert.equal(result.contractSource, 'company');
-  assert.equal(result.contractsUnavailable, null);
-
-  // The SAME contracts hanging off the DEAL instead must be found too. Reading only the company
-  // is what made a real contract ("COVIS 2026 Manual Renewal") invisible on 2026-08-30.
-  const onDeal = await _test.contractOptions(
-    contractClient({
-      on: 'deal',
-      contractIds: ['c-1', 'c-2'],
-      details: [
-        { id: 'c-1', properties: { hs_name: 'Acme MSA 2024', hs_contract_effective_date: '2024-01-01' } },
-        { id: 'c-2', properties: { hs_name: 'Acme MSA 2025', hs_contract_effective_date: '2025-06-15' } },
-      ],
-    }),
-    'deal-1',
-  );
-  assert.equal(onDeal.contractSource, 'deal');
-  assert.deepEqual(onDeal.contracts.map(({ id }) => id), ['c-2', 'c-1']);
-
-  // The SAME contract associated to BOTH the Deal and its company appears ONCE. Unioning the two
-  // reads without de-duplicating would show a rep the same contract twice, with no way to tell
-  // which to pick.
-  const onBoth = await _test.contractOptions(
-    contractClient({
-      on: 'both',
-      contractIds: ['c-1', 'c-2'],
-      details: [
-        { id: 'c-1', properties: { hs_name: 'Acme MSA 2024', hs_contract_effective_date: '2024-01-01' } },
-        { id: 'c-2', properties: { hs_name: 'Acme MSA 2025', hs_contract_effective_date: '2025-06-15' } },
-      ],
-    }),
-    'deal-1',
-  );
-  assert.deepEqual(onBoth.contracts.map(({ id }) => id), ['c-2', 'c-1'], 'no duplicates');
-  assert.deepEqual(
-    result.contracts.map(({ id }) => id),
-    ['c-2', 'c-1'],
-    'newest effective date first',
-  );
-  // The date is part of the LABEL: it is what tells two contracts for the same customer apart.
-  assert.equal(result.contracts[0].label, 'Acme MSA 2025 — effective 2025-06-15');
-  // A nameless contract must still be pickable.
-  const nameless = await _test.contractOptions(
-    contractClient({ contractIds: ['c-9'], details: [{ id: 'c-9', properties: {} }] }),
-    'deal-1',
-  );
-  assert.equal(nameless.contracts[0].label, 'Contract c-9');
-});
-
-// hs_status carries the contract status, and its four values are confirmed from HubSpot's
-// Contracts API beta docs (Holly, 2026-08-30): DRAFT, ACTIVE, COMPLETED, TERMINATED.
-test('only contracts a change or renewal can point at are offered', () => {
-  assert.equal(_test.isQuotableContract('ACTIVE'), true);
-  assert.equal(_test.isQuotableContract('DRAFT'), true, 'DRAFT is a future-dated contract');
-  assert.equal(_test.isQuotableContract('COMPLETED'), false);
-  assert.equal(_test.isQuotableContract('TERMINATED'), false);
-  // Case-insensitive: this is read off a CRM record, not the commerce API that documents the
-  // enum, so a portal storing 'Active' must not silently show nothing.
-  assert.equal(_test.isQuotableContract('active'), true);
-  assert.equal(_test.isQuotableContract(' Active '), true);
-  // A substring match would call these active. 'inactive' means the opposite.
-  assert.equal(_test.isQuotableContract('inactive'), false);
-  assert.equal(_test.isQuotableContract('not active'), false);
-  assert.equal(_test.isQuotableContract(''), false);
-  assert.equal(_test.isQuotableContract(undefined), false);
-});
-
-test('finished contracts are hidden, ACTIVE outranks DRAFT, newest first within each', async () => {
-  const client = contractClient({
-    contractIds: ['done', 'draft', 'live', 'older-live', 'killed'],
-    details: [
-      { id: 'done', properties: { hs_name: 'Done', hs_status: 'COMPLETED', hs_contract_effective_date: '2026-05-01' } },
-      { id: 'draft', properties: { hs_name: 'Upcoming', hs_status: 'DRAFT', hs_contract_effective_date: '2026-11-01' } },
-      { id: 'live', properties: { hs_name: 'Live', hs_status: 'ACTIVE', hs_contract_effective_date: '2025-01-01' } },
-      { id: 'older-live', properties: { hs_name: 'Older', hs_status: 'ACTIVE', hs_contract_effective_date: '2024-01-01' } },
-      { id: 'killed', properties: { hs_name: 'Killed', hs_status: 'TERMINATED', hs_contract_effective_date: '2026-06-01' } },
-    ],
-  });
-  const { contracts } = await _test.contractOptions(client, 'deal-1');
-  assert.deepEqual(
-    contracts.map(({ id }) => id),
-    ['live', 'older-live', 'draft'],
-    'ACTIVE first by date, then DRAFT; COMPLETED and TERMINATED hidden',
-  );
-  // Even though COMPLETED and TERMINATED have the NEWEST effective dates -- status outranks date.
-  assert.equal(contracts.some(({ id }) => id === 'done' || id === 'killed'), false);
-  // The status is on the option, so a rep can see a DRAFT is not active yet.
-  assert.equal(contracts[2].label, 'Upcoming — DRAFT — effective 2026-11-01');
-});
-
-// The picker must never go empty because everything happens to be finished. That reads as "this
-// company has no contracts", which is a different answer and a wrong one.
-test('a company whose contracts are all finished still sees them', async () => {
-  const client = contractClient({
-    contractIds: ['done', 'killed'],
-    details: [
-      { id: 'done', properties: { hs_name: 'Done', hs_status: 'COMPLETED', hs_contract_effective_date: '2025-05-01' } },
-      { id: 'killed', properties: { hs_name: 'Killed', hs_status: 'TERMINATED', hs_contract_effective_date: '2026-06-01' } },
-    ],
-  });
-  const { contracts, contractsUnavailable } = await _test.contractOptions(client, 'deal-1');
-  assert.equal(contractsUnavailable, null);
-  assert.deepEqual(contracts.map(({ id }) => id), ['killed', 'done']);
-});
-
-// hs_status is not documented, so a portal without it must degrade to a working picker rather
-// than a 400 that empties it. Same reasoning as createLineItem's dropped-property retry.
-test('a portal without hs_status still lists its contracts', async () => {
-  const client = contractClient({
-    fail: 'no_status',
-    contractIds: ['c-1'],
-    details: [
-      { id: 'c-1', properties: { hs_name: 'Acme MSA', hs_contract_effective_date: '2025-01-01' } },
-    ],
-  });
-  const { contracts, contractsUnavailable } = await _test.contractOptions(client, 'deal-1');
-  assert.equal(contractsUnavailable, null, 'a missing hs_status is not an unavailable list');
-  assert.equal(contracts.length, 1);
-  assert.equal(contracts[0].label, 'Acme MSA — effective 2025-01-01');
-});
-
-// The reason an empty list is empty has to survive to the card. Without it, "nobody added the
-// scope" and "this customer has no contracts" look identical and need opposite responses.
-test('an empty contract list says why it is empty', async () => {
-  assert.equal(_test.contractUnavailableReason(fail403()), 'scope_missing');
-  const notSupported = new Error('Bad Request');
-  notSupported.code = 400;
-  assert.equal(_test.contractUnavailableReason(notSupported), 'not_supported');
-  assert.equal(_test.contractUnavailableReason(new Error('boom')), 'error');
-
-  // Missing scope on the association read.
-  // Every candidate association name rejected: a real failure, not "no contracts". One name
-  // rejecting while another answers empty is just the wrong name -- that is what the loop is for.
-  const scoped = await _test.contractOptions(contractClient({ fail: 'associations' }), 'deal-1');
-  assert.equal(scoped.contractsUnavailable, 'scope_missing');
-  assert.deepEqual(scoped.contracts, []);
-  // Missing scope on the property read.
-  const onRead = await _test.contractOptions(
-    contractClient({ contractIds: ['c-1'], fail: 'read' }),
-    'deal-1',
-  );
-  assert.equal(onRead.contractsUnavailable, 'scope_missing');
-  // A Deal with NO company is no longer a special case: its own contracts are read too, so the
-  // answer is whatever the association and the probe say. 'no_company' was removed rather than
-  // left as a code nothing can produce.
-  const noCompany = await _test.contractOptions(
-    contractClient({ companyId: null, on: 'deal', contractIds: ['c-1'], details: [
-      { id: 'c-1', properties: { hs_name: 'Direct', hs_status: 'ACTIVE' } },
-    ] }),
-    'deal-1',
-  );
-  assert.equal(noCompany.contractsUnavailable, null);
-  assert.deepEqual(noCompany.contracts.map(({ id }) => id), ['c-1']);
-  // Nothing associated and nothing listed. This is NOT reported as "no contracts exist" -- a
-  // 200-and-empty cannot tell an empty portal apart from a read that is not finding them, and
-  // claiming the former is exactly what went wrong on 2026-08-30.
-  const none = await _test.contractOptions(
-    contractClient({ contractIds: [], portalHasContracts: false }),
-    'deal-1',
-  );
-  assert.equal(none.contractsUnavailable, 'none_found');
-  assert.deepEqual(none.contracts, []);
-
-  // THE CASE THAT ACTUALLY HAPPENED, 2026-08-30. Nothing associated to this Deal or its company,
-  // but the portal HAS contracts -- "COVIS 2026 Manual Renewal" existed while the card said the
-  // company had none. That is the rep's to fix, and it must not read as "there are no contracts".
-  const orphaned = await _test.contractOptions(
-    contractClient({ contractIds: [], portalHasContracts: true }),
-    'deal-1',
-  );
-  assert.equal(orphaned.contractsUnavailable, 'none_associated');
-
-  // The probe itself failing means we cannot tell the two apart, so we must not claim either --
-  // and the REASON it failed is reported rather than flattened. A 403 here is the scope, which is
-  // actionable; "not supported" would be a shrug.
-  const cannotTell = await _test.contractOptions(
-    contractClient({ contractIds: [], fail: 'probe' }),
-    'deal-1',
-  );
-  assert.equal(cannotTell.contractsUnavailable, 'scope_missing');
-});
-
-// THE PORTAL'S ACTUAL BEHAVIOUR, 2026-08-30. Associations return two real contract ids, the LIST
-// endpoint answers with records, and POST .../batch/read returns 200 with an EMPTY array for
-// those same ids. Not an error -- nothing. So the single-record GET fallback has to carry it.
-test('contracts are read one by one when batch read answers with nothing', async () => {
-  const client = contractClient({
-    contractIds: ['c-live', 'c-done'],
-    portalHasContracts: true,
-    batchReadIsBlind: true,
-    details: [
-      {
-        id: 'c-live',
-        properties: {
-          hs_name: 'Renewal for Grow Therapy - Calendar - 2026-08',
-          hs_status: 'ACTIVE',
-          hs_contract_effective_date: '2026-08-01',
-        },
-      },
-      {
-        id: 'c-done',
-        properties: {
-          hs_name: 'Grow Therapy - Calendar',
-          hs_status: 'COMPLETED',
-          hs_contract_effective_date: '2025-08-01',
-        },
-      },
-    ],
-  });
-  const { contracts, contractsUnavailable, contractDiagnostics } = await _test.contractOptions(
-    client,
-    'deal-1',
-  );
-  assert.equal(contractsUnavailable, null);
-  assert.equal(contractDiagnostics.readStrategy, 'single', 'batch answered nothing, so single');
-  assert.equal(contractDiagnostics.associatedCount, 2);
-  // COMPLETED is filtered out, so only the ACTIVE renewal is offered.
-  assert.deepEqual(contracts.map(({ id }) => id), ['c-live']);
-  assert.equal(
-    contracts[0].label,
-    'Renewal for Grow Therapy - Calendar - 2026-08 — ACTIVE — effective 2026-08-01',
-  );
-});
-
-// Batch is preferred WHEN IT WORKS -- one call instead of one per contract. Reversing the order
-// would quietly turn every card load into N calls on a portal where batch is fine.
-test('batch read is used when it works, single-record only as the fallback', async () => {
-  const client = contractClient({
-    contractIds: ['c-1'],
-    portalHasContracts: true,
-    details: [{ id: 'c-1', properties: { hs_name: 'Acme', hs_status: 'ACTIVE' } }],
-  });
-  const { contractDiagnostics, contracts } = await _test.contractOptions(client, 'deal-1');
-  assert.equal(contractDiagnostics.readStrategy, 'batch');
-  assert.deepEqual(contracts.map(({ id }) => id), ['c-1']);
-});
-
-// An association can point at an id the object read cannot produce -- a deleted contract, or one
-// the app cannot see. A bodyless 200 must be skipped, not counted as a nameless contract.
-test('an association to a contract that cannot be read is skipped, not shown blank', async () => {
-  const client = contractClient({
-    contractIds: ['c-live', 'c-ghost'],
-    portalHasContracts: true,
-    batchReadIsBlind: true,
-    details: [{ id: 'c-live', properties: { hs_name: 'Real', hs_status: 'ACTIVE' } }],
-  });
-  const { contracts, contractsUnavailable } = await _test.contractOptions(client, 'deal-1');
-  assert.equal(contractsUnavailable, null);
-  assert.deepEqual(contracts.map(({ id }) => id), ['c-live'], 'the ghost is not offered');
-
-  // And where the ghost is the ONLY thing associated, the never-empty fallback must not resurrect
-  // it as "Contract undefined". The status filter hides it in the case above by luck; this is the
-  // case where nothing else is there to hide behind.
-  const ghostOnly = await _test.contractOptions(
-    contractClient({
-      contractIds: ['c-ghost'],
-      portalHasContracts: true,
-      batchReadIsBlind: true,
-      details: [],
-    }),
-    'deal-1',
-  );
-  assert.deepEqual(ghostOnly.contracts, []);
-  assert.equal(ghostOnly.contractsUnavailable, 'unreadable');
-});
-
-// THE ACTUAL ANSWER, confirmed against portal 45023718 on 2026-08-30 by querying it directly:
-// contracts are object type 0-721, the portal holds 2,536 of them, and hs_status is stored
-// LOWERCASE ('active') while the documented enum is uppercase.
-test('contracts read from the 0-721 object type, with lowercase statuses', async () => {
-  const client = contractClient({
-    contractIds: ['583657705754', '583660476431'],
-    portalHasContracts: true,
-    // The NAME answers 200-with-nothing, exactly as the live portal does. Only the type id works.
-    recordsOnPath: '/crm/v3/objects/0-721',
-    details: [
-      {
-        id: '583657705754',
-        properties: {
-          hs_name: 'CodeCabin - PayGo - Full Platform',
-          hs_status: 'active',
-          hs_contract_effective_date: '2026-07-01',
-        },
-      },
-      {
-        id: '583660476431',
-        properties: {
-          hs_name: 'RedSeed - Calendar; Notetaker',
-          hs_status: 'completed',
-          hs_contract_effective_date: '2025-07-01',
-        },
-      },
-    ],
-  });
-  const { contracts, contractsUnavailable, contractDiagnostics } = await _test.contractOptions(
-    client,
-    'deal-1',
-  );
-  assert.equal(contractsUnavailable, null);
-  assert.equal(contractDiagnostics.objectPath, '/crm/v3/objects/0-721');
-  // Lowercase 'active' must be offered and lowercase 'completed' must be hidden. A case-sensitive
-  // comparison against the documented uppercase enum would have hidden every contract in the
-  // portal -- which is what a "reasonable" strict match would have done.
-  assert.deepEqual(contracts.map(({ id }) => id), ['583657705754']);
-  assert.equal(
-    contracts[0].label,
-    'CodeCabin - PayGo - Full Platform — active — effective 2026-07-01',
-  );
-});
-
-// hs_start_date is what the UI labels "Contract start date" and is populated where
-// hs_contract_effective_date may not be.
-test('the start date stands in when the effective date is absent', async () => {
-  const client = contractClient({
-    contractIds: ['c-1'],
-    portalHasContracts: true,
-    recordsOnPath: '/crm/v3/objects/0-721',
-    details: [
-      { id: 'c-1', properties: { hs_name: 'Acme', hs_status: 'active', hs_start_date: '2026-07-01' } },
-    ],
-  });
-  const { contracts } = await _test.contractOptions(client, 'deal-1');
-  assert.equal(contracts[0].label, 'Acme — active — effective 2026-07-01');
-});
-
-// BUILD 4's ANSWER, 2026-08-30: associations resolve 'contracts' and return a real id, while
-// /crm/v3/objects/contracts answers 200 with ZERO records. A name that works for associations and
-// not for the objects API means the objects API wants the numeric type id -- so the portal is
-// asked for it rather than guessed at a fourth time.
-test('the contracts object type id is discovered from the portal when the names fail', async () => {
-  const client = contractClient({
-    contractIds: ['c-live'],
-    // Nothing answers on any DOCUMENTED path -- exactly what the live probe reported.
-    portalHasContracts: false,
-    recordsOnPath: '/crm/v3/objects/0-421',
-    schemaObjectTypeId: '0-421',
-    details: [
-      {
-        id: 'c-live',
-        properties: {
-          hs_name: 'Renewal for Grow Therapy - Calendar - 2026-08',
-          hs_status: 'ACTIVE',
-          hs_contract_effective_date: '2026-08-01',
-        },
-      },
-    ],
-  });
-  const { contracts, contractsUnavailable, contractDiagnostics } = await _test.contractOptions(
-    client,
-    'deal-1',
-  );
-  assert.equal(contractsUnavailable, null);
-  assert.deepEqual(contracts.map(({ id }) => id), ['c-live']);
-  // It reports what it discovered, so the id can be written into the candidates and the lookup
-  // stops happening on every failed load.
-  assert.equal(contractDiagnostics.discoveredType, '0-421');
-  assert.equal(contractDiagnostics.readPath, '/crm/v3/objects/0-421');
-});
-
-// A REFUSED read and an EMPTY read are different facts, and only one of them is about scopes.
-// Builds 4-7 swallowed the refusal in a per-id catch, so the card could not tell them apart and
-// five rounds were spent arguing about object paths instead.
-test('a refused read is reported as a scope problem, not as an empty one', async () => {
-  const refused = await _test.contractOptions(
-    contractClient({
-      contractIds: ['c-1'],
-      // Faithful to the live portal: the LIST answers 200-and-empty while record reads are
-      // REFUSED. That combination is what a missing scope looks like on this object, and it is
-      // why five builds mistook it for a wrong object path.
-      portalHasContracts: false,
-      recordsOnPath: '/nowhere',
-      readsAreRefused: true,
-      details: [{ id: 'c-1', properties: { hs_name: 'Real', hs_status: 'active' } }],
-    }),
-    'deal-1',
-  );
-  // REFUSED is reported as the scope problem it is, not as "unreadable" or "none found".
-  assert.equal(refused.contractsUnavailable, 'scope_missing');
-  assert.deepEqual(refused.contracts, []);
-
-  // The refusal arriving ONLY from the per-id read still has to reach the card. Builds 4-7
-  // caught it in a per-id loop, warned, and carried on -- so the single fact that would have
-  // ended this in one round never surfaced.
-  const onlySingleRefused = await _test.contractOptions(
-    contractClient({
-      contractIds: ['c-1'],
-      portalHasContracts: false,
-      recordsOnPath: '/nowhere',
-      batchReadIsBlind: true,
-      singleReadIsRefused: true,
-      details: [{ id: 'c-1', properties: { hs_name: 'Real', hs_status: 'active' } }],
-    }),
-    'deal-1',
-  );
-  assert.equal(onlySingleRefused.contractsUnavailable, 'unreadable');
-  assert.equal(
-    onlySingleRefused.contractDiagnostics.readReason,
-    'scope_missing',
-    'a refusal seen only by the per-id read must still reach the card',
-  );
-
-  // Answered-empty is the OTHER case and must not be reported as a scope problem.
-  const empty = await _test.contractOptions(
-    contractClient({
-      contractIds: ['c-1'],
-      portalHasContracts: false,
-      recordsOnPath: '/nowhere',
-      singleReadIsBlind: true,
-      details: [{ id: 'c-1', properties: { hs_name: 'Real' } }],
-    }),
-    'deal-1',
-  );
-  assert.equal(empty.contractDiagnostics.readReason, 'answered_empty');
-});
-
-// Discovery can SUCCEED and the read still fail. Trusting the discovered type without checking
-// it returned anything would put the card back on "no contract was found" -- the wrong message,
-// arrived at a different way.
-test('a discovered type that still reads nothing is reported as unreadable', async () => {
-  const client = contractClient({
-    contractIds: ['c-live'],
-    portalHasContracts: false,
-    // The discovered type is real, but nothing answers on it either.
-    recordsOnPath: '/nowhere',
-    schemaObjectTypeId: '0-421',
-    details: [{ id: 'c-live', properties: { hs_name: 'Real' } }],
-  });
-  const result = await _test.contractOptions(client, 'deal-1');
-  assert.equal(result.contractsUnavailable, 'unreadable');
-  assert.deepEqual(result.contracts, []);
-  // ...and it still reports what it found, so the next step is informed rather than blind.
-  assert.equal(result.contractDiagnostics.discoveredType, '0-421');
-});
-
-// Discovery that finds nothing must not paper over the failure.
-test('a portal whose schemas name no contracts object still reports unreadable', async () => {
-  const client = contractClient({
-    contractIds: ['c-live'],
-    portalHasContracts: false,
-    recordsOnPath: '/nowhere',
-    schemaObjectTypeId: null,
-    details: [{ id: 'c-live', properties: { hs_name: 'Real' } }],
-  });
-  const result = await _test.contractOptions(client, 'deal-1');
-  assert.equal(result.contractsUnavailable, 'unreadable');
-  assert.equal(result.contractDiagnostics.discoveredType, null);
-});
-
-// THE PORTAL, 2026-08-30, after the single-record fallback also came back empty. Associations
-// hand over a real contract id; batch/read answers 200-and-empty; the per-id GET answers
-// 200-and-empty; and the LIST endpoint has the records the whole time. HubSpot's own docs say as
-// much -- individual retrieval is a different API from the list.
-test('contracts are found by listing when neither batch nor per-id read answers', async () => {
-  const client = contractClient({
-    contractIds: ['c-live'],
-    portalHasContracts: true,
-    batchReadIsBlind: true,
-    singleReadIsBlind: true,
-    details: [
-      {
-        id: 'c-live',
-        properties: {
-          hs_name: 'Renewal for Grow Therapy - Calendar - 2026-08',
-          hs_status: 'ACTIVE',
-          hs_contract_effective_date: '2026-08-01',
-        },
-      },
-    ],
-  });
-  const { contracts, contractsUnavailable, contractDiagnostics } = await _test.contractOptions(
-    client,
-    'deal-1',
-  );
-  assert.equal(contractsUnavailable, null);
-  assert.equal(contractDiagnostics.readStrategy, 'listing');
-  assert.deepEqual(contracts.map(({ id }) => id), ['c-live']);
-  assert.equal(
-    contracts[0].label,
-    'Renewal for Grow Therapy - Calendar - 2026-08 — ACTIVE — effective 2026-08-01',
-  );
-});
-
-// Listing must only return what was ASKED for. A company's contract picker showing every contract
-// in the portal would be worse than showing none.
-test('listing filters to the associated ids and nothing else', async () => {
-  const client = contractClient({
-    contractIds: ['c-mine'],
-    portalHasContracts: true,
-    batchReadIsBlind: true,
-    singleReadIsBlind: true,
-    details: [
-      { id: 'c-mine', properties: { hs_name: 'Mine', hs_status: 'ACTIVE' } },
-      { id: 'c-someone-else', properties: { hs_name: 'Not mine', hs_status: 'ACTIVE' } },
-    ],
-  });
-  const { contracts } = await _test.contractOptions(client, 'deal-1');
-  assert.deepEqual(contracts.map(({ id }) => id), ['c-mine']);
-});
-
-// Associations return real ids and the object read still comes back empty: the ids are right and
-// the PATH is wrong. A different answer from "there are none", and it is what the card reported
-// as "no contract was found" on 2026-08-30.
-test('contracts that are linked but unreadable are reported as unreadable', async () => {
-  const client = contractClient({
-    contractIds: ['c-1'],
-    portalHasContracts: false,
-    recordsOnPath: '/nowhere',
-    details: [{ id: 'c-1', properties: { hs_name: 'COVIS 2026 Manual Renewal' } }],
-  });
-  const result = await _test.contractOptions(client, 'deal-1');
-  assert.equal(result.contractsUnavailable, 'unreadable');
-  assert.deepEqual(result.contracts, []);
-  // The diagnostics say what was seen, so the next step is reading a number rather than guessing.
-  assert.equal(result.contractDiagnostics.associatedCount, 1);
-  assert.equal(result.contractDiagnostics.readPath, null);
-});
-
-// The READ must try every candidate path too, not just the one the list probe liked. The two can
-// disagree, and on 2026-08-30 they did.
-test('the read falls through to another path when the preferred one answers with nothing', async () => {
-  const client = contractClient({
-    contractIds: ['c-1'],
-    portalHasContracts: false,
-    recordsOnPath: '/crm/objects/2026-03/contracts',
-    details: [
-      { id: 'c-1', properties: { hs_name: 'COVIS 2026 Manual Renewal', hs_status: 'ACTIVE' } },
-    ],
-  });
-  const { contracts, contractsUnavailable, contractDiagnostics } = await _test.contractOptions(
-    client,
-    'deal-1',
-  );
-  assert.equal(contractsUnavailable, null);
-  assert.deepEqual(contracts.map(({ id }) => id), ['c-1']);
-  // ...and it reports which path worked, so nobody has to rediscover it.
-  assert.equal(contractDiagnostics.readPath, '/crm/objects/2026-03/contracts');
-});
-
-// The probe must not stop at the first path that merely ANSWERS. A 200-and-empty proves the call
-// worked, not that it is the right object -- and on 2026-08-30 an empty answer from the wrong
-// path was read as "this portal has no contracts" while three sat on the company.
-test('the probe keeps looking past a path that answers with nothing', async () => {
-  const client = contractClient({
-    contractIds: ['c-1'],
-    portalHasContracts: true,
-    recordsOnPath: '/crm/objects/2026-03/contracts',
-    details: [
-      { id: 'c-1', properties: { hs_name: 'COVIS 2026 Manual Renewal', hs_status: 'ACTIVE' } },
-    ],
-  });
-  const { contracts, contractsUnavailable, contractDiagnostics } = await _test.contractOptions(
-    client,
-    'deal-1',
-  );
-  assert.equal(contractsUnavailable, null);
-  assert.deepEqual(contracts.map(({ id }) => id), ['c-1']);
-  // ...and it reports WHICH path answered, so the next person does not have to rediscover it.
-  assert.equal(contractDiagnostics.objectPath, '/crm/objects/2026-03/contracts');
-  assert.notEqual(contractDiagnostics.objectPath, '/crm/v3/objects/0-721');
-  assert.equal(contractDiagnostics.sawRecords, true);
-});
-
-// The probe's whole job is to keep three situations apart. They were one message until today.
-test('the contract probe distinguishes records, an answer, and no answer', () => {
-  const withRecords = _test.readContractProbe({
-    path: '/crm/v3/objects/0-721',
-    attempts: [{ path: '/crm/v3/objects/0-721', ok: true, count: 1 }],
-  });
-  assert.deepEqual(withRecords, {
-    path: '/crm/v3/objects/0-721',
-    sawRecords: true,
-    answered: true,
-    reason: null,
-    listed: 1,
-  });
-
-  // 200-and-empty: usable as a read path, but NOT proof that contracts exist anywhere.
-  const answeredEmpty = _test.readContractProbe({
-    path: null,
-    attempts: [{ path: '/crm/v3/objects/0-721', ok: true, count: 0 }],
-  });
-  assert.equal(answeredEmpty.path, '/crm/v3/objects/0-721', 'still usable for reads');
-  assert.equal(answeredEmpty.sawRecords, false, 'an empty page proves nothing about existence');
-  assert.equal(answeredEmpty.listed, 0, 'and the count says so plainly');
-  assert.equal(answeredEmpty.answered, true);
-
-  // Nothing answered at all.
-  const dead = _test.readContractProbe({
-    path: null,
-    attempts: [
-      { path: '/crm/v3/objects/0-721', ok: false, reason: 'scope_missing' },
-      { path: '/crm/objects/2026-03/contracts', ok: false, reason: 'not_supported' },
-    ],
-  });
-  // The REASON survives. A 403 here means the scope, and reporting that instead of a generic
-  // "not supported" is the difference between an actionable message and a shrug.
-  assert.deepEqual(dead, {
-    path: null,
-    sawRecords: false,
-    answered: false,
-    reason: 'scope_missing',
-    listed: 0,
-  });
-});
-
-// A change or renewal must say which contract it is for -- but only where there was a choice.
-//
-// This is deliberately narrower than the Contact picker's rule. A rep can always create a
-// contact; a rep CANNOT create a contract. So blocking whenever none is chosen would dead-end
-// every change and renewal quote on a portal without the scope, with nothing the rep could do.
-test('a change or renewal is blocked only when a contract could actually have been chosen', async () => {
-  const withTwo = () =>
-    contractClient({
-      contractIds: ['c-1', 'c-2'],
-      details: [
-        { id: 'c-1', properties: { hs_name: 'A', hs_contract_effective_date: '2024-01-01' } },
-        { id: 'c-2', properties: { hs_name: 'B', hs_contract_effective_date: '2025-01-01' } },
-      ],
-    });
-
-  for (const kind of ['change', 'renewal']) {
-    // Contracts exist and none was chosen: blocked.
-    await assert.rejects(
-      () => _test.assertContractChosen(withTwo(), 'deal-1', kind, ''),
-      (error) => error.message === 'QUOTE_CONTRACT_REQUIRED',
-      `${kind} with no contract chosen must be blocked`,
-    );
-    // An id that is not on this company is not a choice either -- it is a stale card or a typo.
-    await assert.rejects(
-      () => _test.assertContractChosen(withTwo(), 'deal-1', kind, 'c-999'),
-      (error) => error.message === 'QUOTE_CONTRACT_REQUIRED',
-    );
-    // A real choice passes through, and the validated id is what comes back.
-    assert.equal(await _test.assertContractChosen(withTwo(), 'deal-1', kind, 'c-2'), 'c-2');
-  }
-
-  // New business never asks -- and must not spend a round trip finding out.
-  let touched = false;
-  const watched = {
-    crm: { associations: { v4: { basicApi: { getPage: async () => {
-      touched = true;
-      return { results: [] };
-    } } } } },
-  };
-  assert.equal(await _test.assertContractChosen(watched, 'deal-1', 'new_business', ''), null);
-  assert.equal(touched, false, 'a new business lock must not read contracts at all');
-
-  // THE FAIL-SAFE. None of these may block, because the rep cannot resolve any of them.
-  assert.equal(
-    await _test.assertContractChosen(contractClient({ fail: 'associations' }), 'deal-1', 'change', ''),
-    null,
-    'a missing scope must not block the lock',
-  );
-  assert.equal(
-    await _test.assertContractChosen(contractClient({ contractIds: [] }), 'deal-1', 'renewal', ''),
-    null,
-    'a company with no contracts must not block the lock',
-  );
-  assert.equal(
-    await _test.assertContractChosen(contractClient({ companyId: null }), 'deal-1', 'change', ''),
-    null,
-    'a Deal with no company must not block the lock',
-  );
-});
-
-// The kind has to survive a page reload, and it is now READ OFF THE TEMPLATE rather than stated.
-//
-// It is kept on the OPTION, inside the document property this portal is known to have, rather
-// than on a new Deal property nobody has verified -- and rather than on option.input, which is
-// hashed: choosing a different DOCUMENT must not change the state hash and mark the line items
-// stale, because it moves no number.
-test('the derived kind is stored on the locked option, and never in the hash', async () => {
-  const settings = normalizeSettings({
-    ...defaultSettings(),
-    allowNewBusiness: true,
-    allowRenewals: true,
-    renewalPipelineIds: ['renewals'],
-    quoteTemplatesByKind: {
-      new_business: { enabledIds: ['567553820432'], defaultId: '567553820432' },
-      change: { enabledIds: ['583243623796'], defaultId: '583243623796' },
-      renewal: { enabledIds: ['583243745379'], defaultId: '583243745379' },
-    },
-  });
-  const input = {
-    termMonths: 12,
-    paymentFrequency: 'annual_in_advance',
-    volumes: { connect_ca: 1_000 },
-    supportLevel: 'basic',
-    onboardingPackage: 'none',
-    professionalServices: [],
-    addOns: [],
-  };
-  const state = {
-    dealType: 'renewal',
-    pipelineId: 'renewals',
-    dealName: 'Acme',
-    document: { schemaVersion: '1.0', revision: 4, options: [] },
-  };
-
-  // Stops at the line-item sync, which runs AFTER the document is written, so the assertions
-  // below read exactly what Lock in persisted. The sync wraps what it catches, so
-  // LINE_ITEM_SYNC_FAILED is what surfaces.
-  const STOP = new Error('stop after the document write');
-  const lockWith = async (templateId) => {
-    const updates = [];
-    const client = {
-      crm: {
-        deals: { basicApi: { update: async (_id, payload) => updates.push(payload) } },
-        associations: { v4: { basicApi: { getPage: async () => {
-          throw STOP;
-        } } } },
-      },
-      // The contract read that assertContractChosen makes. Nothing to return.
-      apiRequest: async () => ({ json: async () => ({ results: [] }) }),
-    };
-    await assert.rejects(
-      () =>
-        _test.lockLiveCalculation(
-          client,
-          'deal-1',
-          state,
-          {
-            input,
-            quoteContent: { templateId },
-            paymentMethod: 'ach',
-            discountReason: '',
-          },
-          '45023718',
-          settings,
-        ),
-      (error) => error.message === 'LINE_ITEM_SYNC_FAILED',
-    );
-    const written = updates.find((payload) => payload.properties?.[OPTION_PROPERTY]);
-    assert.ok(written, 'the option document must have been written');
-    return JSON.parse(written.properties[OPTION_PROPERTY]).options[0];
-  };
-
-  const change = await lockWith('583243623796');
-  const renewal = await lockWith('583243745379');
-  // Read off the template, exactly as Settings assigns it. Decision #1, Holly 2026-08-30.
-  assert.equal(change.quoteKind, 'change');
-  assert.equal(renewal.quoteKind, 'renewal');
-
-  // The SAME configuration, so the same hash and the same option id. If the kind had gone into
-  // option.input instead, both would differ and switching document would mark the Deal's line
-  // items stale over a choice that moves no number.
-  assert.equal(change.result.stateHash, renewal.result.stateHash);
-  assert.equal(change.id, renewal.id);
-  // And it is genuinely absent from the stored input, not merely equal by luck.
-  assert.equal('quoteKind' in change.input, false);
-
-  // A template no kind claims still records a kind rather than leaving the option blank.
-  assert.equal((await lockWith('999999999999')).quoteKind, 'change');
-});
-
-// THE UNCONFIGURED-PORTAL CASE, at the lock. The contract requirement must follow the TEMPLATE's
-// kind, not the fallback kind recorded on the option.
-//
-// They differ exactly where it matters: on a renewal Deal quoting from a template no kind claims,
-// the recorded kind falls back to 'change' so the option is never kindless -- but no contract is
-// required, because nobody has said that template is a change document. Requiring one from the
-// fallback would block every renewal lock on a portal where Settings has not been filled in yet.
-test('an unclaimed template does not demand a contract, even when the company has them', async () => {
-  const settings = normalizeSettings({
-    ...defaultSettings(),
-    allowNewBusiness: true,
-    allowRenewals: true,
-    renewalPipelineIds: ['renewals'],
-    quoteTemplatesByKind: {
-      new_business: { enabledIds: [], defaultId: '' },
-      change: { enabledIds: ['583243623796'], defaultId: '' },
-      renewal: { enabledIds: ['583243745379'], defaultId: '' },
-    },
-  });
-  const input = {
-    termMonths: 12,
-    paymentFrequency: 'annual_in_advance',
-    volumes: { connect_ca: 1_000 },
-    supportLevel: 'basic',
-    onboardingPackage: 'none',
-    professionalServices: [],
-    addOns: [],
-  };
-  const state = {
-    dealType: 'renewal',
-    pipelineId: 'renewals',
-    dealName: 'Acme',
-    document: { schemaVersion: '1.0', revision: 1, options: [] },
-  };
-  const STOP = new Error('stop at the line item sync');
-  // This company DOES have a contract, so the requirement would fire if it applied.
-  const client = {
-    crm: {
-      deals: { basicApi: { update: async () => undefined } },
-      associations: { v4: { basicApi: { getPage: async (_from, _id, toType) => {
-        if (toType === 'companies') return { results: [{ toObjectId: 'co-1' }] };
-        if (toType === 'contracts') return { results: [{ toObjectId: 'c-1' }] };
-        throw STOP;
-      } } } },
-    },
-    apiRequest: async () => ({
-      json: async () => ({
-        results: [
-          { id: 'c-1', properties: { hs_name: 'Acme MSA', hs_status: 'ACTIVE' } },
-        ],
-      }),
-    }),
-  };
-  const lock = (templateId) =>
-    _test.lockLiveCalculation(
-      client,
-      'deal-1',
-      state,
-      { input, quoteContent: { templateId }, paymentMethod: 'ach', discountReason: '' },
-      '45023718',
-      settings,
-    );
-
-  // The CHANGE template with no contract chosen: refused, before anything is written.
-  await assert.rejects(
-    () => lock('583243623796'),
-    (error) => error.message === 'QUOTE_CONTRACT_REQUIRED',
-  );
-
-  // A template no kind claims: NOT refused. It gets past the guard and fails later, at the line
-  // item sync, which is how we know the contract check let it through.
-  await assert.rejects(
-    () => lock('999999999999'),
-    (error) => error.message === 'LINE_ITEM_SYNC_FAILED',
-    'an unclaimed template must not be blocked for want of a contract',
-  );
-});
 
 // The default Quote title. It used to be "<deal name> - Live calculator", which put an internal
 // label in front of a customer: "COVIS 2026 Manual Renewal - Live calculator". Holly, 2026-08-30.
@@ -3174,85 +2067,6 @@ test('the contract summary is written to the Deal and guarded', () => {
   assert.match(guarded[1], /'pricing_contract_summary',/);
 });
 
-// A single contract is not a choice. Lock in fails with QUOTE_CONTRACT_REQUIRED when the picker is
-// left empty, so leaving it on "Choose a contract…" when there is exactly one only invites a
-// failure whose answer was never in doubt. Two or more stays empty on purpose: guessing which of
-// several contracts a renewal belongs to is a guess about the customer's paperwork.
-test('the contract picker defaults only when there is exactly one contract', () => {
-  const card = require('node:fs').readFileSync(
-    require('node:path').join(__dirname, '..', 'cards', 'NylasPricingBuilder.tsx'),
-    'utf8',
-  );
-  assert.match(card, /body\.contracts\.length === 1 \? body\.contracts\[0\]\.id : ""/);
-  // The rep's own choice always wins over the default.
-  assert.match(card, /setContractId\(\(current\) => current \|\| only\)/);
-});
-
-// THE PIPELINE DECIDES THE TEMPLATE, AND THE CARD DOES NOT GET A VOTE.
-//
-// One bug produced three symptoms. `templateId` is card state; the preselect kept whatever it
-// already had (`if (current) return current`) so Lock in would not overwrite the rep's choice. But
-// the template LIST belongs to the Deal, and a Deal moves between pipelines while the card is
-// open. Load the card on the new business pipeline, move the Deal to renewal, Lock in -- the card
-// still holds New Business Template and sends it. Do it the other way and a new business Deal gets
-// the Renewal or Change document. Holly, 2026-09-01: "new business is loading the wrong quote",
-// "And renewal is broken now too", "and change".
-//
-// Nothing caught it server-side either: quoteKindForTemplate is not narrowed by category, so it
-// answered 'new_business' for a renewal Deal and the "no kind claims this" warning never fired.
-// Deal 63835136345 sat in renewal pipeline 876727403 holding a quote built from New Business
-// Template 567553820432, with no trace anywhere but the quote.
-//
-// Fixed on both sides, deliberately: the card drops a selection that is no longer on offer, and
-// the server substitutes the category default for anything outside the category's list. The card
-// is not the only way in, so the card alone is not enough.
-test('the server substitutes a template that does not belong to the Deal category', () => {
-  const source = require('node:fs').readFileSync(
-    require('node:path').join(__dirname, 'QuoteOptionsFunction.js'),
-    'utf8',
-  );
-
-  // REMOVED TWICE, AND BOTH REMOVALS WERE MEASURED. 2026-09-01:
-  //
-  //   17:20:28  guard in place  -> New Business Template   correct
-  //   17:20:58  guard in place  -> New Business Template   correct
-  //   17:22:17  guard in place  -> New Business Template   correct
-  //   18:00:36  guard REMOVED   -> Change Quote Template on a NEW BUSINESS pipeline Deal
-  //
-  // Quote 42609049672 on Deal 64484705454. The second removal was collateral: the guard shipped
-  // bundled with the removal of the quote's seller block, that deploy failed every Lock in with
-  // "One or more associations are invalid", and reverting the commit took the guard down too.
-  // It now lives on its own commit for exactly that reason.
-  assert.match(source, /const allowedKinds = quoteKindsForCategory\(category\);/);
-  assert.match(
-    source,
-    /const allowedTemplateIds = new Set\(\s*allowedKinds\.flatMap\(\(kind\) =>\s*quoteTemplateSettings\(settings, kind\)\.enabledIds\.map\(String\),\s*\),\s*\);/,
-  );
-  assert.match(
-    source,
-    /if \(allowedTemplateIds\.size > 0 && !allowedTemplateIds\.has\(String\(requestedTemplateId\)\)\) \{/,
-  );
-  assert.match(
-    source,
-    /const categoryDefault = defaultQuoteTemplateFor\(settings, allowedKinds\[0\]\);/,
-  );
-
-  // An unconfigured portal has no assignments; there an empty list means "offer everything".
-  assert.match(source, /allowedTemplateIds\.size > 0/);
-
-  // Everything downstream reads the SUBSTITUTED id, or the substitution is decorative.
-  const substitutionEnd = source.indexOf('const quoteKind = quoteKindForTemplate(');
-  const generateEnd = source.indexOf('const hash = contentHash(', substitutionEnd);
-  assert.ok(substitutionEnd > 0 && generateEnd > substitutionEnd);
-  const body = source.slice(substitutionEnd, generateEnd);
-  assert.match(body, /quoteKindForTemplate\(settings, category, templateId\)/);
-  assert.doesNotMatch(
-    body,
-    /requestedTemplateId/,
-    'nothing after the substitution may read the card-supplied id',
-  );
-});
-
 // The SELLER BLOCK stays on the quote. It was removed once on 2026-09-01 and reverted the same
 // day: the template's Seller section is configured to read *Quote owner*, so removing
 // hubspot_owner_id is what a blank Seller looks like. The quote status is no longer pinned here --
@@ -3283,45 +2097,6 @@ test('the card drops a template selection the Deal no longer offers', () => {
   );
   // The bare form is what pinned a stale template across a pipeline move.
   assert.doesNotMatch(card, /\n\s*if \(current\) return current;/);
-});
-
-// The settings record itself was ruled out, and this pins that. Both legacy flat keys
-// (enabledQuoteTemplateIds / defaultQuoteTemplateId, still present on record 60753277713 at
-// version 19) sit alongside quoteTemplatesByKind, and if the flat pair won, EVERY kind would
-// resolve to New Business -- which looks exactly like the bug above and is not its cause.
-test('per-kind template settings win over the legacy flat keys', () => {
-  const live = {
-    schemaVersion: '1.0',
-    version: 19,
-    allowNewBusiness: true,
-    allowRenewals: true,
-    newBusinessPipelineIds: ['db8895ce-da7b-4843-8d7b-4be80a0b7d7b'],
-    renewalPipelineIds: ['876727403'],
-    quoteTemplatesByKind: {
-      new_business: { enabledIds: ['567553820432'], defaultId: '567553820432' },
-      change: { enabledIds: ['583243623796'], defaultId: '583243623796' },
-      renewal: { enabledIds: ['583243745379'], defaultId: '583243745379' },
-    },
-    enabledQuoteTemplateIds: ['567553820432'],
-    defaultQuoteTemplateId: '567553820432',
-    pricingPolicy: {},
-  };
-  const settings = normalizeSettings(live, live.version);
-
-  assert.deepEqual(quoteTemplateSettings(settings, 'new_business').enabledIds, ['567553820432']);
-  assert.deepEqual(quoteTemplateSettings(settings, 'change').enabledIds, ['583243623796']);
-  assert.deepEqual(quoteTemplateSettings(settings, 'renewal').enabledIds, ['583243745379']);
-
-  // ...and the two live pipelines land in the categories they are configured for.
-  assert.equal(dealCategory(settings, 'newbusiness', '876727403'), 'renewal');
-  assert.equal(dealCategory(settings, '', 'db8895ce-da7b-4843-8d7b-4be80a0b7d7b'), 'new_business');
-  // The PIPELINE outranks dealtype. Deal 63835136345 is dealtype "newbusiness" in the renewal
-  // pipeline, and it is a renewal Deal.
-  // new_business is LAST, deliberately: the category's default template is read from kinds[0], so
-  // a renewal Deal still defaults to the change template. Holly, 2026-09-01: "make it so I can
-  // submit a new business template from renewals."
-  assert.deepEqual(quoteKindsForCategory('renewal'), ['change', 'renewal', 'new_business']);
-  assert.deepEqual(quoteKindsForCategory('new_business'), ['new_business']);
 });
 
 // THE CONTRACT START DATE IS NEVER TODAY.
@@ -3405,5 +2180,101 @@ test('the quote effective start date is pinned to the same source as the line it
   assert.match(
     model,
     /hs_recurring_billing_start_date: option\.result\.dates\.contractStartDate/,
+  );
+});
+
+// ONE TEMPLATE LIST, no kinds and no contract picker. Removed 2026-09-01 with the change and
+// renewal flows; these pin the shape that replaced them.
+test('the template picker offers the one configured list, and is never left empty', () => {
+  const all = [
+    { id: '567553820432', name: 'New business' },
+    { id: '583243623796', name: 'Change' },
+    { id: '583243745379', name: 'Renewal' },
+  ];
+  const narrowed = normalizeSettings({
+    ...defaultSettings(),
+    enabledQuoteTemplateIds: ['567553820432'],
+    defaultQuoteTemplateId: '567553820432',
+  });
+  assert.deepEqual(
+    _test.offeredQuoteTemplates(all, narrowed).map(({ id }) => id),
+    ['567553820432'],
+  );
+  assert.equal(_test.defaultQuoteTemplate(narrowed), '567553820432');
+
+  // An EMPTY list means "offer every usable template" -- the behaviour before the setting
+  // existed -- so an unconfigured portal is unchanged rather than shown an empty picker.
+  const unconfigured = normalizeSettings({ ...defaultSettings() });
+  assert.deepEqual(_test.offeredQuoteTemplates(all, unconfigured), all);
+
+  // And a list whose every template has since been deleted falls back to everything rather than
+  // rendering an empty picker, which reads as a broken card.
+  const stale = normalizeSettings({
+    ...defaultSettings(),
+    enabledQuoteTemplateIds: ['999999999999'],
+  });
+  assert.deepEqual(_test.offeredQuoteTemplates(all, stale), all);
+});
+
+// THE QUOTE KINDS AND THE CONTRACT OBJECT ARE GONE. A guard, not a behaviour test.
+//
+// Both grew back more than once during the day they were being removed, because a kind -> template
+// map and a contract picker are the obvious things to write when a renewal Deal needs different
+// treatment. It does not: HubSpot will not create a change or renewal quote through the public API
+// ("'hs_type' must be set to 'INITIAL'"), so those documents are made in HubSpot, from the Deal.
+test('no quote-kind or Contract-object surface remains in the function', () => {
+  const source = require('node:fs').readFileSync(
+    require('node:path').join(__dirname, 'QuoteOptionsFunction.js'),
+    'utf8',
+  );
+  for (const gone of [
+    'quoteKind',
+    'quoteTemplatesByKind',
+    'quoteTemplatesForCategory',
+    'contractApplies',
+    'assertContractChosen',
+    'contractOptions',
+    'associatedContractIds',
+    'inspect_contracts',
+    'QUOTE_KIND_NOT_API_CREATABLE',
+    'QUOTE_CONTRACT_REQUIRED',
+  ]) {
+    assert.equal(source.includes(gone), false, `${gone} is back in the function`);
+  }
+  // ...while the PRICING sense of "contract" is untouched. These are contract dates and terms,
+  // not the CPQ Contract object, and confusing the two breaks the calculator.
+  for (const kept of [
+    'contract_term__months_',
+    'hs_contract_effective_start_date',
+    'contractStartDate',
+    'pricing_contract_summary',
+  ]) {
+    assert.equal(source.includes(kept), true, `${kept} must not be removed`);
+  }
+});
+
+// The server still checks the card's template against Settings, and still SUBSTITUTES rather than
+// refusing. The per-category version of this guard was measured on 2026-09-01: with it, the right
+// template three times in a row; without it, a Change Quote Template on a new-business Deal. The
+// category is gone but the second half of the reason is not -- the card bundle caches in the
+// browser independently of this function, so a stale card can still send a stale template.
+test('a template outside the configured list is substituted, not refused', () => {
+  const source = require('node:fs').readFileSync(
+    require('node:path').join(__dirname, 'QuoteOptionsFunction.js'),
+    'utf8',
+  );
+  assert.match(
+    source,
+    /const allowedTemplateIds = new Set\(quoteTemplateSettings\(settings\)\.enabledIds\.map\(String\)\);/,
+  );
+  assert.match(
+    source,
+    /if \(allowedTemplateIds\.size > 0 && !allowedTemplateIds\.has\(String\(requestedTemplateId\)\)\) \{[\s\S]{0,700}?templateId = String\(configuredDefault\);/,
+    'a template outside the list is replaced by the configured default',
+  );
+  assert.doesNotMatch(
+    source,
+    /allowedTemplateIds[\s\S]{0,300}?throw new Error\('QUOTE_TEMPLATE/,
+    'a wrong template is recoverable; a discarded configuration is not',
   );
 });

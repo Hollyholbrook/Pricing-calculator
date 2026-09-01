@@ -17,9 +17,7 @@ const {
   saveSettings,
   userIdFromContext,
   dealCategory,
-  quoteKindsForCategory,
   quoteTemplateSettings,
-  QUOTE_KINDS,
 } = require('./appSettings');
 const {
   buildDealLineItems,
@@ -253,13 +251,6 @@ const SAFE_ERRORS = Object.freeze({
   QUOTE_TEMPLATE_NOT_CPQ:
     'That quote template is a legacy template and cannot be used. Choose a CPQ template on the ' +
     'card, or change which templates are offered in Settings > Quote Templates.',
-  QUOTE_CONTRACT_REQUIRED:
-    'Choose which contract this change or renewal is for before locking in.',
-  QUOTE_KIND_NOT_API_CREATABLE:
-    'Everything is saved on the Deal -- line items, pricing and approval tier. HubSpot does not ' +
-    'allow a change or renewal quote to be created by an app, so make this one from the Deal: ' +
-    'click Add quote and choose Change or Renewal. It will pick up the line items and pricing ' +
-    'from this Deal.',
   OPTION_BLOCKED: 'This option has blocking policy issues and cannot be selected.',
   PAYMENT_METHOD_REQUIRES_BANK_TRANSFER:
     'Credit card is not permitted on an invoice above the limit. Set Payment Method to ' +
@@ -1095,20 +1086,6 @@ const lockLiveCalculation = async (
   // Same position rule as the two guards above: this is ABOVE every write. syncDealLineItems now
   // creates before it archives, so a late failure is survivable -- but a guard that refuses the
   // lock should still refuse it before anything has been written at all, not after.
-  // From the TEMPLATE, not from a separate control. The card sends the template the rep picked;
-  // Settings says which kind that template belongs to; the kind says whether a contract applies.
-  const lockedQuoteKind = resolveQuoteKind(
-    settings,
-    category,
-    parameters.quoteContent?.templateId,
-    null,
-  );
-  const chosenContractId = await assertContractChosen(
-    client,
-    dealId,
-    quoteKindForTemplate(settings, category, parameters.quoteContent?.templateId),
-    parameters.contractId,
-  );
 
   // Never carry the raw card input forward. It can hold human labels the CATALOG cannot key on,
   // duplicate professional-services entries, and — worst — redline text the rep already retracted
@@ -1120,16 +1097,6 @@ const lockLiveCalculation = async (
     status: 'draft',
     input,
     result,
-    // Change or renewal -- which of the two documents a renewal Deal prints. Kept on the OPTION
-    // and deliberately NOT on option.input, for the same reason dealCategory is an argument to
-    // calculateQuote rather than an input field (see the comment above calculateQuote): the input
-    // is hashed, so putting it there would make the identical configuration hash differently on a
-    // change and a renewal and mark the line items stale over a choice that moves no number.
-    //
-    // No new Deal property either. The option document already rides in a property this portal is
-    // known to have, and readDealState hands it back, so the choice survives a reload without
-    // sending a property name nobody has verified.
-    quoteKind: lockedQuoteKind,
   };
   const properties = buildSelectedProperties(liveOption, 'draft');
   // The live option IS the selection now that it is persisted. Blanking these left the Deal
@@ -1187,8 +1154,6 @@ const lockLiveCalculation = async (
       replaceExistingQuote: parameters.replaceExistingQuote === true,
       // The contact the rep picked on the card. Required on a CPQ quote; see generateQuote.
       contactId: parameters.contactId,
-      // Validated above, so this is an id that exists on the company or nothing at all.
-      contractId: chosenContractId,
     },
     portalId,
     settings,
@@ -1760,12 +1725,13 @@ const readQuoteTemplatePage = async (client, after) => {
 // existed -- so an unconfigured portal is unchanged rather than shown an empty picker. A chosen id
 // the portal no longer has simply drops out: Settings cannot conjure a template that is not there.
 //
-// Narrowed PER QUOTE KIND since 2026-08-30. The Deal's pipeline resolves the CATEGORY, which a
-// rep never chooses; within a renewal category the rep chooses the KIND -- change or renewal --
-// and that picks the list. So a new-business template can no longer be offered on a renewal Deal
-// by mistake.
-const offeredQuoteTemplates = (templates, settings, quoteKind) => {
-  const { enabledIds } = quoteTemplateSettings(settings, quoteKind);
+// ONE LIST, no kinds. The per-kind narrowing was removed on 2026-09-01 along with the change and
+// renewal flows: HubSpot will not create either of those quotes through the public API, so the app
+// prints one document and needs one list. A renewal-pipeline Deal and a new-business Deal are
+// offered the same templates; what still differs between them is APPROVAL ROUTING, which is
+// decided by dealCategory in the calculator and has nothing to do with this.
+const offeredQuoteTemplates = (templates, settings) => {
+  const { enabledIds } = quoteTemplateSettings(settings);
   if (enabledIds.length === 0) return templates;
   const allowed = new Set(enabledIds.map(String));
   const narrowed = templates.filter(({ id }) => allowed.has(String(id)));
@@ -1773,451 +1739,17 @@ const offeredQuoteTemplates = (templates, settings, quoteKind) => {
   // reads as a broken card. Fall back to everything and say so.
   if (narrowed.length === 0) {
     console.warn(
-      `Nylas pricing: none of the quote templates chosen in Settings for ${quoteKind} still ` +
-        'exist. Offering every usable template instead.',
+      'Nylas pricing: none of the quote templates chosen in Settings still exist. Offering ' +
+        'every usable template instead.',
     );
     return templates;
   }
   return narrowed;
 };
 
-// This kind's default, then the QUOTE_TEMPLATE_ID secret, which is where the default lived before.
-const defaultQuoteTemplateFor = (settings, quoteKind) =>
-  quoteTemplateSettings(settings, quoteKind).defaultId || configuredQuoteTemplateId();
-
-// THE TEMPLATE DECIDES THE KIND. Holly, 2026-08-30, after seeing the first deploy.
-//
-// There used to be a separate Quote Type control, and the card resolved kind -> template list.
-// That inverted the real dependency and let the two disagree on screen: Quote Type said "Change"
-// while the template picker sat on "(TESTING) New Business". The template is what actually prints,
-// so it is the input, and the kind is derived from it.
-//
-// The mapping lives in Settings and nowhere else -- a template is a change template because an
-// admin put it in the change kind's list, not because of anything in its name.
-const quoteKindForTemplate = (settings, category, templateId) => {
-  const id = String(templateId || '');
-  if (!id) return null;
-  // CHANGE AND RENEWAL FIRST, new_business last.
-  //
-  // Not QUOTE_KINDS order. Listing a template under new_business means "this pipeline may quote
-  // from it"; listing it under change or renewal is a statement about what the DOCUMENT IS. So a
-  // template put in both -- which is exactly how an upsell in the new business pipeline gets the
-  // Change document -- keeps its own identity rather than being renamed by the pipeline that
-  // borrowed it. Otherwise it would print the change document while the app called it new
-  // business, and the contract picker would never appear.
-  return (
-    ['change', 'renewal', 'new_business'].find((kind) =>
-      quoteTemplateSettings(settings, kind).enabledIds.map(String).includes(id),
-    ) || null
-  );
-};
-
-// Every template the Deal's category may offer, as ONE list, plus which kind claims each.
-//
-// The union across the category's kinds, de-duplicated, first kind winning a tie. A new-business
-// Deal has one kind so this is just its list. Sending the claim map means the card can decide
-// whether a contract applies the instant the rep changes template, with no round trip.
-//
-// A template no kind claims is normal, not an error: an empty enabledIds means "offer every
-// template", which is what an unconfigured portal has. Those templates simply carry no kind, and
-// no contract is asked for -- see the comment on contractApplies below.
-const quoteTemplatesForCategory = (templates, settings, category) => {
-  const kinds = quoteKindsForCategory(category);
-  const seen = new Set();
-  const merged = [];
-  const templateKinds = {};
-  for (const kind of kinds) {
-    for (const template of offeredQuoteTemplates(templates, settings, kind)) {
-      if (seen.has(String(template.id))) continue;
-      seen.add(String(template.id));
-      merged.push(template);
-    }
-    for (const id of quoteTemplateSettings(settings, kind).enabledIds) {
-      if (!(String(id) in templateKinds)) templateKinds[String(id)] = kind;
-    }
-  }
-  return {
-    templates: merged,
-    templateKinds,
-    defaultTemplateId: defaultQuoteTemplateFor(settings, kinds[0]),
-  };
-};
-
-// Whether a contract applies to this quote. ONLY when the chosen template is explicitly a change
-// or renewal template in Settings.
-//
-// Deliberately NOT "this Deal is in a renewal pipeline". A renewal-pipeline Deal quoting from the
-// new-business template is a new-business document and has no contract to point at. And on an
-// unconfigured portal no template is claimed by any kind, so nothing is asked for -- the contract
-// picker appears once an admin assigns the change and renewal templates, which is slice 3.
-const contractApplies = (quoteKind) => quoteKind === 'change' || quoteKind === 'renewal';
-
-// The kind to RECORD on a locked option. Derived from the template; falls back to what the option
-// already carried, then to the category's first kind, so a stored option is never kindless.
-const resolveQuoteKind = (settings, category, templateId, storedOption) =>
-  quoteKindForTemplate(settings, category, templateId) ||
-  (storedOption?.quoteKind &&
-  quoteKindsForCategory(category).includes(String(storedOption.quoteKind))
-    ? String(storedOption.quoteKind)
-    : quoteKindsForCategory(category)[0]);
-
-// CONTRACTS. Read-only, on a DATED path -- not /crm/v3 -- and gated on a scope this app may not
-// have. HubSpot creates a contract when a quote is accepted; nothing here can create one, which is
-// why a rep facing an empty list has no way to fix it themselves. That shapes every decision below.
-// TRIED IN ORDER until one answers, because the right one is not knowable from the docs.
-//
-// On 2026-08-30 a company with three real contracts -- one ACTIVE, "COVIS 2026 Manual Renewal",
-// $4,800 -- read back as ZERO, with no error. HubSpot returned an empty page rather than a 404,
-// so a wrong object path and an empty portal were indistinguishable. Guessing which was wrong
-// three times, so the code now tries the candidates and reports which one answered.
-// NOTE, 2026-08-30: the path below is CORRECT and was still not the problem. Reading portal
-// 45023718 through the HubSpot connector (a different set of credentials) returned 2,536
-// contracts from this exact path, while this app's private-app token returned zero from it. An
-// object read the token is not scoped for comes back 200-and-empty on this object rather than
-// 403, which is what made a permissions problem look like a path problem for five builds.
-// crm.objects.contracts.read is now a REQUIRED scope; optional was not enough.
-//
-// 0-721 is the contracts object's TYPE ID, confirmed against portal 45023718 on 2026-08-30:
-// record URLs are /contacts/45023718/record/0-721/{id} and the portal holds 2,536 of them.
-//
-// The NAME does not work. '/crm/v3/objects/contracts' answers 200 with zero records -- not a 404
-// -- which is why four rounds of guessing got nowhere: a wrong name and an empty portal look
-// identical. Type ids for HubSpot-defined objects are constant across portals (0-1 contacts, 0-2
-// companies, 0-3 deals, 0-14 quotes), so this is not portal-specific.
-//
-// The names are kept behind it in case a portal answers on one of them.
-const CONTRACT_PATH_CANDIDATES = Object.freeze([
-  '/crm/v3/objects/0-721',
-  '/crm/v3/objects/contracts',
-  '/crm/objects/2026-03/contracts',
-]);
-// Same failure mode on the association side: an unrecognised toObjectType comes back as an empty
-// page rather than an error.
-const CONTRACT_ASSOCIATION_TYPES = Object.freeze(['contracts', 'contract']);
-// Individual retrieval is a DIFFERENT API from the list. HubSpot's own docs: "To retrieve a
-// contract, make a GET request to /commerce/contracts/2026-09-beta/contracts/{contractId}... To
-// batch retrieve or retrieve all contract records, use the Contracts object API." Tried for
-// single reads only -- it has no /batch/read and is not a list endpoint.
-const CONTRACT_SINGLE_PATHS = Object.freeze([
-  '/commerce/contracts/2026-09-beta/contracts',
-  ...CONTRACT_PATH_CANDIDATES,
-]);
-// hs_status is the contract's status field -- Holly, 2026-08-30, from the portal. It is NOT in
-// HubSpot's published property list for this object (which documents only hs_name, the dates and
-// the ids), so it is read with a fallback rather than trusted: a batch read naming a property the
-// portal lacks fails with a 400 and would take the whole picker down with it. Same reasoning as
-// createLineItem's retry.
-const CONTRACT_STATUS_PROPERTY = 'hs_status';
-// Confirmed against a real record on 2026-08-30, not taken from documentation. hs_start_date is
-// read as well because it is what the UI labels "Contract start date" and it is populated where
-// hs_contract_effective_date might not be.
-const CONTRACT_PROPERTIES = [
-  'hs_name',
-  CONTRACT_STATUS_PROPERTY,
-  'hs_contract_effective_date',
-  'hs_start_date',
-  'hs_createdate',
-];
-
-// The status values, confirmed from HubSpot's Contracts API beta documentation (Holly,
-// 2026-08-30). UPPERCASE, and there are exactly four:
-//
-//   DRAFT       created in the UI but not finalised, OR created with a FUTURE effective date --
-//               it becomes ACTIVE on that date
-//   ACTIVE      currently in effect
-//   COMPLETED   the billing period ended. Evergreen line items never reach this
-//   TERMINATED  manually terminated
-//
-// Compared case-insensitively, and that is load-bearing rather than defensive: the documented
-// enum is uppercase (ACTIVE) and this portal actually stores 'active'. Confirmed on a real record
-// 2026-08-30. A case-sensitive match would have hidden every contract.
-const QUOTABLE_CONTRACT_STATUSES = Object.freeze(['ACTIVE', 'DRAFT']);
-const contractStatusRank = (status) =>
-  QUOTABLE_CONTRACT_STATUSES.indexOf(String(status || '').trim().toUpperCase());
-const isQuotableContract = (status) => contractStatusRank(status) >= 0;
-
-// Why the failure is reported rather than swallowed: until the crm.objects.contracts.read scope is
-// added and the app reinstalled, every one of these returns 403. A picker that is silently empty
-// in that state is indistinguishable from a company with no contracts, and the two need completely
-// different responses from whoever is looking at the card.
-const contractUnavailableReason = (error) => {
-  const status = error?.code ?? error?.statusCode ?? error?.response?.status;
-  if (status === 403) return 'scope_missing';
-  if (status === 400 || status === 404) return 'not_supported';
-  return 'error';
-};
-
-// Tries EVERY candidate path, not just the one the probe liked.
-//
-// On 2026-08-30 the associations returned real contract ids and the batch read still came back
-// empty: the ids were right and the path was not. A batch read on the wrong object answers 200
-// with an empty results array rather than failing, so this cannot be left to one guess either.
-const readContractDetails = async (client, ids, preferredPath) => {
-  if (ids.length === 0) return { contracts: [], readPath: null };
-  const paths = [
-    preferredPath,
-    ...CONTRACT_PATH_CANDIDATES.filter((path) => path !== preferredPath),
-  ].filter(Boolean);
-  let usedPath = null;
-  let usedStrategy = null;
-  // The HTTP reason the reads gave, kept rather than swallowed. Builds 4-7 caught per-id errors
-  // one at a time and only warned, so a 403 -- the single fact that separates "not scoped" from
-  // "not there" -- never reached the card. That is why five builds argued about paths.
-  let lastReadReason = null;
-  // TWO strategies, because batch/read does not work on this object.
-  //
-  // Observed 2026-08-30: the associations returned two real contract ids and the LIST endpoint
-  // GET /crm/v3/objects/contracts answered with records -- while POST .../batch/read returned 200
-  // with an empty array for those same ids. Not an error, just nothing. So batch is tried first
-  // (one call when it works) and single-record GETs are the fallback, which is the most basic
-  // endpoint there is and the one the working list implies.
-  const readBatch = async (path, properties) => {
-    const response = await client.apiRequest({
-      method: 'POST',
-      path: `${path}/batch/read`,
-      body: { inputs: ids.map((id) => ({ id: String(id) })), properties },
-    });
-    return (await response.json())?.results || [];
-  };
-  // Capped: a company with fifty contracts must not turn one card load into fifty calls. The
-  // picker shows the quotable ones and this is the fallback path, not the normal one.
-  const readOneByOne = async (path, properties) => {
-    const found = [];
-    for (const id of ids.slice(0, 25)) {
-      try {
-        const response = await client.apiRequest({
-          method: 'GET',
-          path: `${path}/${encodeURIComponent(String(id))}?properties=${properties.join(',')}`,
-        });
-        const contract = await response.json();
-        if (contract?.id) found.push(contract);
-      } catch (error) {
-        lastReadReason = contractUnavailableReason(error);
-        console.warn(
-          `Nylas pricing: contract ${id} could not be read from ${path} (${lastReadReason}).`,
-          safeProviderDiagnostics(error, 'read_contract'),
-        );
-      }
-    }
-    return found;
-  };
-  // LIST EVERYTHING AND PICK. The endpoint of last resort, and on this portal the only one that
-  // works: on 2026-08-30 the list answered with records while both batch/read and the per-id GET
-  // returned nothing for ids the associations had just handed over.
-  //
-  // Paged, and it stops as soon as every wanted id is found -- the cap is there so a portal with
-  // thousands of contracts cannot turn one card load into an unbounded walk.
-  const readByListing = async (path, properties) => {
-    const wanted = new Set(ids.map(String));
-    const found = [];
-    let after;
-    for (let page = 0; page < 5 && wanted.size > 0; page += 1) {
-      const query =
-        `${path}?limit=100&properties=${properties.join(',')}` +
-        (after ? `&after=${encodeURIComponent(after)}` : '');
-      const response = await client.apiRequest({ method: 'GET', path: query });
-      const body = await response.json();
-      for (const contract of body?.results || []) {
-        if (!wanted.has(String(contract?.id))) continue;
-        wanted.delete(String(contract.id));
-        found.push(contract);
-      }
-      after = body?.paging?.next?.after;
-      if (!after) break;
-    }
-    return found;
-  };
-  const read = async (properties) => {
-    let lastError = null;
-    for (const [name, strategy, strategyPaths] of [
-      ['batch', readBatch, paths],
-      ['single', readOneByOne, CONTRACT_SINGLE_PATHS],
-      ['listing', readByListing, paths],
-    ]) {
-      for (const path of strategyPaths) {
-        try {
-          const results = await strategy(path, properties);
-          if (results.length > 0) {
-            usedPath = path;
-            usedStrategy = name;
-            return results;
-          }
-        } catch (error) {
-          lastError = error;
-          lastReadReason = contractUnavailableReason(error);
-        }
-      }
-    }
-    // Everything either failed or answered with nothing. Surface a failure if there was one, so a
-    // missing scope is never silently reported as "no contracts".
-    if (lastError) throw lastError;
-    return [];
-  };
-  let results;
-  try {
-    results = await read(CONTRACT_PROPERTIES);
-  } catch (error) {
-    // Only for hs_status, and only when HubSpot says that property does not exist. Anything else
-    // is a real failure and belongs in the caller's honest "why is this empty" reporting.
-    if (!isUnknownPropertyRejection(error, CONTRACT_STATUS_PROPERTY)) throw error;
-    console.warn(
-      `Nylas pricing: this portal has no ${CONTRACT_STATUS_PROPERTY} on contracts. Listing them ` +
-        'without status rather than showing no contracts at all.',
-    );
-    results = await read(CONTRACT_PROPERTIES.filter((name) => name !== CONTRACT_STATUS_PROPERTY));
-  }
-  const contracts = results.map((contract) => {
-    const name = contract?.properties?.hs_name || '';
-    const status = contract?.properties?.[CONTRACT_STATUS_PROPERTY] || '';
-    const effective = String(
-      contract?.properties?.hs_contract_effective_date ||
-        contract?.properties?.hs_start_date ||
-        '',
-    ).slice(0, 10);
-    return {
-      id: String(contract.id),
-      // Never blank: a nameless option is unpickable. The status and effective date are what tell
-      // two contracts for the same customer apart, so they are in the label, not a tooltip.
-      label: [
-        name || `Contract ${contract.id}`,
-        status || '',
-        effective ? `effective ${effective}` : '',
-      ]
-        .filter(Boolean)
-        .join(' — '),
-      status,
-      effectiveDate: effective,
-    };
-  });
-  return {
-    contracts,
-    readPath: usedPath,
-    readStrategy: usedStrategy,
-    readReason: lastReadReason,
-  };
-};
-
-// The CONTRACTS OF THE DEAL'S COMPANY. Holly, 2026-08-30: a rep thinks in terms of the customer's
-// contracts, not this Deal's -- and a renewal Deal usually has no contract of its own, because
-// HubSpot associates a new contract to the deal whose quote was accepted, not to next year's.
-// WHICH object path this portal answers on, and what it returned. Reported, never assumed --
-// that is the whole point: an empty result and a wrong path look identical.
-const probeContractPaths = async (client) => {
-  const attempts = [];
-  for (const path of CONTRACT_PATH_CANDIDATES) {
-    try {
-      const response = await client.apiRequest({ method: 'GET', path: `${path}?limit=1` });
-      const count = ((await response.json())?.results || []).length;
-      attempts.push({ path, ok: true, count });
-      // A path returning RECORDS is proof it is the right one. A path returning 200-and-empty is
-      // only evidence it is not broken -- kept as a fallback, never as proof.
-      if (count > 0) return { path, attempts };
-    } catch (error) {
-      attempts.push({
-        path,
-        ok: false,
-        reason: contractUnavailableReason(error),
-        detail: String(error?.body?.message || error?.message || error).slice(0, 200),
-      });
-    }
-  }
-  return { path: null, attempts };
-};
-
-// What the probe lets us honestly say. The distinction that matters: a path that returned RECORDS
-// proves contracts exist somewhere; a path that returned 200-and-empty proves only that the call
-// worked. Those two were conflated on 2026-08-30 and the card confidently reported "no contracts
-// exist in this portal" while three sat on the company.
-// Bumped whenever the contract read changes. It is printed on the card so a probe line can be
-// attributed to a BUILD -- twice now an identical line has been reported and there was no way to
-// tell "the fix is not deployed" from "the fix did not work".
-const CONTRACT_PROBE_BUILD = 8;
-
-// The contracts object's TYPE ID, asked for rather than guessed.
-//
-// Observed 2026-08-30 on build 4: associations resolve 'contracts' and hand back a real id, while
-// /crm/v3/objects/contracts answers 200 with ZERO records. A name that resolves for associations
-// and not for the objects API means the objects API wants the numeric type id (0-XXX), and that
-// id is portal-visible through the schema endpoints. So it is looked up instead of guessed at a
-// fourth time.
-//
-// Only called when the normal paths have already come back empty, so it costs nothing on a
-// portal where contracts read fine.
-const discoverContractObjectType = async (client) => {
-  for (const path of ['/crm/v3/schemas', '/crm-object-schemas/v3/schemas']) {
-    try {
-      const response = await client.apiRequest({ method: 'GET', path });
-      const body = await response.json();
-      const match = (body?.results || []).find((schema) =>
-        [
-          schema?.name,
-          schema?.fullyQualifiedName,
-          schema?.labels?.singular,
-          schema?.labels?.plural,
-        ]
-          .filter(Boolean)
-          .some((value) => String(value).toLowerCase().includes('contract')),
-      );
-      if (match?.objectTypeId) {
-        return {
-          objectTypeId: String(match.objectTypeId),
-          name: String(match.fullyQualifiedName || match.name || ''),
-          from: path,
-        };
-      }
-    } catch (error) {
-      console.warn(
-        `Nylas pricing: could not read object schemas from ${path}.`,
-        safeProviderDiagnostics(error, 'discover_contract_type'),
-      );
-    }
-  }
-  return null;
-};
-
-const readContractProbe = (probe) => ({
-  // Best path to read properties from: one that returned records, else one that at least answered.
-  path: probe.path || probe.attempts.find(({ ok }) => ok)?.path || null,
-  sawRecords: probe.attempts.some(({ ok, count }) => ok && count > 0),
-  // How many records the LIST actually returned. "A path answered" and "a path answered with
-  // records" are different facts, and only the second one means the object is readable there.
-  listed: probe.attempts.reduce((total, { count }) => total + (count || 0), 0),
-  answered: probe.attempts.some(({ ok }) => ok),
-  // Why nothing answered, when nothing did. A 403 here means the scope, and saying so is the
-  // difference between an actionable message and a shrug.
-  reason: probe.attempts.some(({ ok }) => ok)
-    ? null
-    : probe.attempts.find(({ reason }) => reason)?.reason || null,
-});
-
-// Contract ids associated to a record, trying each candidate association type until one answers.
-// A rejected type is information, not a failure -- only if every candidate comes back empty or
-// rejected does the caller report the read as unavailable.
-const associatedContractIds = async (client, fromType, fromId) => {
-  let rejections = 0;
-  let lastReason = null;
-  for (const toType of CONTRACT_ASSOCIATION_TYPES) {
-    try {
-      const ids = await associatedIds(client, fromType, fromId, toType, 50);
-      if (ids.length > 0) return { ids, associationType: toType, failed: null };
-    } catch (error) {
-      rejections += 1;
-      lastReason = contractUnavailableReason(error);
-      console.warn(
-        `Nylas pricing: ${fromType} -> ${toType} association rejected.`,
-        safeProviderDiagnostics(error, 'associate_contracts'),
-      );
-    }
-  }
-  // EVERY candidate threw -- that is a real failure (a missing scope, most likely) and must not
-  // be flattened into "no contracts". One candidate rejecting while another answers empty is
-  // just the wrong name being tried, which is what the loop is for.
-  return {
-    ids: [],
-    associationType: null,
-    failed: rejections === CONTRACT_ASSOCIATION_TYPES.length ? lastReason : null,
-  };
-};
+// The configured default, then the QUOTE_TEMPLATE_ID secret, which is where it lived before.
+const defaultQuoteTemplate = (settings) =>
+  quoteTemplateSettings(settings).defaultId || configuredQuoteTemplateId();
 
 // The Deal's company name, for the default quote title. Never fatal: a missing name falls back
 // to the deal name rather than failing the card load.
@@ -2234,191 +1766,6 @@ const dealCompanyName = async (client, dealId) => {
     );
     return '';
   }
-};
-
-// Sorting, filtering and the never-empty fallback, in ONE place. Both the normal read and the
-// type-id discovery below return through here, so they cannot drift apart.
-const finishContractOptions = ({ contracts }, fromDeal, contractDiagnostics) => {
-  // ACTIVE first, then DRAFT, then newest effective date within each.
-  const sorted = [...contracts].sort(
-    (a, b) =>
-      (contractStatusRank(a.status) < 0 ? 99 : contractStatusRank(a.status)) -
-        (contractStatusRank(b.status) < 0 ? 99 : contractStatusRank(b.status)) ||
-      String(b.effectiveDate).localeCompare(String(a.effectiveDate)),
-  );
-  // COMPLETED and TERMINATED are over: a change or renewal cannot point at one, so they are
-  // hidden. DRAFT is kept -- a DRAFT contract has a future effective date and becomes ACTIVE on
-  // it -- and every option prints its status, so a rep sees which is which.
-  const quotable = sorted.filter(({ status }) => isQuotableContract(status));
-  // NEVER hand back an empty picker because every contract happens to be finished: that reads on
-  // the card as "this company has no contracts", which is a different answer and a wrong one.
-  // Also covers a portal with no hs_status, where nothing is quotable.
-  return {
-    contracts: quotable.length > 0 ? quotable : sorted,
-    contractSource: fromDeal.ids.length > 0 ? 'deal' : 'company',
-    contractsUnavailable: null,
-    contractDiagnostics,
-  };
-};
-
-const contractOptions = async (client, dealId) => {
-  try {
-    const companyIds = await associatedIds(client, 'deals', dealId, 'companies', 1);
-    // BOTH the Deal's own contracts and the company's, unioned.
-    //
-    // The company alone was not enough. HubSpot creates a contract from an accepted quote, and
-    // where it lands is not something to assume: a real contract ("COVIS 2026 Manual Renewal")
-    // existed on 2026-08-30 while the company read returned nothing. Reading both costs one call
-    // and removes a whole class of "it says there are none but there are".
-    const [fromDeal, fromCompany] = await Promise.all([
-      associatedContractIds(client, 'deals', dealId),
-      companyIds[0]
-        ? associatedContractIds(client, 'companies', companyIds[0])
-        : Promise.resolve({ ids: [], associationType: null, failed: null }),
-    ]);
-    const contractIds = [...new Set([...fromDeal.ids, ...fromCompany.ids])];
-    const probe = readContractProbe(await probeContractPaths(client));
-    // Carried to the card AND the logs. Without it an empty picker cannot be told apart from a
-    // wrong object type, which is exactly what went wrong on 2026-08-30.
-    const contractDiagnostics = {
-      build: CONTRACT_PROBE_BUILD,
-      listed: probe.listed,
-      sawRecords: probe.sawRecords,
-      readPath: null,
-      readStrategy: null,
-      associatedCount: contractIds.length,
-      objectPath: probe.path,
-      dealAssociationType: fromDeal.associationType,
-      companyAssociationType: fromCompany.associationType,
-    };
-    console.log('Nylas pricing contracts probe:', JSON.stringify(contractDiagnostics));
-    // A read that FAILED outright outranks any of the "nothing here" answers below.
-    const readFailure = fromDeal.failed || fromCompany.failed;
-    if (contractIds.length === 0 && readFailure) {
-      return {
-        contracts: [],
-        contractSource: 'none',
-        contractsUnavailable: readFailure,
-        contractDiagnostics,
-      };
-    }
-    if (contractIds.length === 0 || !probe.path) {
-      return {
-        contracts: [],
-        contractSource: 'none',
-        // Three genuinely different answers, and saying the wrong one is what cost today:
-        //   none_associated  contracts demonstrably exist -- none is linked here. The rep's to fix
-        //   none_found       nothing linked and none listed. Either there are none, or the read is
-        //                    not finding them, and a 200-and-empty cannot tell those apart
-        //   not_supported    no candidate path answered at all
-        contractsUnavailable: probe.sawRecords
-          ? 'none_associated'
-          : probe.answered
-            ? 'none_found'
-            : probe.reason || 'not_supported',
-        contractDiagnostics,
-      };
-    }
-    const { contracts, readPath, readStrategy, readReason } = await readContractDetails(
-      client,
-      contractIds,
-      probe.path,
-    );
-    contractDiagnostics.readPath = readPath;
-    contractDiagnostics.readStrategy = readStrategy;
-    // 'scope_missing' here is proof, not a theory: it means HubSpot REFUSED rather than answered
-    // empty. Anything else means it answered and had nothing to give.
-    contractDiagnostics.readReason = readReason || (contracts.length === 0 ? 'answered_empty' : null);
-    contractDiagnostics.associatedCount = contractIds.length;
-    if (contracts.length === 0) {
-      // LAST RESORT: ask the portal what the contracts object is actually called, then read it
-      // by type id. Everything above uses names from documentation; this uses the portal's own
-      // answer, which is the only thing that has not been guessed yet.
-      // NOTE: /crm/v3/schemas lists CUSTOM objects only, so it never returns CONTRACT, which is
-      // HubSpot-defined. That is why this found nothing on build 5. Kept for a portal where
-      // contracts really are a custom object, but the type id above is what actually works.
-      const discovered = await discoverContractObjectType(client);
-      contractDiagnostics.discoveredType = discovered?.objectTypeId || null;
-      contractDiagnostics.discoveredName = discovered?.name || null;
-      if (discovered?.objectTypeId) {
-        const byTypeId = await readContractDetails(
-          client,
-          contractIds,
-          `/crm/v3/objects/${discovered.objectTypeId}`,
-        );
-        if (byTypeId.contracts.length > 0) {
-          console.log(
-            `Nylas pricing: contracts read by object type id ${discovered.objectTypeId} ` +
-              `(${discovered.name}). Add that path to CONTRACT_PATH_CANDIDATES.`,
-          );
-          return finishContractOptions(byTypeId, fromDeal, {
-            ...contractDiagnostics,
-            readPath: byTypeId.readPath,
-            readStrategy: byTypeId.readStrategy,
-          });
-        }
-      }
-      // Ids came back and none of them could be read. A different answer from "there are none",
-      // and the one that actually happened on 2026-08-30.
-      console.error(
-        `Nylas pricing: ${contractIds.length} contract association(s) found, but none could be ` +
-          `read from ${CONTRACT_PATH_CANDIDATES.join(' or ')}. Associations resolving while ` +
-          'object reads return nothing is what a MISSING crm.objects.contracts.read scope looks ' +
-          'like on this object -- it answers 200-and-empty rather than 403. Check the granted ' +
-          'scopes on the app before suspecting the path.',
-      );
-      return {
-        contracts: [],
-        contractSource: 'none',
-        contractsUnavailable: 'unreadable',
-        contractDiagnostics,
-      };
-    }
-    return finishContractOptions({ contracts }, fromDeal, contractDiagnostics);
-  } catch (error) {
-    const reason = contractUnavailableReason(error);
-    console.warn(
-      `Nylas pricing: could not list contracts (${reason}).`,
-      safeProviderDiagnostics(error, 'list_contracts'),
-    );
-    return { contracts: [], contractSource: 'none', contractsUnavailable: reason };
-  }
-};
-
-// A change or renewal quote must say which contract it is for. Holly, 2026-08-30 -- the same rule
-// the Contact for Quote picker follows.
-//
-// NARROWED, deliberately, and this is a departure from "block exactly like the contact picker".
-// A rep can always create a contact; a rep CANNOT create a contract -- HubSpot makes those when a
-// quote is accepted, and editing them needs a Revenue Hub seat. So blocking whenever no contract
-// is chosen would dead-end every change and renewal quote on a portal without the scope, or a
-// company whose first contract does not exist yet, with nothing the rep could do about it.
-//
-// It therefore blocks only when there was a real choice to make: contracts were read successfully
-// AND at least one came back AND none was picked. Every other case reports on the card and lets
-// the lock proceed.
-const assertContractChosen = async (client, dealId, quoteKind, contractId) => {
-  if (!contractApplies(quoteKind)) return null;
-  const { contracts, contractsUnavailable } = await contractOptions(client, dealId);
-  if (contractsUnavailable) {
-    console.warn(
-      `Nylas pricing: locking a ${quoteKind} quote without a contract -- contracts could not be ` +
-        `listed (${contractsUnavailable}). Not blocking: the rep has no way to resolve this.`,
-    );
-    return null;
-  }
-  if (contracts.length === 0) {
-    console.warn(
-      `Nylas pricing: locking a ${quoteKind} quote without a contract -- this company has none. ` +
-        'Not blocking: a contract cannot be created from here.',
-    );
-    return null;
-  }
-  const chosen = String(contractId || '');
-  if (!chosen || !contracts.some(({ id }) => id === chosen)) {
-    throw new Error('QUOTE_CONTRACT_REQUIRED');
-  }
-  return chosen;
 };
 
 // The contacts a rep may put on the quote.
@@ -2926,113 +2273,38 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
     ? QUOTE_STATUS_PENDING_APPROVAL
     : QUOTE_STATUS_DRAFT;
 
-  const category = dealCategory(settings, state.dealType, state.pipelineId);
-  // The default is the category's first kind's default -- there is no separate Quote Type to read
-  // a default from any more. The card normally sends an explicit templateId, so this only matters
-  // for a configuration restored from before the picker existed.
-  const requestedTemplateId =
-    content.templateId || defaultQuoteTemplateFor(settings, quoteKindsForCategory(category)[0]);
-  if (!/^\d+$/.test(requestedTemplateId)) throw new Error('QUOTE_CONFIGURATION_REQUIRED');
-
-  // THE CATEGORY DECIDES THE TEMPLATE. Not the card.
+  // ONE TEMPLATE LIST, and the card's choice is checked against it.
   //
-  // Landed 2026-09-01, removed twice, and the removals were measured both times:
+  // The per-category guard this replaces existed because a Deal that changed pipeline while the
+  // card was open left the card holding a template the new pipeline did not offer, and the card
+  // bundle caches in the browser independently of this function -- so a rep on a stale card sent a
+  // stale template. Measured on 2026-09-01: with the guard, the right template three times in a
+  // row; without it, a Change Quote Template on a new-business Deal.
   //
-  //   17:20:28  guard in place  -> New Business Template   correct
-  //   17:20:58  guard in place  -> New Business Template   correct
-  //   17:22:17  guard in place  -> New Business Template   correct
-  //   18:00:36  guard REMOVED   -> Change Quote Template on a NEW BUSINESS pipeline Deal
-  //
-  // Quote 42609049672 on Deal 64484705454. First Lock in without it, wrong template.
-  //
-  // ON ITS OWN COMMIT THIS TIME. It shipped once bundled with the removal of the quote's seller
-  // block, that deploy failed every Lock in with "One or more associations are invalid", and the
-  // revert took this guard down with it -- coupling an unrelated change to it cost the guard a
-  // second time. The seller block is untouched here.
-  //
-  // Why the card-side guard is not enough alone: the card bundle is cached in the browser
-  // independently of the serverless function, so a rep running yesterday's card sends yesterday's
-  // template and nothing server-side questions it.
+  // That failure mode is gone with the categories: there is one list now, so a template from
+  // yesterday's card is either on it or is not one this portal offers. The CHECK stays for the
+  // second half of the reason -- a stale or hand-built request must not put an arbitrary template
+  // on a customer-facing quote.
   //
   // SUBSTITUTED, NOT REFUSED. Throwing would discard a configuration the rep has already
-  // committed, after the guards that exist precisely to fail BEFORE anything is written.
+  // committed, after the guards that exist precisely to fail BEFORE anything is written. A wrong
+  // template is visible on the quote and recoverable; a lost configuration is not.
   //
-  // Only when the category actually has templates assigned: an unconfigured portal has none, and
-  // there "not in the list" means the list is empty, not that the choice is wrong.
-  const allowedKinds = quoteKindsForCategory(category);
-  const allowedTemplateIds = new Set(
-    allowedKinds.flatMap((kind) =>
-      quoteTemplateSettings(settings, kind).enabledIds.map(String),
-    ),
-  );
+  // Only when Settings actually lists templates: an empty list means "offer every usable
+  // template", and there "not in the list" means the list is empty, not that the choice is wrong.
+  const requestedTemplateId = content.templateId || defaultQuoteTemplate(settings);
+  if (!/^\d+$/.test(requestedTemplateId)) throw new Error('QUOTE_CONFIGURATION_REQUIRED');
+
+  const allowedTemplateIds = new Set(quoteTemplateSettings(settings).enabledIds.map(String));
   let templateId = requestedTemplateId;
   if (allowedTemplateIds.size > 0 && !allowedTemplateIds.has(String(requestedTemplateId))) {
-    const categoryDefault = defaultQuoteTemplateFor(settings, allowedKinds[0]);
+    const configuredDefault = defaultQuoteTemplate(settings);
     console.error(
-      `Nylas pricing: template ${requestedTemplateId} is not assigned to a ${category} Deal ` +
-        `(${allowedKinds.join('/')}: ${[...allowedTemplateIds].join(', ')}). ` +
-        `Using ${categoryDefault} instead. The card most likely still held a template from ` +
-        'before this Deal changed pipeline, or is a cached older bundle.',
+      `Nylas pricing: template ${requestedTemplateId} is not one of the templates chosen in ` +
+        `Settings (${[...allowedTemplateIds].join(', ')}). Using ${configuredDefault} instead. ` +
+        'The card is most likely a cached older bundle, or Settings changed while it was open.',
     );
-    if (/^\d+$/.test(String(categoryDefault))) templateId = String(categoryDefault);
-  }
-
-  // REVERTED to last night's behaviour at Holly's instruction, 2026-09-01.
-  //
-  // Between 10:56 and now this substituted the category's default whenever the card sent a
-  // template not assigned to the Deal's category in Settings. That was added because a Deal that
-  // changes pipeline while the card is open leaves the card holding a template the new pipeline
-  // does not offer -- see claude/wrong-template-across-all-three-flows.md.
-  //
-  // The card-side guard for that is DELIBERATELY STILL IN PLACE: NylasPricingBuilder drops a
-  // selection the Deal no longer offers. So the 1:1 still holds through the UI; what is gone is
-  // the server refusing to be told otherwise.
-  //
-  // Warned about, never refused. The card only ever offers this flow's list, so a template from
-  // outside it means the card and Settings have drifted -- and refusing the lock here would throw
-  // away a configuration the rep has already committed, after the guards that exist precisely to
-  // fail BEFORE anything is written. A wrong template is visible on the quote and recoverable; a
-  // lost configuration is not.
-  // Which kind this template belongs to, now that the template is the input rather than the
-  // output. null means no kind claims it -- normal on an unconfigured portal.
-  const quoteKind = quoteKindForTemplate(settings, category, templateId);
-  if (!quoteKind) {
-    console.warn(
-      `Nylas pricing: quote template ${templateId} is not listed under any quote kind in ` +
-        'Settings, so this quote carries no kind. Assign it under Settings > Quote Templates to ' +
-        'make it a change or renewal document.',
-    );
-  }
-  // CHANGE AND RENEWAL STOP HERE. HubSpot will not create either one through this API.
-  //
-  //   HTTP 400 VALIDATION_ERROR -- "When creating a quote via the public API, 'hs_type' must be
-  //   set to 'INITIAL' and cannot be set to any other value."
-  //
-  // Before this guard the app carried on and produced an INITIAL quote wearing the Change or
-  // Renewal template: a document that looks like a renewal, that will not amend a contract,
-  // prorate, write contract history or create a successor contract when somebody accepts it.
-  // Holly, 2026-09-01, choosing to stop instead: the rep clicks Add quote on the Deal and picks
-  // Change or Renewal, which is HubSpot's own supported path and which reads this Deal's line
-  // items.
-  //
-  // POSITION MATTERS. This throws before describeQuoteTemplate and before anything is created, so
-  // no half-made quote is left behind -- the same rule as every other precondition here. What has
-  // ALREADY happened by this point is deliberate and is the whole point of the option Holly
-  // chose: syncDealLineItems ran before generateQuote was called, and the calculator's pricing and
-  // approval tier were written on select. The Deal is fully prepared; only the quote record is
-  // left to HubSpot.
-  //
-  // Do not "fix" this by falling back to INITIAL. That is the behaviour this replaced.
-  if (quoteKind === 'change' || quoteKind === 'renewal') {
-    console.info(
-      `Nylas pricing: deal ${dealId} is a ${quoteKind} and its Deal-side work is complete. ` +
-        'Handing the quote itself to HubSpot -- the public API cannot create a change or renewal ' +
-        "quote (hs_type must be INITIAL). Template " +
-        `${templateId} was selected and is the one to choose on the Deal.`,
-    );
-    const handoff = new Error('QUOTE_KIND_NOT_API_CREATABLE');
-    handoff.diagnostics = { quoteKind, quoteTemplateId: templateId, dealId: String(dealId) };
-    throw handoff;
+    if (/^\d+$/.test(String(configuredDefault))) templateId = String(configuredDefault);
   }
 
   const { type: templateType, name: templateName } = await describeQuoteTemplate(
@@ -3157,14 +2429,9 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
   // So the template, the deal, the type and (for change and renewal) the contract all go on the
   // create. Nothing that CPQ reads during initialization may be attached a moment later.
   //
-  // The CONTRACT is deliberately NOT here, and the attempt to put it here was removed the same
-  // evening it was written. The reasoning for it was that CPQ reads a quote's associations while
-  // it initializes, so a contract arriving later is invisible to the renewal and change
-  // lifecycle. That reasoning is sound and it does not matter, because HubSpot refuses to create
-  // a non-INITIAL quote through this API at all -- see CPQ_QUOTE_TYPE_INITIAL. There is no
-  // lifecycle to feed, so putting an unproven association on the critical path of every Lock in
-  // buys nothing and can only fail. It stays where it was: after the create, best effort.
-  const quoteContractId = String(parameters.contractId || '');
+  // The CONTRACT is gone entirely, along with the change and renewal flows it served. HubSpot
+  // will not create either of those quotes through the public API, so there is no contract to
+  // attach and no lifecycle to feed.
   const quoteCreateAssociations = [
     // 286, quote template. The one this whole block exists for.
     createAssociation(templateId, 286),
@@ -3442,34 +2709,6 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
     //
     // Never fatal. The quote already exists by this point, so throwing here would leave an orphan
     // quote behind a failed lock. The outcome is reported instead, and the card prints it.
-    // The contract, attached after the create, best effort.
-    //
-    // This records WHICH contract the rep chose, and that is all it does. It does not make the
-    // quote a change or renewal quote -- HubSpot will not create one of those through this API
-    // under any circumstances. Do not read a successful association here as the lifecycle
-    // working.
-    let contractAssociated = null;
-    const contractId = quoteContractId;
-    if (contractId) {
-      try {
-        await client.crm.associations.v4.basicApi.createDefault(
-          'quotes',
-          String(quote.id),
-          'contracts',
-          contractId,
-        );
-        contractAssociated = true;
-      } catch (error) {
-        contractAssociated = false;
-        console.error(
-          `Nylas pricing: could not associate contract ${contractId} to quote ${quote.id}. The ` +
-            'quote was created without it, so a change or renewal template may not render. ' +
-            `${String(error?.body?.message || error?.message || error)}`,
-          safeProviderDiagnostics(error, 'associate_quote_contract'),
-        );
-      }
-    }
-
     // A quote created through the API is already DRAFT, so the update that set it was redundant
     // -- and it was the call that failed: it revalidates the whole quote, which is where the
     // template-type complaint came from. Read the quote instead of writing to it.
@@ -3632,11 +2871,6 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
       generatedAt,
       templateId,
       templateName,
-      // null when no contract applied, true when the association stuck, false when HubSpot
-      // refused it. The card prints all three, because "the quote was made but the contract did
-      // not attach" is exactly the silent half-success section 3 warns about.
-      contractId: contractId || null,
-      contractAssociated,
       // What the Internal quote status actually ended up as, and whether it took a second write.
       // The card prints it: this is the field the approval workflow watches, so a silent failure
       // here means an approval nobody is asked for.
@@ -3734,28 +2968,14 @@ exports.main = async (context) => {
     if (!isDealAllowed(settings, state.dealType, state.pipelineId)) throw new Error('INVALID_DEAL');
 
     if (action === 'list') {
-      const listCategory = dealCategory(settings, state.dealType, state.pipelineId);
       const allTemplates = await usableQuoteTemplates(client);
-      const listTemplates = quoteTemplatesForCategory(allTemplates, settings, listCategory);
+      const listTemplates = offeredQuoteTemplates(allTemplates, settings);
       return response(200, {
         success: true,
         ...stateResponse(state),
-        // The resolved flow, so the card renders that flow's view rather than guessing from a
-        // deal type it never sees.
-        dealCategory: listCategory,
-        quoteTemplates: listTemplates.templates,
-        defaultQuoteTemplateId: listTemplates.defaultTemplateId,
-        // Which kind claims each template. The card reads this to decide whether the contract
-        // picker applies, the instant the rep changes template and without another round trip.
-        templateKinds: listTemplates.templateKinds,
+        quoteTemplates: listTemplates,
+        defaultQuoteTemplateId: defaultQuoteTemplate(settings),
         ...(await quoteContactOptions(client, dealId)),
-        // Only where a contract can apply. A new-business Deal has no change or renewal kind, so
-        // asking its company for contracts is a wasted round trip on every card load.
-        ...(Object.values(listTemplates.templateKinds).some(
-          (kind) => kind === 'change' || kind === 'renewal',
-        )
-          ? await contractOptions(client, dealId)
-          : {}),
         dealOwnerId: state.dealOwnerId,
         // TEMP DIAGNOSTIC -- see latestQuoteTemplate. Remove with it.
         latestQuoteTemplate: await latestQuoteTemplate(client, state.latestQuoteId, allTemplates),
@@ -3765,54 +2985,6 @@ exports.main = async (context) => {
         companyName: await dealCompanyName(client, dealId),
       });
     }
-    // Read-only diagnostic for the contracts object. Writes nothing.
-    //
-    // It exists because "active contract" has no property behind it yet: HubSpot documents
-    // hs_name, hs_contract_effective_date and the timestamps, and nothing that says active. The
-    // knowledge base refers to "the current status of the contract" without naming the field. So
-    // rather than guess a name into a customer-facing picker -- the rule in section 9 -- this
-    // reports what THIS portal actually exposes, and the filter gets written against the answer.
-    if (action === 'inspect_contracts') {
-      const attempt = async (label, run) => {
-        try {
-          return { [label]: await run() };
-        } catch (error) {
-          return {
-            [label]: {
-              failed: contractUnavailableReason(error),
-              detail: String(error?.body?.message || error?.message || error).slice(0, 400),
-            },
-          };
-        }
-      };
-      const properties = await attempt('properties', async () => {
-        const read = await client.apiRequest({
-          method: 'GET',
-          path: '/crm/v3/properties/contracts',
-        });
-        const body = await read.json();
-        return (body?.results || []).map(({ name, label, type, options }) => ({
-          name,
-          label,
-          type,
-          // The values matter as much as the name: a status field is only useful here if we know
-          // which of its options means active in this portal.
-          options: (options || []).map((option) => option?.value).filter(Boolean).slice(0, 25),
-        }));
-      });
-      const sample = await attempt('sample', async () => {
-        const read = await client.apiRequest({
-          method: 'GET',
-          path: `${CONTRACT_PATH_CANDIDATES[0]}?limit=3&properties=${CONTRACT_PROPERTIES.join(',')}`,
-        });
-        const body = await read.json();
-        return (body?.results || []).map(({ id, properties: props }) => ({ id, ...props }));
-      });
-      return response(200, { success: true, contracts: { ...properties, ...sample } });
-    }
-    // Read-only diagnostic. Compares every catalogued product against pricingRules.js and reports
-    // where HubSpot and the code disagree -- and, crucially, whether this portal exposes tiered
-    // pricing over the API at all. Changes no pricing and writes nothing.
     if (action === 'inspect_products') {
       return response(200, {
         success: true,
@@ -3930,21 +3102,10 @@ exports.main = async (context) => {
 exports._test = Object.freeze({
   archiveSupersededQuote,
   quoteExpirationDate,
-  assertContractChosen,
-  contractOptions,
-  contractUnavailableReason,
   defaultQuoteTitle,
-  associatedContractIds,
-  probeContractPaths,
-  readContractProbe,
-  isQuotableContract,
   offeredQuoteTemplates,
   usableQuoteTemplates,
-  defaultQuoteTemplateFor,
-  quoteTemplatesForCategory,
-  quoteKindForTemplate,
-  contractApplies,
-  resolveQuoteKind,
+  defaultQuoteTemplate,
   repairLineItemsBatch,
   createLineItemsBatch,
   archiveLineItemsBatch,

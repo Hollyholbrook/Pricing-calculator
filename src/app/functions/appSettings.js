@@ -108,23 +108,33 @@ const defaultSettings = () => ({
   //
   // Everything else in Settings stays shared: one rate card, one set of thresholds. Only the
   // templates differ, so only the templates are nested.
+  // ONE LIST. There is no longer a per-kind split.
+  //
+  // Quote kinds existed because the app printed three documents -- new business, change and
+  // renewal -- and had to know which templates belonged to which. It cannot print the other two
+  // any more: HubSpot refuses to create a change or renewal quote through the public API
+  // ("'hs_type' must be set to 'INITIAL'"), so those are made in HubSpot, from the Deal. What is
+  // left is one document and therefore one template list. Holly, 2026-09-01.
+  //
+  // These are the flat keys the app used before 2026-08-30, promoted back to being the real ones
+  // rather than derived mirrors. Empty still means "offer every usable template", and an empty
+  // default still falls back to the QUOTE_TEMPLATE_ID secret, exactly as before.
+  enabledQuoteTemplateIds: [],
+  defaultQuoteTemplateId: '',
+  // DERIVED MIRROR, the inverse of what this key used to be. Never edited, never read by this
+  // code, written on every save.
+  //
+  // It exists so a ROLLBACK is survivable, the same reason the flat keys used to exist. Code that
+  // predates this change reads quoteTemplatesByKind and would find nothing; every kind therefore
+  // mirrors the one list, which is what a single list meant before kinds existed. Without it, a
+  // record saved by this Settings screen makes the older normalizeSettings throw INVALID_SETTINGS,
+  // which readSettings turns into SETTINGS_CONFIGURATION_REQUIRED -- taking the whole card down,
+  // not just Settings, for anyone who rolls back after a save.
   quoteTemplatesByKind: {
     new_business: { enabledIds: [], defaultId: '' },
     change: { enabledIds: [], defaultId: '' },
     renewal: { enabledIds: [], defaultId: '' },
   },
-  // LEGACY MIRRORS, derived -- never edited directly, never read by this code.
-  //
-  // They exist so a ROLLBACK is survivable. The per-kind data lives under its own key, so code
-  // that predates it still finds a plain array and a plain id here and keeps working. Without
-  // this, a record saved by the new Settings screen made the old normalizeSettings throw
-  // INVALID_SETTINGS, which readSettings turns into SETTINGS_CONFIGURATION_REQUIRED -- taking the
-  // whole card down, not just Settings, for anyone who rolled back after a save.
-  //
-  // They mirror the NEW BUSINESS kind, which is what a single shared list meant before kinds
-  // existed. Empty falls back to the QUOTE_TEMPLATE_ID secret, as it always did.
-  enabledQuoteTemplateIds: [],
-  defaultQuoteTemplateId: '',
   pricingPolicy: defaultPricingPolicy(),
 });
 
@@ -179,97 +189,21 @@ const normalizeTemplateId = (value, field) => {
   return id;
 };
 
-// The three documents this app can print, from REQUIREMENTS.md section 2. Not the same axis as
-// dealCategory, which has two values: the renewal CATEGORY covers two KINDS, and which of them a
-// quote is is the rep's choice.
-const QUOTE_KINDS = Object.freeze(['new_business', 'change', 'renewal']);
-
-// Which kinds a resolved category may choose between. dealCategory also returns 'unsupported';
-// isDealAllowed refuses those Deals before this is reached, so they fall to the new-business kind
-// as a safety net rather than as a route anything takes.
+// The template list a Deal may quote from, and its default.
 //
-// A RENEWAL DEAL MAY ALSO QUOTE FROM THE NEW BUSINESS KIND. Holly, 2026-09-01: "make it so I can
-// submit a new business template from renewals."
-//
-// This is not a widening of the new-business rule, which still holds in the direction it was
-// written: a NEW BUSINESS Deal offers new-business templates only, and nothing here changes that.
-// This is the other direction -- a renewal-pipeline Deal that needs to send an ordinary quote.
-//
-// It has real teeth now rather than being a convenience. HubSpot refuses to create a change or
-// renewal quote through the public API at all, so on a renewal Deal those two kinds hand off to
-// HubSpot and produce no quote. Without new_business here, a renewal Deal has no path that ends
-// in a quote this app can create.
-//
-// ORDER MATTERS AND new_business GOES LAST. kinds[0] is what the category's default template is
-// read from, so appending rather than prepending leaves the renewal Deal still defaulting to the
-// change template. It also matches quoteKindForTemplate's own precedence, which puts change and
-// renewal ahead of new_business so a template listed under both keeps the identity of the
-// document it actually is.
-const quoteKindsForCategory = (category) =>
-  category === 'renewal' ? ['change', 'renewal', 'new_business'] : ['new_business'];
-
-// The per-kind template settings went under their own key, `quoteTemplatesByKind`, on 2026-08-30.
-// Two older shapes have to keep working:
-//
-//   FLAT      enabledQuoteTemplateIds: ['123'],  defaultQuoteTemplateId: '123'
-//             -- every portal configured before 2026-08-30. Read as "every kind uses this".
-//   BY KIND   enabledQuoteTemplateIds: { change: [...] }, ...
-//             -- the shape this file briefly used on 2026-08-30, before the rollback hazard was
-//             found. Read per kind. Harmless to keep supporting and it costs four lines.
-//
-// A value that is none of these falls through to the empty default rather than throwing, because
-// empty already means something safe: "offer every usable template".
-// Precedence is decided on the WHOLE key, not entry by entry. New code always writes all three
-// kinds, so if `quoteTemplatesByKind` is present it is authoritative and complete -- and an EMPTY
-// enabledIds under it is a real answer ("offer every usable template"), not a gap to fill from
-// somewhere else. Reading it entry by entry made an explicitly-empty kind silently inherit the
-// legacy list, which is the opposite of what the admin chose.
-const hasPerKindKey = (byKind) =>
-  Boolean(byKind) && typeof byKind === 'object' && !Array.isArray(byKind);
-
-const legacyTemplateIds = (legacyEnabled, kind) => {
-  if (Array.isArray(legacyEnabled)) return legacyEnabled;
-  if (legacyEnabled && typeof legacyEnabled === 'object') return legacyEnabled[kind];
-  return [];
-};
-
-const legacyDefaultId = (legacyDefault, kind) => {
-  if (typeof legacyDefault === 'string' || typeof legacyDefault === 'number') return legacyDefault;
-  if (legacyDefault && typeof legacyDefault === 'object' && !Array.isArray(legacyDefault)) {
-    return legacyDefault[kind];
-  }
-  return '';
-};
-
-const normalizeQuoteTemplatesByKind = (byKind, legacyEnabled, legacyDefault) => {
-  const canonical = hasPerKindKey(byKind);
-  return Object.fromEntries(
-    QUOTE_KINDS.map((kind) => [
-      kind,
-      {
-        enabledIds: normalizePipelineIds(
-          (canonical
-            ? byKind[kind]?.enabledIds
-            : legacyTemplateIds(legacyEnabled, kind)) || [],
-          `quoteTemplatesByKind.${kind}.enabledIds`,
-        ),
-        defaultId: normalizeTemplateId(
-          canonical ? byKind[kind]?.defaultId : legacyDefaultId(legacyDefault, kind),
-          `quoteTemplatesByKind.${kind}.defaultId`,
-        ),
-      },
-    ]),
-  );
-};
-
-// The template settings ONE kind uses. An unrecognised kind reads as new business rather than as
-// nothing: an empty list would be indistinguishable from "offer every template", so an unknown
-// kind must not be able to silently widen the picker.
-const quoteTemplateSettings = (settings, quoteKind) => {
-  const kind = QUOTE_KINDS.includes(quoteKind) ? quoteKind : 'new_business';
+// Reads the flat keys, and falls back to the NEW BUSINESS entry of the old quoteTemplatesByKind
+// so a settings record written before the kinds were removed -- which is every record in the
+// portal today -- still resolves to the right list on the first read, before anyone opens
+// Settings and saves.
+const quoteTemplateSettings = (settings) => {
+  const flatEnabled = settings?.enabledQuoteTemplateIds;
+  const flatDefault = settings?.defaultQuoteTemplateId;
+  const legacy = settings?.quoteTemplatesByKind?.new_business;
   return {
-    enabledIds: settings?.quoteTemplatesByKind?.[kind]?.enabledIds || [],
-    defaultId: settings?.quoteTemplatesByKind?.[kind]?.defaultId || '',
+    enabledIds: (Array.isArray(flatEnabled) && flatEnabled.length > 0
+      ? flatEnabled
+      : legacy?.enabledIds) || [],
+    defaultId: (flatDefault || legacy?.defaultId) || '',
   };
 };
 
@@ -496,11 +430,21 @@ const normalizeSettings = (value, currentVersion = 0) => {
   if (!value.allowNewBusiness && !value.allowRenewals) {
     throw new Error('INVALID_SETTINGS:allowedDealTypes');
   }
-  const byKind = normalizeQuoteTemplatesByKind(
-    value.quoteTemplatesByKind,
-    value.enabledQuoteTemplateIds,
-    value.defaultQuoteTemplateId,
+  // The flat keys are authoritative. A record written before the kinds were removed carries only
+  // quoteTemplatesByKind, so its new-business entry is read as the list -- that is the migration,
+  // and it costs one fallback rather than a rewrite of every stored record.
+  const legacyNewBusiness = value.quoteTemplatesByKind?.new_business;
+  const enabledQuoteTemplateIds = normalizePipelineIds(
+    (Array.isArray(value.enabledQuoteTemplateIds) && value.enabledQuoteTemplateIds.length > 0
+      ? value.enabledQuoteTemplateIds
+      : legacyNewBusiness?.enabledIds) || [],
+    'enabledQuoteTemplateIds',
   );
+  const defaultQuoteTemplateId = normalizeTemplateId(
+    value.defaultQuoteTemplateId || legacyNewBusiness?.defaultId || '',
+    'defaultQuoteTemplateId',
+  );
+  const mirrored = { enabledIds: enabledQuoteTemplateIds, defaultId: defaultQuoteTemplateId };
   return {
     schemaVersion: '1.0',
     version: currentVersion,
@@ -510,10 +454,14 @@ const normalizeSettings = (value, currentVersion = 0) => {
       value.newBusinessPipelineIds || [],
       'newBusinessPipelineIds',
     ),
-    quoteTemplatesByKind: byKind,
-    // Derived, every save, from the new-business kind. See defaultSettings for why they exist.
-    enabledQuoteTemplateIds: byKind.new_business.enabledIds,
-    defaultQuoteTemplateId: byKind.new_business.defaultId,
+    enabledQuoteTemplateIds,
+    defaultQuoteTemplateId,
+    // Derived, every save. See defaultSettings for why this is still written.
+    quoteTemplatesByKind: {
+      new_business: mirrored,
+      change: mirrored,
+      renewal: mirrored,
+    },
     renewalPipelineIds: normalizePipelineIds(
       value.renewalPipelineIds || [],
       'renewalPipelineIds',
@@ -655,7 +603,6 @@ const isDealAllowed = (settings, dealType, pipelineId) => {
 
 module.exports = {
   APPROVAL_TIERS,
-  QUOTE_KINDS,
   accountIdFromContext,
   productRateDescriptors,
   dealCategory,
@@ -664,7 +611,6 @@ module.exports = {
   isDealAllowed,
   isSettingsAdmin,
   normalizeSettings,
-  quoteKindsForCategory,
   quoteTemplateSettings,
   readDealPipelines,
   readSettings,
