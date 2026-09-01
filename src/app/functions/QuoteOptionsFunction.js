@@ -145,23 +145,31 @@ const choiceProperty = ({ property, values }, choice) => {
   return value ? { [property]: value } : {};
 };
 
-const paymentMethodProperties = (paymentMethod) =>
-  choiceProperty(DEAL_PAYMENT_METHOD, paymentMethod);
+const mappedChoice = (definition, property) => ({
+  ...definition,
+  property: property || definition.property,
+});
 
-const paymentFrequencyProperties = (paymentFrequency) =>
-  choiceProperty(DEAL_PAYMENT_FREQUENCY, paymentFrequency);
+const paymentMethodProperties = (paymentMethod, property) =>
+  choiceProperty(mappedChoice(DEAL_PAYMENT_METHOD, property), paymentMethod);
+
+const paymentFrequencyProperties = (paymentFrequency, property) =>
+  choiceProperty(mappedChoice(DEAL_PAYMENT_FREQUENCY, property), paymentFrequency);
 
 // Always one or the other, never blank: autoRenewal is a boolean the card always has a value for,
 // so there is no "not specified" case to clear.
-const autoRenewalProperties = (autoRenewal) =>
-  choiceProperty(DEAL_AUTO_RENEWAL, autoRenewal === true ? 'yes' : 'no');
+const autoRenewalProperties = (autoRenewal, property) =>
+  choiceProperty(
+    mappedChoice(DEAL_AUTO_RENEWAL, property),
+    autoRenewal === true ? 'yes' : 'no',
+  );
 
-const contractTermProperties = (termMonths) => {
+const contractTermProperties = (termMonths, property = DEAL_CONTRACT_TERM_PROPERTY) => {
   const months = Number(termMonths);
   // Only a real term. A blank or nonsense value would either fail the update or overwrite a good
   // number with junk, and the term is always present on a calculated option.
   if (!Number.isFinite(months) || months <= 0) return {};
-  return { [DEAL_CONTRACT_TERM_PROPERTY]: String(months) };
+  return { [property]: String(months) };
 };
 
 // Free text the rep types when they discount. Trimmed and capped rather than validated: there is no
@@ -455,6 +463,34 @@ const serializeDocument = (document) => {
   return serialized;
 };
 
+const assertConfiguredInput = (input, settings) => {
+  const configuration = settings?.catalogConfiguration;
+  if (!configuration) return;
+  const term = configuration.contractTerms?.[String(input?.termMonths)];
+  const payment = configuration.paymentOptions?.[String(input?.paymentFrequency || '')];
+  if (!term?.enabled || !payment?.enabled) throw new Error('INVALID_OPTION');
+  const support = configuration.options?.support?.[String(input?.supportLevel || '')];
+  const onboarding = configuration.options?.onboarding?.[
+    String(input?.onboardingPackage || '')
+  ];
+  if (!support?.enabled || !onboarding?.enabled) throw new Error('INVALID_OPTION');
+  for (const key of input?.addOns || []) {
+    if (!configuration.options?.addOns?.[String(key)]?.enabled) {
+      throw new Error('INVALID_OPTION');
+    }
+  }
+  for (const key of input?.professionalServices || []) {
+    if (!configuration.options?.professionalServices?.[String(key)]?.enabled) {
+      throw new Error('INVALID_OPTION');
+    }
+  }
+  for (const [key, product] of Object.entries(configuration.products || {})) {
+    if (product.enabled) continue;
+    if (Number(input?.volumes?.[key] || 0) > 0) throw new Error('INVALID_OPTION');
+    if (Number(input?.productDiscounts?.[key] || 0) > 0) throw new Error('INVALID_OPTION');
+  }
+};
+
 const assertRevision = (document, expectedRevision) => {
   if (expectedRevision == null) return;
   if (!Number.isInteger(expectedRevision) || expectedRevision !== document.revision) {
@@ -478,6 +514,7 @@ const calculateAndSaveOption = async (client, dealId, state, parameters, setting
   if (!incoming || typeof incoming !== 'object' || Array.isArray(incoming)) {
     throw new Error('INVALID_OPTION');
   }
+  assertConfiguredInput(incoming.input, settings);
 
   const result = calculateQuote(
     incoming.input,
@@ -746,6 +783,7 @@ const lockLiveCalculation = async (
   portalId,
   settings,
 ) => {
+  assertConfiguredInput(parameters.input, settings);
   const category = dealCategory(settings, state.dealType, state.pipelineId);
   const result = calculateQuote(
     parameters.input,
@@ -840,14 +878,24 @@ const lockLiveCalculation = async (
   // nothing to identify on reload.
   properties[SELECTED_OPTION_ID_PROPERTY] = liveOption.id;
   properties[SELECTED_OPTION_NAME_PROPERTY] = liveOption.name;
-  Object.assign(properties, paymentMethodProperties(parameters.paymentMethod));
+  const dealMappings = settings.catalogConfiguration?.hubspotMappings?.dealProperties || {};
+  Object.assign(
+    properties,
+    paymentMethodProperties(parameters.paymentMethod, dealMappings.paymentMethod),
+  );
   // From the normalized input, not the raw parameters: that is the value the calculation actually
   // used, so the Deal cannot disagree with the pricing.
-  Object.assign(properties, paymentFrequencyProperties(input.paymentFrequency));
+  Object.assign(
+    properties,
+    paymentFrequencyProperties(input.paymentFrequency, dealMappings.paymentFrequency),
+  );
   // The rep's own words, and when they committed. Neither is a pricing input -- they change no
   // number and normalizeStoredInput would strip them from option.input.
-  Object.assign(properties, autoRenewalProperties(input.autoRenewal));
-  Object.assign(properties, contractTermProperties(input.termMonths));
+  Object.assign(properties, autoRenewalProperties(input.autoRenewal, dealMappings.autoRenewal));
+  Object.assign(
+    properties,
+    contractTermProperties(input.termMonths, dealMappings.contractTermMonths),
+  );
   Object.assign(properties, discountReasonProperties(parameters.discountReason));
   properties.pricing_approval_timestamp = String(Date.now());
 
@@ -1006,12 +1054,20 @@ const HUBSPOT_LINE_ITEM_PROPERTIES = new Set([
   'hs_position_on_quote',
 ]);
 
-const hubSpotLineItemProperties = (properties) =>
+const configuredLineItemPropertyNames = (catalogConfiguration) =>
+  new Set(Object.values(catalogConfiguration?.hubspotMappings?.lineItemProperties || {}));
+
+const hubSpotLineItemProperties = (properties, catalogConfiguration) => {
+  const configuredNames = configuredLineItemPropertyNames(catalogConfiguration);
+  return (
   Object.fromEntries(
     Object.entries(properties).filter(
-      ([key, value]) => HUBSPOT_LINE_ITEM_PROPERTIES.has(key) && value != null,
+      ([key, value]) =>
+        (HUBSPOT_LINE_ITEM_PROPERTIES.has(key) || configuredNames.has(key)) && value != null,
     ),
+  )
   );
+};
 
 // HubSpot refuses to hydrate a line item from a product that is a BUNDLE:
 //   "This API does not support creating line items from product bundles."
@@ -1321,7 +1377,7 @@ const VERIFIED_LINE_ITEM_PROPERTIES = ['one_time_fees', 'recurring_fees', 'total
 const syncDealLineItems = async (client, dealId, state, settings) => {
   const option = selectedOptionForDraft(state);
   assertCurrentSettings(option, settings);
-  const desired = buildDealLineItems(option);
+  const desired = buildDealLineItems(option, settings.catalogConfiguration);
   const createdIds = [];
   // How many of the OLD line items have gone, for the message below.
   let archivedCount = 0;
@@ -1350,7 +1406,7 @@ const syncDealLineItems = async (client, dealId, state, settings) => {
     // the Deal is exactly as it was. The cost is that the Deal briefly holds both sets, roughly
     // 26 line items on a typical quote against a 1,000 association ceiling, which is not close.
     const sending = desired.map((item) => ({
-      properties: hubSpotLineItemProperties(item.properties),
+      properties: hubSpotLineItemProperties(item.properties, settings.catalogConfiguration),
       associations: [createAssociation(dealId, 20)],
     }));
     const created = await createLineItemsBatch(client, sending, createdIds);
@@ -2573,7 +2629,7 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
   );
 
   // Built before the try so PRODUCT_MAPPING_REQUIRED fails before a quote record exists.
-  const lineItems = buildQuoteLineItems(option, content);
+  const lineItems = buildQuoteLineItems(option, content, settings.catalogConfiguration);
   let quote;
   const createdLineItemIds = [];
   try {
@@ -2691,7 +2747,7 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
     // rate limit likely in the first place, and the Deal sync has always batched -- this path was
     // the odd one out. inBatches keeps the same concurrency ceiling as everywhere else.
     const sendingQuoteLines = lineItems.map((item) => ({
-      properties: hubSpotLineItemProperties(item.properties),
+      properties: hubSpotLineItemProperties(item.properties, settings.catalogConfiguration),
       // 68, not 67. Association type ids are directional: 67 is defined FROM the quote (0-14) TO
       // the line item, but this association is declared on the line item's own create, so the
       // "from" side is the line item (0-8). HubSpot rejected it with "invalid from object type
