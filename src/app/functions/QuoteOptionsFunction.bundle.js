@@ -3903,19 +3903,11 @@ var senderProperties = async (client, ownerId) => {
     return {};
   }
 };
-var QUOTE_EXPIRY_DAYS = 5;
+var QUOTE_EXPIRY_DAYS = 90;
 var quoteExpirationDate = (contractStartDate, now = /* @__PURE__ */ new Date()) => {
-  const plusDays = (date) => {
-    const moved = new Date(date.getTime());
-    moved.setUTCDate(moved.getUTCDate() + QUOTE_EXPIRY_DAYS);
-    return moved;
-  };
   const today = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
-  const floor = plusDays(today);
-  const parsed = contractStartDate ? /* @__PURE__ */ new Date(`${contractStartDate}T00:00:00Z`) : null;
-  const fromStart = parsed && !Number.isNaN(parsed.getTime()) ? plusDays(parsed) : null;
-  const chosen = fromStart && fromStart.getTime() > floor.getTime() ? fromStart : floor;
-  return chosen.toISOString().slice(0, 10);
+  today.setUTCDate(today.getUTCDate() + QUOTE_EXPIRY_DAYS);
+  return today.toISOString().slice(0, 10);
 };
 var archiveSupersededQuote = async (client, supersededQuoteId, newQuoteId) => {
   if (!supersededQuoteId || supersededQuoteId === String(newQuoteId)) return null;
@@ -4229,6 +4221,7 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
     const quoteUrl = finalized?.properties?.hs_quote_link || "";
     let quoteStatus = finalized?.properties?.hs_status || "";
     let quoteStatusRepaired = false;
+    let quoteStatusError = "";
     if (quoteStatus !== desiredQuoteStatus) {
       console.log(
         `Nylas pricing: quote ${quote.id} was created as "${quoteStatus || "unset"}"; moving it to ${desiredQuoteStatus}. On an approvals-enabled portal this is the only legal way to reach it -- the create cannot carry a published status.`
@@ -4241,8 +4234,11 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
         quoteStatus = after?.properties?.hs_status || quoteStatus;
         quoteStatusRepaired = quoteStatus === desiredQuoteStatus;
       } catch (error) {
+        quoteStatusError = String(
+          error?.body?.message || error?.message || error || ""
+        ).slice(0, 600);
         console.error(
-          `Nylas pricing: could not set hs_status on quote ${quote.id}. The approval workflow will not enrol it. ${String(error?.body?.message || error?.message || error)}`,
+          `Nylas pricing: could not set hs_status on quote ${quote.id}. The approval workflow will not enrol it. ${quoteStatusError}`,
           safeProviderDiagnostics(error, "set_quote_status")
         );
       }
@@ -4311,6 +4307,7 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
       quoteStatus,
       quoteStatusExpected: desiredQuoteStatus,
       quoteStatusRepaired,
+      quoteStatusError,
       needsApproval
     };
   } catch (error) {

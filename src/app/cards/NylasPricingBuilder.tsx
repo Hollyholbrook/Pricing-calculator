@@ -298,6 +298,7 @@ interface ServerlessBody {
   quoteStatus?: string;
   quoteStatusExpected?: string;
   quoteStatusRepaired?: boolean;
+  quoteStatusError?: string;
   needsApproval?: boolean;
   dealContactIds?: string[];
   defaultQuoteTemplateId?: string;
@@ -837,7 +838,14 @@ hubspot.extend<"crm.record.tab">(({ context, actions }: CrmExtensionProps) => (
 const quoteStatusSummary = (body: ServerlessBody) => {
   if (!body.quoteStatus) return "";
   if (body.quoteStatus !== body.quoteStatusExpected) {
-    return `WARNING: the Quote status is ${body.quoteStatus}, not ${body.quoteStatusExpected} -- the approval workflow will not pick it up.`;
+    // HubSpot's own rejection, verbatim. Without it this warning says only that the status is
+    // wrong, and the reason -- which names the property or association HubSpot wants -- is
+    // readable only in a serverless log. A DRAFT quote does not render as a quote, so this is
+    // the message that explains an unusable document.
+    const why = body.quoteStatusError
+      ? ` HubSpot said: ${body.quoteStatusError}`
+      : "";
+    return `WARNING: the Quote status is ${body.quoteStatus}, not ${body.quoteStatusExpected} -- the approval workflow will not pick it up, and a ${body.quoteStatus} quote does not render as a finished quote.${why}`;
   }
   return body.needsApproval
     ? "Approval is required, and the Quote is marked Pending approval."

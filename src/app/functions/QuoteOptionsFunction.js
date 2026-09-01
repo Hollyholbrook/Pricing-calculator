@@ -2412,33 +2412,27 @@ const senderProperties = async (client, ownerId) => {
   }
 };
 
-// QUOTE EXPIRATION. Holly, 2026-09-01: "Expiration date can't be in the past for ones we're
-// creating. Order start date should be the expiration date + 5 days."
+// QUOTE EXPIRATION -- 90 days from creation, matching the portal.
 //
-// It used to be pinned to the order start date itself, on the reasoning that inventing a rolling
-// date would print something on a customer-facing quote that nobody chose. The cost of that was
-// worse: a back-dated or same-day contract start produced a quote that was already expired --
-// quote 42607873610 was created on 2026-08-31 and expired 2025-08-31 -- and an expired quote
-// cannot be accepted.
+// HubSpot's own setting (Settings > Objects > Quotes > "Set a default expiration period") is
+// 90 days. That default only applies to a quote created WITHOUT an explicit expiration, and the
+// API requires hs_expiration_date on a CPQ quote -- so whatever this app sends always wins and
+// the portal default never gets a chance to apply. Sending the same 90 days keeps an app-built
+// quote and a hand-built one consistent, which is what a rep comparing the two would expect.
 //
-// So: start + 5 days, and never in the past. When the contract start is behind us the five days
-// are counted from TODAY instead, because the point of the field is that the customer has time
-// to sign. hs_contract_effective_start_date still carries the real order start date, so nothing
+// It used to be pinned to the ORDER START DATE, which produced quotes that were already expired:
+// quote 42607873610 was created on 2026-08-31 and expired 2025-08-31, and an expired quote cannot
+// be accepted. Counting from creation makes that impossible by construction rather than by a
+// floor. hs_contract_effective_start_date still carries the real order start date, so nothing
 // about the contract itself moves.
-const QUOTE_EXPIRY_DAYS = 5;
+//
+// If the portal's default changes, change this to match -- it is not readable from the API.
+const QUOTE_EXPIRY_DAYS = 90;
 
 const quoteExpirationDate = (contractStartDate, now = new Date()) => {
-  const plusDays = (date) => {
-    const moved = new Date(date.getTime());
-    moved.setUTCDate(moved.getUTCDate() + QUOTE_EXPIRY_DAYS);
-    return moved;
-  };
   const today = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
-  const floor = plusDays(today);
-  const parsed = contractStartDate ? new Date(`${contractStartDate}T00:00:00Z`) : null;
-  const fromStart = parsed && !Number.isNaN(parsed.getTime()) ? plusDays(parsed) : null;
-  const chosen = fromStart && fromStart.getTime() > floor.getTime() ? fromStart : floor;
-  return chosen.toISOString().slice(0, 10);
+  today.setUTCDate(today.getUTCDate() + QUOTE_EXPIRY_DAYS);
+  return today.toISOString().slice(0, 10);
 };
 
 const archiveSupersededQuote = async (client, supersededQuoteId, newQuoteId) => {
@@ -2963,6 +2957,13 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
     // would sit there with nobody asked to look at it.
     let quoteStatus = finalized?.properties?.hs_status || '';
     let quoteStatusRepaired = false;
+    // WHY it was refused, carried back to the card.
+    //
+    // This has cost several rounds: the card said only "the Quote status is DRAFT, not
+    // PENDING_APPROVAL", and HubSpot's actual reason -- which names the property or association
+    // it wants -- sat in a serverless log nobody could reach mid-conversation. The rejection is
+    // the whole diagnosis, so it goes where the person who just clicked Lock in can read it.
+    let quoteStatusError = '';
     if (quoteStatus !== desiredQuoteStatus) {
       console.log(
         `Nylas pricing: quote ${quote.id} was created as "${quoteStatus || 'unset'}"; moving it ` +
@@ -2979,9 +2980,12 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
       } catch (error) {
         // Never fatal. The quote exists and the pricing is right; what is lost is the workflow
         // trigger, and saying so beats throwing away a lock the rep has already committed.
+        quoteStatusError = String(
+          error?.body?.message || error?.message || error || '',
+        ).slice(0, 600);
         console.error(
           `Nylas pricing: could not set hs_status on quote ${quote.id}. The approval workflow ` +
-            `will not enrol it. ${String(error?.body?.message || error?.message || error)}`,
+            `will not enrol it. ${quoteStatusError}`,
           safeProviderDiagnostics(error, 'set_quote_status'),
         );
       }
@@ -3069,6 +3073,7 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
       quoteStatus,
       quoteStatusExpected: desiredQuoteStatus,
       quoteStatusRepaired,
+      quoteStatusError,
       needsApproval,
     };
   } catch (error) {
