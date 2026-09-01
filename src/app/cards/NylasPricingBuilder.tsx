@@ -1180,7 +1180,9 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
         // Now the confirmation says, every time.
         message:
           `${body.lineItemCount || 0} calculated line items replaced the Deal line items. ` +
-          `Template: ${body.templateName || body.templateId || "unknown"}. ` +
+          // The ID, always, not just the name. Two templates can be named similarly and the
+          // name alone is not checkable against Settings -- the id is. Holly, 2026-09-01.
+          `Template: ${body.templateName || "unnamed"} (${body.templateId || "no id"}). ` +
           `Seller: ${sellerSummary(body.seller)}. ` +
           `${primaryQuoteSummary(body.primaryQuote)} ` +
           // The approval handoff, stated rather than assumed. HubSpot's workflow enrols on this
