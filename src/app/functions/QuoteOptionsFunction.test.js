@@ -811,15 +811,46 @@ test('the quote status reports whether approval is required', () => {
     source,
     /const needsApproval =\s*\n?\s*String\(option\.result\?\.approvalTierRequired \|\| 'none'\) !== 'none';/,
   );
-  // ALWAYS PENDING_APPROVAL, and always on the CREATE.
+  // GATED ON needsApproval, not unconditional.
+  //
+  // This assertion used to pin `const desiredQuoteStatus = QUOTE_STATUS_PENDING_APPROVAL;` --
+  // every lock in asked for PENDING_APPROVAL whether or not the deal had earned it. needsApproval
+  // was computed directly above and then never consulted, so a 'none'-tier deal still asked to be
+  // published into an approval workflow that had nothing to approve.
+  //
+  // What made it look like it worked: the transition below is deliberately non-fatal, so when
+  // HubSpot refused it the quote just kept DRAFT and nobody noticed. Two lock ins on deal
+  // 60785797504 three minutes apart, identical inputs, came out PENDING_APPROVAL and then DRAFT.
+  // The correct-looking one was luck.
   //
   // The portal's rejection -- "Quote cannot be published without going through the pending
   // approval state" -- refuses PUBLISHING. APPROVAL_NOT_NEEDED is a published state and is
-  // refused; PENDING_APPROVAL is the state the message names as the way through, and creating
-  // with it is legal.
+  // refused; PENDING_APPROVAL is the state that message names as the way through.
   //
   // Never APPROVAL_NOT_NEEDED: on this portal that is the value that loses the whole quote.
-  assert.match(source, /const desiredQuoteStatus = QUOTE_STATUS_PENDING_APPROVAL;/);
+  assert.doesNotMatch(
+    source,
+    /const desiredQuoteStatus = QUOTE_STATUS_PENDING_APPROVAL;/,
+    'the desired status must depend on needsApproval, not be hardcoded',
+  );
+  assert.match(
+    source,
+    /const desiredQuoteStatus = needsApproval\s+\? QUOTE_STATUS_PENDING_APPROVAL\s+: QUOTE_STATUS_DRAFT;/,
+  );
+  assert.match(source, /const QUOTE_STATUS_DRAFT = 'DRAFT';/);
+  assert.doesNotMatch(
+    source,
+    /desiredQuoteStatus = QUOTE_STATUS_APPROVAL_NOT_NEEDED/,
+    'APPROVAL_NOT_NEEDED is refused on this portal and loses the quote',
+  );
+
+  // A 'none' deal must reach the transition block already satisfied, so nothing is attempted and
+  // nothing can fail. That only holds while the create leaves the quote at HubSpot's own default
+  // of DRAFT -- which the create assertion below pins by refusing any hs_status on it.
+  assert.ok(
+    source.indexOf('const desiredQuoteStatus = needsApproval') <
+      source.indexOf('if (quoteStatus !== desiredQuoteStatus)'),
+  );
 
   // NEVER ON THE CREATE. HubSpot, verbatim, after this was tried both ways:
   //
@@ -2721,4 +2752,144 @@ test('the quote contact is required, chosen, and added to the Deal when it comes
   assert.match(options.slice(0, 2500), /source: 'company'/);
   // A nameless option is unpickable, so a label is always produced.
   assert.match(options.slice(0, 2500), /name \|\| email \|\| `Contact \$\{contact\.id\}`/);
+});
+
+// THE DEAL'S OWN PROFESSIONAL SERVICES AND ADD-ON PROPERTIES.
+//
+// Before this, the rep's picks lived only inside pricing_quote_inputs_payload -- a JSON blob no
+// HubSpot list, report or order-form workflow can read. professional_services_package and
+// pricing_subscription_addons are the portal's own properties for exactly this, and they were
+// sitting empty. Holly, 2026-09-01: "set this field".
+//
+// Values read from the portal's property editor on 2026-09-01, NOT from the labels: two of the
+// professional-services internal names are the strings "true" and "false", left over from when the
+// property was a yes/no field. Getting these wrong is the "was not one of the allowed options"
+// rejection that emptied a Deal on 2026-08-28.
+test('the calculator picks are mirrored onto the Deal choice properties', () => {
+  const {
+    hubSpotChoiceList,
+    professionalServiceHubSpotValue,
+    addOnHubSpotValue,
+    PROFESSIONAL_SERVICES_NONE,
+  } = _test;
+
+  // The two internal names that do not look like their labels. If either of these ever "reads
+  // wrong" and gets tidied, the write silently stops matching the portal.
+  assert.equal(professionalServiceHubSpotValue.architecture_workflow_review, 'true');
+  assert.equal(professionalServiceHubSpotValue.gtm_review, 'false');
+  // SINGULAR "Project". The card's label and the rate card both say "Projects"; the portal does
+  // not, and the portal is what the write has to match.
+  assert.equal(addOnHubSpotValue.verified_oauth, 'Turnkey Verified OAuth Project');
+
+  // Semicolon-joined, sorted, de-duplicated.
+  assert.equal(
+    hubSpotChoiceList(
+      ['gtm_review', 'google_verification_review', 'gtm_review'],
+      professionalServiceHubSpotValue,
+    ),
+    'Google Verification Review;false',
+  );
+  assert.equal(
+    hubSpotChoiceList(['verified_oauth', 'shared_oauth_app'], addOnHubSpotValue),
+    'Shared Google OAuth App;Turnkey Verified OAuth Project',
+  );
+
+  // Sorting is what keeps a re-lock from showing as a change. Order in must not change order out.
+  assert.equal(
+    hubSpotChoiceList(['privacy_filter', 'shared_oauth_app'], addOnHubSpotValue),
+    hubSpotChoiceList(['shared_oauth_app', 'privacy_filter'], addOnHubSpotValue),
+  );
+
+  // An unknown key contributes nothing rather than being passed through as an invalid option.
+  // enterprise_accelerator is the live case: retired from the card, still present on stored
+  // configurations, and absent from the portal's option list.
+  assert.equal(hubSpotChoiceList(['enterprise_accelerator'], addOnHubSpotValue), '');
+  assert.equal(
+    hubSpotChoiceList(['shared_oauth_app', 'enterprise_accelerator'], addOnHubSpotValue),
+    'Shared Google OAuth App',
+  );
+
+  // Nothing selected, and the shapes a stored configuration can actually arrive in.
+  for (const empty of [[], undefined, null, 'not an array']) {
+    assert.equal(hubSpotChoiceList(empty, addOnHubSpotValue), '');
+    assert.equal(hubSpotChoiceList(empty, professionalServiceHubSpotValue), '');
+  }
+
+  // "No" is a real option carrying 119 Deals -- it is how the portal records "none", and it is
+  // what an empty pick must become. Add-ons have no such option, so empty clears the property.
+  assert.equal(PROFESSIONAL_SERVICES_NONE, 'No');
+});
+
+// DRIFT GUARD. The maps above are handwritten, so nothing stops someone adding a professional
+// service or an add-on to the rate card and leaving it unmapped -- it would simply vanish from the
+// Deal with no error anywhere.
+test('every offered professional service and add-on has a HubSpot value', () => {
+  const rules = require('./pricingRules');
+  const { professionalServiceHubSpotValue, addOnHubSpotValue } = _test;
+
+  for (const { key } of rules.professionalServiceOptions) {
+    assert.ok(
+      professionalServiceHubSpotValue[key],
+      `professional service "${key}" is offered in the card but has no professional_services_package value`,
+    );
+  }
+
+  for (const rule of rules.addOnRules) {
+    if (rule.deprecated) {
+      assert.equal(
+        addOnHubSpotValue[rule.key],
+        undefined,
+        `retired add-on "${rule.key}" must not be written -- the portal has no option for it`,
+      );
+      continue;
+    }
+    assert.ok(
+      addOnHubSpotValue[rule.key],
+      `add-on "${rule.key}" is offered in the card but has no pricing_subscription_addons value`,
+    );
+  }
+
+  // ...and nothing in the maps that the card cannot produce.
+  const offeredServices = new Set(rules.professionalServiceOptions.map(({ key }) => key));
+  for (const key of Object.keys(professionalServiceHubSpotValue)) {
+    assert.ok(offeredServices.has(key), `${key} is mapped but not offered`);
+  }
+  const offeredAddOns = new Set(rules.addOnRules.map(({ key }) => key));
+  for (const key of Object.keys(addOnHubSpotValue)) {
+    assert.ok(offeredAddOns.has(key), `${key} is mapped but not an add-on`);
+  }
+});
+
+// Both properties ride in the same update as everything else, which on Lock in runs AFTER the
+// Deal's line items have been replaced. Whether either is a multiple-checkboxes field or a
+// single-select was read off a screenshot; a single-select rejects a semicolon-joined value. The
+// guard turns that from a lost lock into a warning.
+test('the new Deal choice properties are covered by the rejection guard', () => {
+  const source = require('node:fs').readFileSync(
+    require('node:path').join(__dirname, 'QuoteOptionsFunction.js'),
+    'utf8',
+  );
+  const guarded = source.match(/const UNVERIFIED_DEAL_PROPERTIES = \[([\s\S]*?)\n\];/);
+  assert.ok(guarded, 'UNVERIFIED_DEAL_PROPERTIES must be findable');
+  assert.match(guarded[1], /'professional_services_package',/);
+  assert.match(guarded[1], /'pricing_subscription_addons',/);
+});
+
+// Onboarding defaults to None. It used to default to Quick Launch, which put $5,000 on every new
+// configuration before the rep had chosen anything -- an opt-out charge on a customer quote.
+test('a new configuration starts with no onboarding', () => {
+  const card = require('node:fs').readFileSync(
+    require('node:path').join(__dirname, '..', 'cards', 'NylasPricingBuilder.tsx'),
+    'utf8',
+  );
+  const empty = card.match(/const emptyInput = \(\): QuoteInput => \(\{([\s\S]*?)\n\}\);/);
+  assert.ok(empty, 'emptyInput must be findable');
+  assert.match(empty[1], /onboardingPackage: "none",/);
+  assert.doesNotMatch(empty[1], /onboardingPackage: "quick_launch",/);
+
+  // And 'none' is a real onboarding rule priced at zero, not an unrecognised string.
+  const { onboardingRules } = require('./pricingRules');
+  const none = onboardingRules.find(({ key }) => key === 'none');
+  assert.ok(none, "onboardingRules must offer 'none'");
+  assert.equal(none.oneTimeAmount, 0);
 });

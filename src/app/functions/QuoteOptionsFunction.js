@@ -3,6 +3,10 @@ const hubspot = require('@hubspot/api-client');
 
 const { QuoteValidationError, calculateQuote, normalizeStoredInput } = require('./calculator');
 const { inspectProductLibrary } = require('./productLibrary');
+// LABELS ONLY. Every number in the summary below comes from the calculated result, never from
+// here -- reading a price out of the rate card while the result was computed from stored settings
+// is how a summary would end up disagreeing with the quote beside it.
+const rateCardLabels = require('./pricingRules');
 const {
   accountIdFromContext,
   isDealAllowed,
@@ -134,6 +138,15 @@ const UNVERIFIED_DEAL_PROPERTIES = [
   // in this list -- it has been written on every lock for days without a rejection, so the portal
   // demonstrably has it.
   'special_terms_included',
+  // Added 2026-09-01 from the portal's property editor. Guarded for the usual reason and one more:
+  // whether either is a multiple-checkboxes field or a single-select was read off a screenshot, and
+  // a single-select rejects the semicolon-joined value. If that is what it turns out to be, the
+  // warning in updateDealProperties names the property and the Lock in still completes.
+  'professional_services_package',
+  // CONFIRMED multiple-checkboxes by Holly, 2026-09-01, so the semicolon-joined value is right.
+  // Still guarded, like everything else here whose name came from outside the code.
+  'pricing_subscription_addons',
+  'pricing_contract_summary',
 ];
 
 // '' is a real answer meaning "not specified", and must clear the property rather than be ignored.
@@ -583,6 +596,65 @@ const onboardingHubSpotValue = Object.freeze({
   strategic: 'strategic',
 });
 
+// The Deal's own Professional Services Package property, mirrored from the calculator's picks.
+//
+// READ THE VALUES, NOT THE LABELS. Two of this property's internal names are the strings "true"
+// and "false" -- left over from when it was a yes/no field and someone added real options on top
+// without renaming the originals. The portal's option list, read 2026-09-01:
+//
+//   "No"                                    -> No
+//   "true"                                  -> Architecture Design & Workflow Review
+//   "false"                                 -> Go-To-Market (GTM) Review
+//   "Google Verification Review"            -> Google Verification Review
+//   "Notification & Webhook Best Practices" -> Notification & Webhook Best Practices
+//   "Provider OAuth App Creation"           -> Provider OAuth App Creation
+//
+// So this map cannot be derived from professionalServiceOptions' labels and has to be written out.
+// Renaming "true"/"false" in HubSpot would be cleaner, but 6 and 1 Deals respectively already
+// carry those values and renaming an internal name does not migrate them.
+//
+// Three further options -- "Strategic Onboarding", "QuickLaunch Onboarding", "QuickLaunch+
+// Onboarding" -- are ARCHIVED. They are onboarding tiers that predate pricing_onboarding_tier and
+// are deliberately not written here; onboarding has its own property.
+const professionalServiceHubSpotValue = Object.freeze({
+  google_verification_review: 'Google Verification Review',
+  architecture_workflow_review: 'true',
+  gtm_review: 'false',
+  provider_oauth_app_creation: 'Provider OAuth App Creation',
+  notification_webhook_best_practices: 'Notification & Webhook Best Practices',
+});
+
+// What the property holds when the rep picked nothing. Not an empty string: "No" is a real option
+// carrying 119 Deals, and it is what the portal's own reporting counts as "no professional
+// services". Clearing the property instead would make those Deals indistinguishable from ones
+// nobody has quoted yet.
+const PROFESSIONAL_SERVICES_NONE = 'No';
+
+// The Deal's Subscription Add-ons property. Same shape, and one trap of its own: the portal's
+// option is "Turnkey Verified OAuth Project", SINGULAR, while the card's label and the rate card
+// both say "Projects". The value has to match the portal exactly or the write is rejected.
+//
+// enterprise_accelerator is deliberately absent. It is retired from the card but still a stored
+// key on older configurations, and the portal has no option for it -- so a configuration that
+// still carries it simply contributes nothing here rather than poisoning the whole write.
+const addOnHubSpotValue = Object.freeze({
+  shared_oauth_app: 'Shared Google OAuth App',
+  privacy_filter: 'Privacy Filter Mode',
+  verified_oauth: 'Turnkey Verified OAuth Project',
+});
+
+// Both properties are multi-select, so HubSpot wants the values semicolon-joined. Unrecognised
+// keys are dropped rather than passed through: an unknown key is a value the portal does not have,
+// and sending one is what "Property \"units\" was not one of the allowed options" looked like on
+// 2026-08-28. Sorted so the same selection always produces the same string -- otherwise the Deal
+// shows as modified on every Lock in that changed nothing.
+const hubSpotChoiceList = (keys, table) =>
+  [...new Set(Array.isArray(keys) ? keys : [])]
+    .map((key) => table[key])
+    .filter(Boolean)
+    .sort()
+    .join(';');
+
 const productVolumeProperties = Object.freeze({
   connect_ca: 'pricing_connect_committed_monthly_volume',
   calendar_ca: 'pricing_calendar_committed_monthly_volume',
@@ -592,6 +664,186 @@ const productVolumeProperties = Object.freeze({
   agent_storage_gb: 'pricing_agent_storage_committed_monthly_gb',
   agent_bandwidth_gb: 'pricing_agent_bandwidth_committed_monthly_gb',
 });
+
+// THE CONTRACT SUMMARY, in words, for pricing_contract_summary.
+//
+// Holly, 2026-09-01: "I created a multi line text field property called pricing_contract_summary
+// and I want you to write in a readable format what the contract summary was."
+//
+// Everything here already exists on the Deal as separate properties, or inside
+// pricing_quote_inputs_payload as JSON. Neither is readable: the properties are scattered across
+// the record and the payload is a blob. This is the one field someone can look at and see what was
+// sold, without opening the calculator.
+//
+// Numbers come from `result` only. Labels come from the rate card. That split matters -- the
+// result may have been computed from stored settings that override the rate card's prices, so
+// taking an amount from the rate card here would print a figure the quote does not charge.
+const summaryMoney = (value) => {
+  const amount = Number(value);
+  if (!Number.isFinite(amount)) return '$0.00';
+  return `$${amount.toLocaleString('en-US', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
+};
+
+const summaryPercent = (fraction) => {
+  const value = Number(fraction);
+  if (!Number.isFinite(value) || value === 0) return null;
+  // Two decimals only when they carry something: "2.5%", not "2.50%", and "12.75%" when it is.
+  const percent = Math.round(value * 1000000) / 10000;
+  return `${percent}%`;
+};
+
+const summaryNumber = (value) => Number(value || 0).toLocaleString('en-US');
+
+// 2026-10-01 -> 1 Oct 2026. Unambiguous across US and EU readers, which "10/01/2026" is not.
+const summaryDate = (iso) => {
+  if (!iso || !/^\d{4}-\d{2}-\d{2}$/.test(iso)) return 'not set';
+  const [year, month, day] = iso.split('-').map(Number);
+  const months = [
+    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+  ];
+  return `${day} ${months[month - 1]} ${year}`;
+};
+
+const summarySection = (heading, rows) =>
+  rows.length === 0 ? [] : [heading, ...rows.map((row) => `  ${row}`), ''];
+
+const contractSummaryText = (option) => {
+  const { input, result } = option;
+  const volumes = input.volumes || {};
+  const dates = result.dates || {};
+  const lines = Array.isArray(result.lines) ? result.lines : [];
+
+  const paymentRule = rateCardLabels.paymentRules.find(
+    ({ key }) => key === input.paymentFrequency,
+  );
+  const supportRule = rateCardLabels.supportRules.find(
+    ({ key }) => key === input.supportLevel,
+  );
+  const onboardingRule = rateCardLabels.onboardingRules.find(
+    ({ key }) => key === input.onboardingPackage,
+  );
+
+  const out = [];
+  out.push(option.name ? `${option.name}` : 'Pricing summary');
+  out.push('='.repeat(Math.max(12, (option.name || 'Pricing summary').length)));
+  out.push('');
+
+  // --- Term ---
+  const termRows = [
+    `Term            ${input.termMonths} months`,
+    `Starts          ${summaryDate(dates.contractStartDate)}`,
+    `Ends            ${summaryDate(dates.contractEndDate)}`,
+    `Billing         ${paymentRule?.label || input.paymentFrequency}`,
+  ];
+  if (input.autoRenewal) {
+    termRows.push(
+      `Auto-renews     ${summaryDate(dates.renewalDate)} for ${input.renewalTermMonths} months`,
+    );
+    if (dates.nonRenewalNoticeDate) {
+      termRows.push(`Notice by       ${summaryDate(dates.nonRenewalNoticeDate)}`);
+    }
+  } else {
+    termRows.push('Auto-renews     No');
+  }
+  out.push(...summarySection('CONTRACT', termRows));
+
+  // --- Products. Only what was actually quoted; a zero-volume product is not on the contract. ---
+  const productRows = lines
+    .filter((line) => Number(line.annualCommitment) > 0 || Number(line.volume) > 0)
+    .map((line) => {
+      const rate = line.displayProposedUnitRate ?? line.proposedUnitRate;
+      const unit = line.unitOfMeasure ? ` ${line.unitOfMeasure}` : '';
+      const discount = summaryPercent(line.discretionaryDiscount);
+      return (
+        `${line.productName || line.productKey}: ` +
+        `${summaryNumber(line.volume)}${unit}/month at ${summaryMoney(rate)} ` +
+        `= ${summaryMoney(line.annualCommitment)}/year` +
+        (discount ? ` (${discount} off list)` : '')
+      );
+    });
+  out.push(...summarySection('PRODUCTS', productRows));
+
+  // --- Everything else that carries a price ---
+  const extraRows = [];
+  if (Number(result.supportAnnual) > 0 || supportRule) {
+    extraRows.push(
+      `Support: ${supportRule?.level || input.supportLevel} ` +
+        `= ${summaryMoney(result.supportAnnual)}/year`,
+    );
+  }
+  if (Number(result.onboardingAmount) > 0) {
+    extraRows.push(
+      `Onboarding: ${onboardingRule?.package || input.onboardingPackage} ` +
+        `= ${summaryMoney(result.onboardingAmount)} one-time`,
+    );
+  } else {
+    extraRows.push('Onboarding: None');
+  }
+  for (const addOn of result.selectedAddOns || []) {
+    extraRows.push(`Add-on: ${addOn.label} = ${summaryMoney(addOn.annualAmount)}/year`);
+  }
+  const serviceLabels = (input.professionalServices || []).map((key) => {
+    const offered = rateCardLabels.professionalServiceOptions.find(
+      (service) => service.key === key,
+    );
+    return offered?.label || key;
+  });
+  if (serviceLabels.length > 0) {
+    extraRows.push(
+      `Professional services (${serviceLabels.length}): ${serviceLabels.join(', ')} ` +
+        `= ${summaryMoney(result.professionalServicesAmount)} one-time`,
+    );
+  }
+  out.push(...summarySection('INCLUDED', extraRows));
+
+  // --- Discounts. Each one named, because "why is this cheaper than list" is the question this
+  // summary gets opened to answer. ---
+  const discountRows = [];
+  const termDiscount = summaryPercent(result.termDiscount);
+  if (termDiscount) discountRows.push(`Multi-year term      ${termDiscount}`);
+  const premium = summaryPercent(result.paymentPremium);
+  if (premium) discountRows.push(`Payment frequency    +${premium}`);
+  const largest = summaryPercent(result.largestDiscretionaryDiscount);
+  if (largest) discountRows.push(`Largest line discount ${largest}`);
+  const effective =
+    Number(result.listTcv) > 0 ? 1 - Number(result.tcv) / Number(result.listTcv) : 0;
+  const blended = summaryPercent(effective);
+  if (blended) {
+    discountRows.push(
+      `Blended effective    ${blended} ` +
+        `(${summaryMoney(Number(result.listTcv) - Number(result.tcv))} off list)`,
+    );
+  }
+  out.push(...summarySection('DISCOUNTS', discountRows));
+
+  // --- Totals ---
+  out.push(
+    ...summarySection('TOTALS', [
+      `Annual commitment    ${summaryMoney(result.committedArr)}`,
+      `Per ${(result.billingPeriod || 'period').toLowerCase().padEnd(16)} ${summaryMoney(result.recurringPerPeriod)}`,
+      `One-time fees        ${summaryMoney(result.oneTime)}`,
+      `Total contract value ${summaryMoney(result.tcv)}` +
+        (Number(result.listTcv) > Number(result.tcv)
+          ? ` (list ${summaryMoney(result.listTcv)})`
+          : ''),
+    ]),
+  );
+
+  // --- Approval. 'none' is a real answer and is stated, not omitted: a blank here would read as
+  // "not checked" rather than "checked, nobody needs to sign off". ---
+  const approvalRows = [
+    `Required             ${result.approvalTierRequired === 'none' ? 'No approval needed' : result.approvalTierRequired}`,
+  ];
+  for (const reason of result.approvalReasons || []) approvalRows.push(`- ${reason}`);
+  out.push(...summarySection('APPROVAL', approvalRows));
+
+  // Trailing blank lines from the last section, trimmed.
+  return out.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+};
 
 const buildSelectedProperties = (option, approvalStatus) => {
   const { input, result } = option;
@@ -622,6 +874,16 @@ const buildSelectedProperties = (option, approvalStatus) => {
     pricing_payment_frequency: result.paymentFrequencyHubSpotValue || '',
     pricing_support_tier: input.supportLevel,
     pricing_onboarding_tier: onboardingHubSpotValue[input.onboardingPackage] || input.onboardingPackage,
+    // The rep's professional-services and add-on picks, mirrored onto the Deal's own properties so
+    // the portal's reporting and the order-form workflows can read them without parsing
+    // pricing_quote_inputs_payload. Both are guarded in UNVERIFIED_DEAL_PROPERTIES.
+    professional_services_package:
+      hubSpotChoiceList(input.professionalServices, professionalServiceHubSpotValue) ||
+      PROFESSIONAL_SERVICES_NONE,
+    // No equivalent of "No" here -- the portal has no such option, so no add-ons clears it.
+    pricing_subscription_addons: hubSpotChoiceList(input.addOns, addOnHubSpotValue),
+    // The whole configuration in words. See contractSummaryText.
+    pricing_contract_summary: contractSummaryText(option),
     pricing_arr: String(result.committedArr),
     pricing_tcv: String(result.tcv),
     pricing_list_price_tcv: String(result.listTcv),
@@ -2591,7 +2853,22 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
   // follows has preconditions: a sender email, and line items already associated. The line items
   // are created before the read-back below, so that one is satisfied. The sender email is not
   // always available, which is exactly why the transition was failing silently.
-  const desiredQuoteStatus = QUOTE_STATUS_PENDING_APPROVAL;
+  //
+  // GATED ON needsApproval. This was unconditionally PENDING_APPROVAL, which meant every lock in
+  // asked for a status the deal had not earned -- including deals whose approval tier is 'none',
+  // where nobody has to sign off and there is no workflow to enrol. Holly, 2026-09-01: "for some
+  // reason it was set to Pending Approval". Two lock ins on deal 60785797504 minutes apart came
+  // out PENDING_APPROVAL and then DRAFT from identical inputs, because the transition below is
+  // non-fatal: when it fails the quote simply keeps whatever status it had. A 'none' quote landing
+  // in DRAFT was luck, not intent.
+  //
+  // Now a 'none' deal never attempts the transition at all -- the quote is created as DRAFT and
+  // desiredQuoteStatus already matches, so the block below is skipped and there is nothing left to
+  // fail. A deal that does need approval is unchanged: it still flips, and the approval workflow
+  // still enrols it.
+  const desiredQuoteStatus = needsApproval
+    ? QUOTE_STATUS_PENDING_APPROVAL
+    : QUOTE_STATUS_DRAFT;
 
   const category = dealCategory(settings, state.dealType, state.pipelineId);
   // The default is the category's first kind's default -- there is no separate Quote Type to read
@@ -3392,4 +3669,10 @@ exports._test = Object.freeze({
   paymentMethodProperties,
   syncDealLineItems,
   updateDealProperties,
+  buildSelectedProperties,
+  contractSummaryText,
+  hubSpotChoiceList,
+  professionalServiceHubSpotValue,
+  addOnHubSpotValue,
+  PROFESSIONAL_SERVICES_NONE,
 });

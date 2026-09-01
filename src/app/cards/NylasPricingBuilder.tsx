@@ -603,7 +603,10 @@ const emptyInput = (): QuoteInput => ({
   paymentFrequency: "annual_in_advance",
   volumes: emptyVolumes(),
   supportLevel: "basic",
-  onboardingPackage: "quick_launch",
+  // Onboarding starts at None. It used to start at Quick Launch, which put $5,000 of onboarding on
+  // every new configuration whether or not the rep wanted it -- an opt-out charge on a quote, which
+  // is the wrong default for a number the customer pays. Holly, 2026-09-01.
+  onboardingPackage: "none",
   addOns: [],
   professionalServices: [],
   discretionaryDiscount: 0,
@@ -1036,7 +1039,19 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
     // depends on it.
     if (body.dealCategory) setDealCategory(body.dealCategory);
     if (body.templateKinds) setTemplateKinds(body.templateKinds);
-    if (body.contracts) setContracts(body.contracts);
+    if (body.contracts) {
+      setContracts(body.contracts);
+      // ONE CONTRACT MEANS NO CHOICE TO MAKE. When the Deal's company has exactly one contract,
+      // that is the contract, and leaving the picker on "Choose a contract…" only invites the rep
+      // to miss it -- Lock in then fails with QUOTE_CONTRACT_REQUIRED for a decision that had a
+      // single possible answer. Holly, 2026-09-01.
+      //
+      // Only when the rep has not already chosen (`current` wins), and never with two or more:
+      // picking one of several on the rep's behalf is a guess about the customer's paperwork, and
+      // a wrong contract on a renewal is worse than an empty picker.
+      const only = body.contracts.length === 1 ? body.contracts[0].id : "";
+      if (only) setContractId((current) => current || only);
+    }
     if (body.contractsUnavailable !== undefined) {
       setContractsUnavailable(body.contractsUnavailable);
     }

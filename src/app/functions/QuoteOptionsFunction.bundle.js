@@ -2341,6 +2341,7 @@ var crypto = require("node:crypto");
 var hubspot = require("@hubspot/api-client");
 var { QuoteValidationError, calculateQuote, normalizeStoredInput } = require_calculator();
 var { inspectProductLibrary } = require_productLibrary();
+var rateCardLabels = require_pricingRules();
 var {
   accountIdFromContext,
   isDealAllowed,
@@ -2413,7 +2414,16 @@ var UNVERIFIED_DEAL_PROPERTIES = [
   // that runs after the Deal's line items have already been archived. special_terms itself is not
   // in this list -- it has been written on every lock for days without a rejection, so the portal
   // demonstrably has it.
-  "special_terms_included"
+  "special_terms_included",
+  // Added 2026-09-01 from the portal's property editor. Guarded for the usual reason and one more:
+  // whether either is a multiple-checkboxes field or a single-select was read off a screenshot, and
+  // a single-select rejects the semicolon-joined value. If that is what it turns out to be, the
+  // warning in updateDealProperties names the property and the Lock in still completes.
+  "professional_services_package",
+  // CONFIRMED multiple-checkboxes by Holly, 2026-09-01, so the semicolon-joined value is right.
+  // Still guarded, like everything else here whose name came from outside the code.
+  "pricing_subscription_addons",
+  "pricing_contract_summary"
 ];
 var choiceProperty = ({ property, values }, choice) => {
   if (!property) return {};
@@ -2438,6 +2448,7 @@ var discountReasonProperties = (discountReason) => {
 };
 var QUOTE_STATUS_PENDING_APPROVAL = "PENDING_APPROVAL";
 var QUOTE_STATUS_APPROVAL_NOT_NEEDED = "APPROVAL_NOT_NEEDED";
+var QUOTE_STATUS_DRAFT = "DRAFT";
 var ARCHIVABLE_QUOTE_STATUSES = Object.freeze([
   "DRAFT",
   QUOTE_STATUS_PENDING_APPROVAL,
@@ -2722,6 +2733,20 @@ var onboardingHubSpotValue = Object.freeze({
   quick_launch_plus: "quicklaunch_plus",
   strategic: "strategic"
 });
+var professionalServiceHubSpotValue = Object.freeze({
+  google_verification_review: "Google Verification Review",
+  architecture_workflow_review: "true",
+  gtm_review: "false",
+  provider_oauth_app_creation: "Provider OAuth App Creation",
+  notification_webhook_best_practices: "Notification & Webhook Best Practices"
+});
+var PROFESSIONAL_SERVICES_NONE = "No";
+var addOnHubSpotValue = Object.freeze({
+  shared_oauth_app: "Shared Google OAuth App",
+  privacy_filter: "Privacy Filter Mode",
+  verified_oauth: "Turnkey Verified OAuth Project"
+});
+var hubSpotChoiceList = (keys, table) => [...new Set(Array.isArray(keys) ? keys : [])].map((key) => table[key]).filter(Boolean).sort().join(";");
 var productVolumeProperties = Object.freeze({
   connect_ca: "pricing_connect_committed_monthly_volume",
   calendar_ca: "pricing_calendar_committed_monthly_volume",
@@ -2731,6 +2756,141 @@ var productVolumeProperties = Object.freeze({
   agent_storage_gb: "pricing_agent_storage_committed_monthly_gb",
   agent_bandwidth_gb: "pricing_agent_bandwidth_committed_monthly_gb"
 });
+var summaryMoney = (value) => {
+  const amount = Number(value);
+  if (!Number.isFinite(amount)) return "$0.00";
+  return `$${amount.toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2
+  })}`;
+};
+var summaryPercent = (fraction) => {
+  const value = Number(fraction);
+  if (!Number.isFinite(value) || value === 0) return null;
+  const percent = Math.round(value * 1e6) / 1e4;
+  return `${percent}%`;
+};
+var summaryNumber = (value) => Number(value || 0).toLocaleString("en-US");
+var summaryDate = (iso) => {
+  if (!iso || !/^\d{4}-\d{2}-\d{2}$/.test(iso)) return "not set";
+  const [year, month, day] = iso.split("-").map(Number);
+  const months = [
+    "Jan",
+    "Feb",
+    "Mar",
+    "Apr",
+    "May",
+    "Jun",
+    "Jul",
+    "Aug",
+    "Sep",
+    "Oct",
+    "Nov",
+    "Dec"
+  ];
+  return `${day} ${months[month - 1]} ${year}`;
+};
+var summarySection = (heading, rows) => rows.length === 0 ? [] : [heading, ...rows.map((row) => `  ${row}`), ""];
+var contractSummaryText = (option) => {
+  const { input, result } = option;
+  const volumes = input.volumes || {};
+  const dates = result.dates || {};
+  const lines = Array.isArray(result.lines) ? result.lines : [];
+  const paymentRule = rateCardLabels.paymentRules.find(
+    ({ key }) => key === input.paymentFrequency
+  );
+  const supportRule = rateCardLabels.supportRules.find(
+    ({ key }) => key === input.supportLevel
+  );
+  const onboardingRule = rateCardLabels.onboardingRules.find(
+    ({ key }) => key === input.onboardingPackage
+  );
+  const out = [];
+  out.push(option.name ? `${option.name}` : "Pricing summary");
+  out.push("=".repeat(Math.max(12, (option.name || "Pricing summary").length)));
+  out.push("");
+  const termRows = [
+    `Term            ${input.termMonths} months`,
+    `Starts          ${summaryDate(dates.contractStartDate)}`,
+    `Ends            ${summaryDate(dates.contractEndDate)}`,
+    `Billing         ${paymentRule?.label || input.paymentFrequency}`
+  ];
+  if (input.autoRenewal) {
+    termRows.push(
+      `Auto-renews     ${summaryDate(dates.renewalDate)} for ${input.renewalTermMonths} months`
+    );
+    if (dates.nonRenewalNoticeDate) {
+      termRows.push(`Notice by       ${summaryDate(dates.nonRenewalNoticeDate)}`);
+    }
+  } else {
+    termRows.push("Auto-renews     No");
+  }
+  out.push(...summarySection("CONTRACT", termRows));
+  const productRows = lines.filter((line) => Number(line.annualCommitment) > 0 || Number(line.volume) > 0).map((line) => {
+    const rate = line.displayProposedUnitRate ?? line.proposedUnitRate;
+    const unit = line.unitOfMeasure ? ` ${line.unitOfMeasure}` : "";
+    const discount = summaryPercent(line.discretionaryDiscount);
+    return `${line.productName || line.productKey}: ${summaryNumber(line.volume)}${unit}/month at ${summaryMoney(rate)} = ${summaryMoney(line.annualCommitment)}/year` + (discount ? ` (${discount} off list)` : "");
+  });
+  out.push(...summarySection("PRODUCTS", productRows));
+  const extraRows = [];
+  if (Number(result.supportAnnual) > 0 || supportRule) {
+    extraRows.push(
+      `Support: ${supportRule?.level || input.supportLevel} = ${summaryMoney(result.supportAnnual)}/year`
+    );
+  }
+  if (Number(result.onboardingAmount) > 0) {
+    extraRows.push(
+      `Onboarding: ${onboardingRule?.package || input.onboardingPackage} = ${summaryMoney(result.onboardingAmount)} one-time`
+    );
+  } else {
+    extraRows.push("Onboarding: None");
+  }
+  for (const addOn of result.selectedAddOns || []) {
+    extraRows.push(`Add-on: ${addOn.label} = ${summaryMoney(addOn.annualAmount)}/year`);
+  }
+  const serviceLabels = (input.professionalServices || []).map((key) => {
+    const offered = rateCardLabels.professionalServiceOptions.find(
+      (service) => service.key === key
+    );
+    return offered?.label || key;
+  });
+  if (serviceLabels.length > 0) {
+    extraRows.push(
+      `Professional services (${serviceLabels.length}): ${serviceLabels.join(", ")} = ${summaryMoney(result.professionalServicesAmount)} one-time`
+    );
+  }
+  out.push(...summarySection("INCLUDED", extraRows));
+  const discountRows = [];
+  const termDiscount = summaryPercent(result.termDiscount);
+  if (termDiscount) discountRows.push(`Multi-year term      ${termDiscount}`);
+  const premium = summaryPercent(result.paymentPremium);
+  if (premium) discountRows.push(`Payment frequency    +${premium}`);
+  const largest = summaryPercent(result.largestDiscretionaryDiscount);
+  if (largest) discountRows.push(`Largest line discount ${largest}`);
+  const effective = Number(result.listTcv) > 0 ? 1 - Number(result.tcv) / Number(result.listTcv) : 0;
+  const blended = summaryPercent(effective);
+  if (blended) {
+    discountRows.push(
+      `Blended effective    ${blended} (${summaryMoney(Number(result.listTcv) - Number(result.tcv))} off list)`
+    );
+  }
+  out.push(...summarySection("DISCOUNTS", discountRows));
+  out.push(
+    ...summarySection("TOTALS", [
+      `Annual commitment    ${summaryMoney(result.committedArr)}`,
+      `Per ${(result.billingPeriod || "period").toLowerCase().padEnd(16)} ${summaryMoney(result.recurringPerPeriod)}`,
+      `One-time fees        ${summaryMoney(result.oneTime)}`,
+      `Total contract value ${summaryMoney(result.tcv)}` + (Number(result.listTcv) > Number(result.tcv) ? ` (list ${summaryMoney(result.listTcv)})` : "")
+    ])
+  );
+  const approvalRows = [
+    `Required             ${result.approvalTierRequired === "none" ? "No approval needed" : result.approvalTierRequired}`
+  ];
+  for (const reason of result.approvalReasons || []) approvalRows.push(`- ${reason}`);
+  out.push(...summarySection("APPROVAL", approvalRows));
+  return out.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+};
 var buildSelectedProperties = (option, approvalStatus) => {
   const { input, result } = option;
   const volumes = input.volumes || {};
@@ -2757,6 +2917,14 @@ var buildSelectedProperties = (option, approvalStatus) => {
     pricing_payment_frequency: result.paymentFrequencyHubSpotValue || "",
     pricing_support_tier: input.supportLevel,
     pricing_onboarding_tier: onboardingHubSpotValue[input.onboardingPackage] || input.onboardingPackage,
+    // The rep's professional-services and add-on picks, mirrored onto the Deal's own properties so
+    // the portal's reporting and the order-form workflows can read them without parsing
+    // pricing_quote_inputs_payload. Both are guarded in UNVERIFIED_DEAL_PROPERTIES.
+    professional_services_package: hubSpotChoiceList(input.professionalServices, professionalServiceHubSpotValue) || PROFESSIONAL_SERVICES_NONE,
+    // No equivalent of "No" here -- the portal has no such option, so no add-ons clears it.
+    pricing_subscription_addons: hubSpotChoiceList(input.addOns, addOnHubSpotValue),
+    // The whole configuration in words. See contractSummaryText.
+    pricing_contract_summary: contractSummaryText(option),
     pricing_arr: String(result.committedArr),
     pricing_tcv: String(result.tcv),
     pricing_list_price_tcv: String(result.listTcv),
@@ -4003,7 +4171,7 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
     ) || `${state.dealName} \u2013 ${option.name}`
   );
   const needsApproval = String(option.result?.approvalTierRequired || "none") !== "none";
-  const desiredQuoteStatus = QUOTE_STATUS_PENDING_APPROVAL;
+  const desiredQuoteStatus = needsApproval ? QUOTE_STATUS_PENDING_APPROVAL : QUOTE_STATUS_DRAFT;
   const category = dealCategory(settings, state.dealType, state.pipelineId);
   const templateId = content.templateId || defaultQuoteTemplateFor(settings, quoteKindsForCategory(category)[0]);
   if (!/^\d+$/.test(templateId)) throw new Error("QUOTE_CONFIGURATION_REQUIRED");
@@ -4595,5 +4763,11 @@ exports._test = Object.freeze({
   paymentFrequencyProperties,
   paymentMethodProperties,
   syncDealLineItems,
-  updateDealProperties
+  updateDealProperties,
+  buildSelectedProperties,
+  contractSummaryText,
+  hubSpotChoiceList,
+  professionalServiceHubSpotValue,
+  addOnHubSpotValue,
+  PROFESSIONAL_SERVICES_NONE
 });
