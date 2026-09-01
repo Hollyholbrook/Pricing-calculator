@@ -2877,19 +2877,26 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
   // are created before the read-back below, so that one is satisfied. The sender email is not
   // always available, which is exactly why the transition was failing silently.
   //
-  // REVERTED to last night's behaviour at Holly's instruction, 2026-09-01.
+  // GATED ON needsApproval. Reverted to the unconditional form earlier on 2026-09-01 when the
+  // instruction was to match the night of 2026-08-31 exactly; restored the same evening on live
+  // evidence.
   //
-  // This was briefly gated on needsApproval, so a 'none'-tier Deal was created as DRAFT and the
-  // transition below was skipped entirely. That is arguably the right behaviour and the reasoning
-  // is in claude/quote-status-ignores-approval-tier.md -- but the instruction was to put quote
-  // creation back exactly as it was on the night of 2026-08-31, and this is one of only two
-  // places it differed.
+  // Deal 60785797504: pricing_approval_tier_required = "none", largest discretionary discount 0%,
+  // and quote 42608430360 (20:26) still went to PENDING_APPROVAL. Holly: "it was marked as pending
+  // approval but it shouldn't have been."
   //
-  // CONSEQUENCE, stated so it is not rediscovered: every Lock in now asks for PENDING_APPROVAL
-  // whether or not the deal earned it. The transition is non-fatal, so when HubSpot refuses it
-  // the quote silently keeps DRAFT -- which is why the same Deal produced PENDING_APPROVAL and
-  // then DRAFT three minutes apart from identical inputs.
-  const desiredQuoteStatus = QUOTE_STATUS_PENDING_APPROVAL;
+  // needsApproval is computed a few lines above from approvalTierRequired -- the calculator's own
+  // answer -- and was previously discarded, so every Lock in asked for a status the deal had not
+  // earned. The transition below is non-fatal, so when HubSpot refused it the quote silently kept
+  // DRAFT; that is why the same deal produced PENDING_APPROVAL and then DRAFT three minutes apart
+  // from identical inputs.
+  //
+  // A 'none' deal now never attempts the transition: the create leaves the quote at DRAFT,
+  // desiredQuoteStatus already matches, and the block below is skipped. A deal that does need
+  // approval is unchanged -- it flips, and the approval workflow still enrols it.
+  const desiredQuoteStatus = needsApproval
+    ? QUOTE_STATUS_PENDING_APPROVAL
+    : QUOTE_STATUS_DRAFT;
 
   const category = dealCategory(settings, state.dealType, state.pipelineId);
   // The default is the category's first kind's default -- there is no separate Quote Type to read

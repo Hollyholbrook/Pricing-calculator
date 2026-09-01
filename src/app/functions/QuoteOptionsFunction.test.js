@@ -817,19 +817,27 @@ test('the quote status reports whether approval is required', () => {
     source,
     /const needsApproval =\s*\n?\s*String\(option\.result\?\.approvalTierRequired \|\| 'none'\) !== 'none';/,
   );
-  // ALWAYS PENDING_APPROVAL. Reverted to last night's behaviour on Holly's instruction,
-  // 2026-09-01: "update the logic for the quote creation to the logic it was last night".
-  //
-  // It was briefly gated on needsApproval so a 'none'-tier Deal stayed DRAFT. The reasoning for
-  // that, and the evidence, is in claude/quote-status-ignores-approval-tier.md -- kept because
-  // this is a decision that will be revisited, not a dead end.
+  // GATED ON needsApproval. Removed once on 2026-09-01 to match the 2026-08-31 build exactly, and
+  // restored the same evening on live evidence: Deal 60785797504 has
+  // pricing_approval_tier_required = "none" and 0% discretionary discount, and quote 42608430360
+  // (20:26) still went to PENDING_APPROVAL. Holly: "it shouldn't have been."
   //
   // The portal's rejection -- "Quote cannot be published without going through the pending
   // approval state" -- refuses PUBLISHING. APPROVAL_NOT_NEEDED is a published state and is
-  // refused; PENDING_APPROVAL is the state that message names as the way through.
+  // refused; PENDING_APPROVAL is the state that message names as the way through, for the deals
+  // that actually need it.
   //
   // Never APPROVAL_NOT_NEEDED: on this portal that is the value that loses the whole quote.
-  assert.match(source, /const desiredQuoteStatus = QUOTE_STATUS_PENDING_APPROVAL;/);
+  assert.doesNotMatch(
+    source,
+    /const desiredQuoteStatus = QUOTE_STATUS_PENDING_APPROVAL;/,
+    'the desired status must depend on needsApproval, not be hardcoded',
+  );
+  assert.match(
+    source,
+    /const desiredQuoteStatus = needsApproval\s+\? QUOTE_STATUS_PENDING_APPROVAL\s+: QUOTE_STATUS_DRAFT;/,
+  );
+  assert.match(source, /const QUOTE_STATUS_DRAFT = 'DRAFT';/);
   assert.doesNotMatch(
     source,
     /desiredQuoteStatus = QUOTE_STATUS_APPROVAL_NOT_NEEDED/,
@@ -3107,16 +3115,15 @@ test('the server substitutes a template that does not belong to the Deal categor
   );
 });
 
-// The two things reverted to the 2026-08-31 behaviour must STAY reverted. Re-landing the template
-// guard must not quietly drag either of them back with it -- they went out coupled once already.
-test('the quote status and the seller block stay as the 2026-08-31 build', () => {
+// The SELLER BLOCK stays on the quote. It was removed once on 2026-09-01 and reverted the same
+// day: the template's Seller section is configured to read *Quote owner*, so removing
+// hubspot_owner_id is what a blank Seller looks like. The quote status is no longer pinned here --
+// it is gated on needsApproval again, asserted in the status test above.
+test('the seller block stays on the quote create', () => {
   const source = require('node:fs').readFileSync(
     require('node:path').join(__dirname, 'QuoteOptionsFunction.js'),
     'utf8',
   );
-  assert.match(source, /const desiredQuoteStatus = QUOTE_STATUS_PENDING_APPROVAL;/);
-  assert.doesNotMatch(source, /desiredQuoteStatus = needsApproval/);
-
   const create = source.match(
     /quote = await client\.crm\.quotes\.basicApi\.create\(\{([\s\S]*?)\n      \},/,
   );

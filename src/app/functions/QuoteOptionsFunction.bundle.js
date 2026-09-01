@@ -2448,6 +2448,7 @@ var discountReasonProperties = (discountReason) => {
 };
 var QUOTE_STATUS_PENDING_APPROVAL = "PENDING_APPROVAL";
 var QUOTE_STATUS_APPROVAL_NOT_NEEDED = "APPROVAL_NOT_NEEDED";
+var QUOTE_STATUS_DRAFT = "DRAFT";
 var ARCHIVABLE_QUOTE_STATUSES = Object.freeze([
   "DRAFT",
   QUOTE_STATUS_PENDING_APPROVAL,
@@ -4181,7 +4182,7 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
     ) || `${state.dealName} \u2013 ${option.name}`
   );
   const needsApproval = String(option.result?.approvalTierRequired || "none") !== "none";
-  const desiredQuoteStatus = QUOTE_STATUS_PENDING_APPROVAL;
+  const desiredQuoteStatus = needsApproval ? QUOTE_STATUS_PENDING_APPROVAL : QUOTE_STATUS_DRAFT;
   const category = dealCategory(settings, state.dealType, state.pipelineId);
   const requestedTemplateId = content.templateId || defaultQuoteTemplateFor(settings, quoteKindsForCategory(category)[0]);
   if (!/^\d+$/.test(requestedTemplateId)) throw new Error("QUOTE_CONFIGURATION_REQUIRED");
