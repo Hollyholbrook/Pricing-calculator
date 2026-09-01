@@ -4183,8 +4183,22 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
   const needsApproval = String(option.result?.approvalTierRequired || "none") !== "none";
   const desiredQuoteStatus = QUOTE_STATUS_PENDING_APPROVAL;
   const category = dealCategory(settings, state.dealType, state.pipelineId);
-  const templateId = content.templateId || defaultQuoteTemplateFor(settings, quoteKindsForCategory(category)[0]);
-  if (!/^\d+$/.test(templateId)) throw new Error("QUOTE_CONFIGURATION_REQUIRED");
+  const requestedTemplateId = content.templateId || defaultQuoteTemplateFor(settings, quoteKindsForCategory(category)[0]);
+  if (!/^\d+$/.test(requestedTemplateId)) throw new Error("QUOTE_CONFIGURATION_REQUIRED");
+  const allowedKinds = quoteKindsForCategory(category);
+  const allowedTemplateIds = new Set(
+    allowedKinds.flatMap(
+      (kind) => quoteTemplateSettings(settings, kind).enabledIds.map(String)
+    )
+  );
+  let templateId = requestedTemplateId;
+  if (allowedTemplateIds.size > 0 && !allowedTemplateIds.has(String(requestedTemplateId))) {
+    const categoryDefault = defaultQuoteTemplateFor(settings, allowedKinds[0]);
+    console.error(
+      `Nylas pricing: template ${requestedTemplateId} is not assigned to a ${category} Deal (${allowedKinds.join("/")}: ${[...allowedTemplateIds].join(", ")}). Using ${categoryDefault} instead. The card most likely still held a template from before this Deal changed pipeline, or is a cached older bundle.`
+    );
+    if (/^\d+$/.test(String(categoryDefault))) templateId = String(categoryDefault);
+  }
   const quoteKind = quoteKindForTemplate(settings, category, templateId);
   if (!quoteKind) {
     console.warn(

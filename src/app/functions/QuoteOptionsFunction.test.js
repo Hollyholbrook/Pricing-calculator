@@ -3043,22 +3043,69 @@ test('the contract picker defaults only when there is exactly one contract', () 
 // Fixed on both sides, deliberately: the card drops a selection that is no longer on offer, and
 // the server substitutes the category default for anything outside the category's list. The card
 // is not the only way in, so the card alone is not enough.
-test('quote creation uses the template the card sent, without substituting', () => {
+test('the server substitutes a template that does not belong to the Deal category', () => {
   const source = require('node:fs').readFileSync(
     require('node:path').join(__dirname, 'QuoteOptionsFunction.js'),
     'utf8',
   );
-  // REVERTED 2026-09-01 on Holly's instruction. generateQuote briefly built the set of templates
-  // the Deal's category allows and substituted the category default for anything outside it.
-  // That is gone; the card's template is used as sent, exactly as on the night of 2026-08-31.
-  // The reasoning and the evidence are kept in
-  // claude/wrong-template-across-all-three-flows.md.
-  assert.doesNotMatch(source, /allowedTemplateIds/);
-  assert.doesNotMatch(source, /requestedTemplateId/);
+
+  // REMOVED TWICE, AND BOTH REMOVALS WERE MEASURED. 2026-09-01:
+  //
+  //   17:20:28  guard in place  -> New Business Template   correct
+  //   17:20:58  guard in place  -> New Business Template   correct
+  //   17:22:17  guard in place  -> New Business Template   correct
+  //   18:00:36  guard REMOVED   -> Change Quote Template on a NEW BUSINESS pipeline Deal
+  //
+  // Quote 42609049672 on Deal 64484705454. The second removal was collateral: the guard shipped
+  // bundled with the removal of the quote's seller block, that deploy failed every Lock in with
+  // "One or more associations are invalid", and reverting the commit took the guard down too.
+  // It now lives on its own commit for exactly that reason.
+  assert.match(source, /const allowedKinds = quoteKindsForCategory\(category\);/);
   assert.match(
     source,
-    /const templateId =\s*\n?\s*content\.templateId \|\| defaultQuoteTemplateFor\(settings, quoteKindsForCategory\(category\)\[0\]\);/,
+    /const allowedTemplateIds = new Set\(\s*allowedKinds\.flatMap\(\(kind\) =>\s*quoteTemplateSettings\(settings, kind\)\.enabledIds\.map\(String\),\s*\),\s*\);/,
   );
+  assert.match(
+    source,
+    /if \(allowedTemplateIds\.size > 0 && !allowedTemplateIds\.has\(String\(requestedTemplateId\)\)\) \{/,
+  );
+  assert.match(
+    source,
+    /const categoryDefault = defaultQuoteTemplateFor\(settings, allowedKinds\[0\]\);/,
+  );
+
+  // An unconfigured portal has no assignments; there an empty list means "offer everything".
+  assert.match(source, /allowedTemplateIds\.size > 0/);
+
+  // Everything downstream reads the SUBSTITUTED id, or the substitution is decorative.
+  const substitutionEnd = source.indexOf('const quoteKind = quoteKindForTemplate(');
+  const generateEnd = source.indexOf('const hash = contentHash(', substitutionEnd);
+  assert.ok(substitutionEnd > 0 && generateEnd > substitutionEnd);
+  const body = source.slice(substitutionEnd, generateEnd);
+  assert.match(body, /quoteKindForTemplate\(settings, category, templateId\)/);
+  assert.doesNotMatch(
+    body,
+    /requestedTemplateId/,
+    'nothing after the substitution may read the card-supplied id',
+  );
+});
+
+// The two things reverted to the 2026-08-31 behaviour must STAY reverted. Re-landing the template
+// guard must not quietly drag either of them back with it -- they went out coupled once already.
+test('the quote status and the seller block stay as the 2026-08-31 build', () => {
+  const source = require('node:fs').readFileSync(
+    require('node:path').join(__dirname, 'QuoteOptionsFunction.js'),
+    'utf8',
+  );
+  assert.match(source, /const desiredQuoteStatus = QUOTE_STATUS_PENDING_APPROVAL;/);
+  assert.doesNotMatch(source, /desiredQuoteStatus = needsApproval/);
+
+  const create = source.match(
+    /quote = await client\.crm\.quotes\.basicApi\.create\(\{([\s\S]*?)\n      \},/,
+  );
+  assert.ok(create, 'the quote create call must be findable');
+  assert.match(create[1], /hs_quote_owner_id: dealOwnerId,/, 'the seller block stays');
+  assert.match(create[1], /\.\.\.sender,/, 'the sender block stays');
 });
 
 test('the card drops a template selection the Deal no longer offers', () => {

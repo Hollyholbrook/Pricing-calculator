@@ -2892,9 +2892,52 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
   // The default is the category's first kind's default -- there is no separate Quote Type to read
   // a default from any more. The card normally sends an explicit templateId, so this only matters
   // for a configuration restored from before the picker existed.
-  const templateId =
+  const requestedTemplateId =
     content.templateId || defaultQuoteTemplateFor(settings, quoteKindsForCategory(category)[0]);
-  if (!/^\d+$/.test(templateId)) throw new Error('QUOTE_CONFIGURATION_REQUIRED');
+  if (!/^\d+$/.test(requestedTemplateId)) throw new Error('QUOTE_CONFIGURATION_REQUIRED');
+
+  // THE CATEGORY DECIDES THE TEMPLATE. Not the card.
+  //
+  // Landed 2026-09-01, removed twice, and the removals were measured both times:
+  //
+  //   17:20:28  guard in place  -> New Business Template   correct
+  //   17:20:58  guard in place  -> New Business Template   correct
+  //   17:22:17  guard in place  -> New Business Template   correct
+  //   18:00:36  guard REMOVED   -> Change Quote Template on a NEW BUSINESS pipeline Deal
+  //
+  // Quote 42609049672 on Deal 64484705454. First Lock in without it, wrong template.
+  //
+  // ON ITS OWN COMMIT THIS TIME. It shipped once bundled with the removal of the quote's seller
+  // block, that deploy failed every Lock in with "One or more associations are invalid", and the
+  // revert took this guard down with it -- coupling an unrelated change to it cost the guard a
+  // second time. The seller block is untouched here.
+  //
+  // Why the card-side guard is not enough alone: the card bundle is cached in the browser
+  // independently of the serverless function, so a rep running yesterday's card sends yesterday's
+  // template and nothing server-side questions it.
+  //
+  // SUBSTITUTED, NOT REFUSED. Throwing would discard a configuration the rep has already
+  // committed, after the guards that exist precisely to fail BEFORE anything is written.
+  //
+  // Only when the category actually has templates assigned: an unconfigured portal has none, and
+  // there "not in the list" means the list is empty, not that the choice is wrong.
+  const allowedKinds = quoteKindsForCategory(category);
+  const allowedTemplateIds = new Set(
+    allowedKinds.flatMap((kind) =>
+      quoteTemplateSettings(settings, kind).enabledIds.map(String),
+    ),
+  );
+  let templateId = requestedTemplateId;
+  if (allowedTemplateIds.size > 0 && !allowedTemplateIds.has(String(requestedTemplateId))) {
+    const categoryDefault = defaultQuoteTemplateFor(settings, allowedKinds[0]);
+    console.error(
+      `Nylas pricing: template ${requestedTemplateId} is not assigned to a ${category} Deal ` +
+        `(${allowedKinds.join('/')}: ${[...allowedTemplateIds].join(', ')}). ` +
+        `Using ${categoryDefault} instead. The card most likely still held a template from ` +
+        'before this Deal changed pipeline, or is a cached older bundle.',
+    );
+    if (/^\d+$/.test(String(categoryDefault))) templateId = String(categoryDefault);
+  }
 
   // REVERTED to last night's behaviour at Holly's instruction, 2026-09-01.
   //
