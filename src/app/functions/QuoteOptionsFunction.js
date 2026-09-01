@@ -2894,14 +2894,50 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
   // The default is the category's first kind's default -- there is no separate Quote Type to read
   // a default from any more. The card normally sends an explicit templateId, so this only matters
   // for a configuration restored from before the picker existed.
-  const templateId =
+  const requestedTemplateId =
     content.templateId || defaultQuoteTemplateFor(settings, quoteKindsForCategory(category)[0]);
-  if (!/^\d+$/.test(templateId)) throw new Error('QUOTE_CONFIGURATION_REQUIRED');
-  // Warned about, never refused. The card only ever offers this flow's list, so a template from
-  // outside it means the card and Settings have drifted -- and refusing the lock here would throw
-  // away a configuration the rep has already committed, after the guards that exist precisely to
-  // fail BEFORE anything is written. A wrong template is visible on the quote and recoverable; a
-  // lost configuration is not.
+  if (!/^\d+$/.test(requestedTemplateId)) throw new Error('QUOTE_CONFIGURATION_REQUIRED');
+
+  // THE CATEGORY DECIDES THE TEMPLATE. Not the card.
+  //
+  // This used to be "warned about, never refused", on the reasoning that the card only ever offers
+  // its own flow's list, so anything outside it meant the card and Settings had drifted. That
+  // reasoning was wrong in one specific and entirely ordinary case: the Deal's PIPELINE changes
+  // while the card is open. templateId is component state and the preselect keeps `current` when
+  // it already has one, so a card loaded on the new business pipeline goes on holding the New
+  // Business template after the Deal is moved to the renewal pipeline -- and Lock in sends it.
+  //
+  // Nothing warned, either. quoteKindForTemplate is not narrowed by category, so it answered
+  // 'new_business' quite happily for a renewal Deal and the "no kind claims this" branch below
+  // never fired. Deal 63835136345 sat in renewal pipeline 876727403 with a quote built from New
+  // Business Template 567553820432, and the only trace was the quote itself. Holly, 2026-09-01:
+  // "Now new business is loading the wrong quote."
+  //
+  // SUBSTITUTED, NOT REFUSED. Throwing here would discard a configuration the rep has already
+  // committed, after the guards that exist precisely to fail BEFORE anything is written -- and the
+  // original comment was right that a lost configuration is worse than a visible mistake. So the
+  // category's own default is used instead and the substitution is logged. The rep still gets a
+  // quote; it is the RIGHT quote.
+  //
+  // Only when the category actually has templates assigned: an unconfigured portal has none, and
+  // there "not in the list" means the list is empty, not that the choice is wrong.
+  const allowedKinds = quoteKindsForCategory(category);
+  const allowedTemplateIds = new Set(
+    allowedKinds.flatMap((kind) =>
+      quoteTemplateSettings(settings, kind).enabledIds.map(String),
+    ),
+  );
+  let templateId = requestedTemplateId;
+  if (allowedTemplateIds.size > 0 && !allowedTemplateIds.has(String(requestedTemplateId))) {
+    const categoryDefault = defaultQuoteTemplateFor(settings, allowedKinds[0]);
+    console.error(
+      `Nylas pricing: template ${requestedTemplateId} is not assigned to a ${category} Deal ` +
+        `(${allowedKinds.join('/')}: ${[...allowedTemplateIds].join(', ')}). ` +
+        `Using ${categoryDefault} instead. The card most likely still held a template from ` +
+        'before this Deal changed pipeline.',
+    );
+    if (/^\d+$/.test(String(categoryDefault))) templateId = String(categoryDefault);
+  }
   // Which kind this template belongs to, now that the template is the input rather than the
   // output. null means no kind claims it -- normal on an unconfigured portal.
   const quoteKind = quoteKindForTemplate(settings, category, templateId);

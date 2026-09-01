@@ -1078,7 +1078,19 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
       // so the picker shows what the Deal's quote was really built from.
       const lastUsed = body.latestQuoteTemplate?.id || "";
       setTemplateId((current) => {
-        if (current) return current;
+        // A CURRENT SELECTION ONLY WINS IF IT IS STILL ON OFFER.
+        //
+        // This was a bare `if (current) return current`, which is right for the case it was written
+        // for -- Lock in remounts the card and the preselect must not overwrite what the rep chose.
+        // But `templates` is the DEAL'S list, and the Deal can move pipeline while the card is
+        // open. Holding New Business on a Deal that is now a renewal is not preserving the rep's
+        // choice; it is preserving a choice that no longer exists, and Lock in then sent it.
+        // Holly, 2026-09-01: "Now new business is loading the wrong quote."
+        //
+        // Dropping it falls through to the preselect below, which picks the right default for the
+        // flow the Deal is actually in. The server enforces the same rule -- see the category
+        // check in generateQuote -- because the card is not the only way in.
+        if (current && templates.some(({ id }) => id === current)) return current;
         if (lastUsed && templates.some(({ id }) => id === lastUsed))
           return lastUsed;
         if (templates.some(({ id }) => id === preferred)) return preferred;
