@@ -2892,51 +2892,21 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
   // The default is the category's first kind's default -- there is no separate Quote Type to read
   // a default from any more. The card normally sends an explicit templateId, so this only matters
   // for a configuration restored from before the picker existed.
-  const requestedTemplateId =
+  const templateId =
     content.templateId || defaultQuoteTemplateFor(settings, quoteKindsForCategory(category)[0]);
-  if (!/^\d+$/.test(requestedTemplateId)) throw new Error('QUOTE_CONFIGURATION_REQUIRED');
+  if (!/^\d+$/.test(templateId)) throw new Error('QUOTE_CONFIGURATION_REQUIRED');
 
-  // THE CATEGORY DECIDES THE TEMPLATE. Not the card.
+  // REVERTED to last night's behaviour at Holly's instruction, 2026-09-01.
   //
-  // RESTORED 2026-09-01 18:0x after being removed at 17:4x, with the removal measured:
+  // Between 10:56 and now this substituted the category's default whenever the card sent a
+  // template not assigned to the Deal's category in Settings. That was added because a Deal that
+  // changes pipeline while the card is open leaves the card holding a template the new pipeline
+  // does not offer -- see claude/wrong-template-across-all-three-flows.md.
   //
-  //   17:20:28  guard in place   -> New Business  correct
-  //   17:20:58  guard in place   -> New Business  correct
-  //   17:22:17  guard in place   -> New Business  correct
-  //   18:00:36  guard REMOVED    -> Change Quote Template on a NEW BUSINESS pipeline Deal
+  // The card-side guard for that is DELIBERATELY STILL IN PLACE: NylasPricingBuilder drops a
+  // selection the Deal no longer offers. So the 1:1 still holds through the UI; what is gone is
+  // the server refusing to be told otherwise.
   //
-  // Quote 42609049672 on Deal 64484705454. First Lock in without the guard, wrong template. This
-  // is not a theory about what could happen.
-  //
-  // Why the card-side guard is not enough on its own: the card bundle is cached in the browser
-  // independently of the serverless function, so a rep running yesterday's card sends yesterday's
-  // template and nothing server-side questions it. That is exactly what produced 42609049672 --
-  // the card fix was deployed and the browser had not picked it up.
-  //
-  // SUBSTITUTED, NOT REFUSED. Throwing would discard a configuration the rep has already
-  // committed, after the guards that exist precisely to fail BEFORE anything is written. The rep
-  // still gets a quote; it is the right one.
-  //
-  // Only when the category actually has templates assigned: an unconfigured portal has none, and
-  // there "not in the list" means the list is empty, not that the choice is wrong.
-  const allowedKinds = quoteKindsForCategory(category);
-  const allowedTemplateIds = new Set(
-    allowedKinds.flatMap((kind) =>
-      quoteTemplateSettings(settings, kind).enabledIds.map(String),
-    ),
-  );
-  let templateId = requestedTemplateId;
-  if (allowedTemplateIds.size > 0 && !allowedTemplateIds.has(String(requestedTemplateId))) {
-    const categoryDefault = defaultQuoteTemplateFor(settings, allowedKinds[0]);
-    console.error(
-      `Nylas pricing: template ${requestedTemplateId} is not assigned to a ${category} Deal ` +
-        `(${allowedKinds.join('/')}: ${[...allowedTemplateIds].join(', ')}). ` +
-        `Using ${categoryDefault} instead. The card most likely still held a template from ` +
-        'before this Deal changed pipeline, or is a cached older bundle.',
-    );
-    if (/^\d+$/.test(String(categoryDefault))) templateId = String(categoryDefault);
-  }
-
   // Warned about, never refused. The card only ever offers this flow's list, so a template from
   // outside it means the card and Settings have drifted -- and refusing the lock here would throw
   // away a configuration the rep has already committed, after the guards that exist precisely to
@@ -3079,22 +3049,33 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
         // it the quote defaults to the legacy model and HubSpot rejects the CPQ template it is
         // associated with.
         hs_template_type: 'CPQ_QUOTE',
-        // NO SELLER BLOCK. Holly, 2026-09-01: "We should just be setting the deal property not
-        // setting the quote anything."
+        // The seller is the DEAL OWNER, explicitly, not whoever clicked Lock in and not whatever
+        // the API defaults to. This used to be left unset on the reasoning that a quote inherits
+        // the owner from its associated deal -- a sentence from HubSpot's Quotes guide that was
+        // never checked against this portal. Holly, 2026-08-28: it has to be the deal owner, so
+        // it is set rather than hoped for.
         //
-        // hubspot_owner_id, hs_quote_owner_id and the whole hs_sender_* block used to be written
-        // here, explicitly set to the Deal owner rather than left for HubSpot to derive. That was
-        // added on 2026-08-28 to fix a blank Seller, and the real cause of the blank turned out to
-        // be a missing crm.objects.owners.read scope -- fixed separately, and still fixed. With
-        // the scope granted, HubSpot resolves the seller from the Deal owner on its own.
-        //
-        // What made this worth removing: quote 42631489930 (2026-09-01 04:04), which Holly
-        // confirmed renders correctly, carries NONE of these properties. The quotes that rendered
-        // wrong carry all of them. That is the only difference the CRM API exposes between the two
-        // -- same template, same contact, no company on either, same nine line items, same
-        // acceptance method and expiration.
-        //
-        // The Deal still owns the owner; the app no longer restates it on the quote.
+        // Omitted when the Deal has no owner: an empty string is not "no owner" to HubSpot.
+        ...(dealOwnerId
+          ? {
+              hubspot_owner_id: dealOwnerId,
+              // hs_quote_owner_id is HubSpot's "Quote sender", a DIFFERENT property from
+              // hubspot_owner_id ("Quote owner"). Untried until now, and the last documented
+              // candidate: on 2026-08-28 quote 42562905272 was confirmed to carry
+              // hubspot_owner_id 1512537839 while keeping NONE of hs_sender_firstname,
+              // hs_sender_lastname or hs_sender_email -- HubSpot accepted those writes and
+              // discarded them, so they are not what a CPQ quote reads.
+              //
+              // The theory this tests: a CPQ quote derives its Seller Contact from the SENDER,
+              // and the hs_sender_* block is either derived from it or is legacy-only. The card's
+              // Seller banner reports whether this sticks, so the next round is evidence rather
+              // than another guess.
+              hs_quote_owner_id: dealOwnerId,
+            }
+          : {}),
+        // The Seller block the customer reads. The owner above is the CRM record's owner; these
+        // three are what the quote actually prints. Both are needed.
+        ...sender,
         // Acceptance method. HubSpot's Quotes guide documents three values -- clickwrap,
         // esignature and print_and_sign -- and print_and_sign is THE DEFAULT. It is not inherited
         // from the quote template, which is why every generated quote came out "Print and sign"

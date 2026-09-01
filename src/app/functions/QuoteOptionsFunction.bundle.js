@@ -4183,22 +4183,8 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
   const needsApproval = String(option.result?.approvalTierRequired || "none") !== "none";
   const desiredQuoteStatus = QUOTE_STATUS_PENDING_APPROVAL;
   const category = dealCategory(settings, state.dealType, state.pipelineId);
-  const requestedTemplateId = content.templateId || defaultQuoteTemplateFor(settings, quoteKindsForCategory(category)[0]);
-  if (!/^\d+$/.test(requestedTemplateId)) throw new Error("QUOTE_CONFIGURATION_REQUIRED");
-  const allowedKinds = quoteKindsForCategory(category);
-  const allowedTemplateIds = new Set(
-    allowedKinds.flatMap(
-      (kind) => quoteTemplateSettings(settings, kind).enabledIds.map(String)
-    )
-  );
-  let templateId = requestedTemplateId;
-  if (allowedTemplateIds.size > 0 && !allowedTemplateIds.has(String(requestedTemplateId))) {
-    const categoryDefault = defaultQuoteTemplateFor(settings, allowedKinds[0]);
-    console.error(
-      `Nylas pricing: template ${requestedTemplateId} is not assigned to a ${category} Deal (${allowedKinds.join("/")}: ${[...allowedTemplateIds].join(", ")}). Using ${categoryDefault} instead. The card most likely still held a template from before this Deal changed pipeline, or is a cached older bundle.`
-    );
-    if (/^\d+$/.test(String(categoryDefault))) templateId = String(categoryDefault);
-  }
+  const templateId = content.templateId || defaultQuoteTemplateFor(settings, quoteKindsForCategory(category)[0]);
+  if (!/^\d+$/.test(templateId)) throw new Error("QUOTE_CONFIGURATION_REQUIRED");
   const quoteKind = quoteKindForTemplate(settings, category, templateId);
   if (!quoteKind) {
     console.warn(
@@ -4277,22 +4263,31 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
         // it the quote defaults to the legacy model and HubSpot rejects the CPQ template it is
         // associated with.
         hs_template_type: "CPQ_QUOTE",
-        // NO SELLER BLOCK. Holly, 2026-09-01: "We should just be setting the deal property not
-        // setting the quote anything."
+        // The seller is the DEAL OWNER, explicitly, not whoever clicked Lock in and not whatever
+        // the API defaults to. This used to be left unset on the reasoning that a quote inherits
+        // the owner from its associated deal -- a sentence from HubSpot's Quotes guide that was
+        // never checked against this portal. Holly, 2026-08-28: it has to be the deal owner, so
+        // it is set rather than hoped for.
         //
-        // hubspot_owner_id, hs_quote_owner_id and the whole hs_sender_* block used to be written
-        // here, explicitly set to the Deal owner rather than left for HubSpot to derive. That was
-        // added on 2026-08-28 to fix a blank Seller, and the real cause of the blank turned out to
-        // be a missing crm.objects.owners.read scope -- fixed separately, and still fixed. With
-        // the scope granted, HubSpot resolves the seller from the Deal owner on its own.
-        //
-        // What made this worth removing: quote 42631489930 (2026-09-01 04:04), which Holly
-        // confirmed renders correctly, carries NONE of these properties. The quotes that rendered
-        // wrong carry all of them. That is the only difference the CRM API exposes between the two
-        // -- same template, same contact, no company on either, same nine line items, same
-        // acceptance method and expiration.
-        //
-        // The Deal still owns the owner; the app no longer restates it on the quote.
+        // Omitted when the Deal has no owner: an empty string is not "no owner" to HubSpot.
+        ...dealOwnerId ? {
+          hubspot_owner_id: dealOwnerId,
+          // hs_quote_owner_id is HubSpot's "Quote sender", a DIFFERENT property from
+          // hubspot_owner_id ("Quote owner"). Untried until now, and the last documented
+          // candidate: on 2026-08-28 quote 42562905272 was confirmed to carry
+          // hubspot_owner_id 1512537839 while keeping NONE of hs_sender_firstname,
+          // hs_sender_lastname or hs_sender_email -- HubSpot accepted those writes and
+          // discarded them, so they are not what a CPQ quote reads.
+          //
+          // The theory this tests: a CPQ quote derives its Seller Contact from the SENDER,
+          // and the hs_sender_* block is either derived from it or is legacy-only. The card's
+          // Seller banner reports whether this sticks, so the next round is evidence rather
+          // than another guess.
+          hs_quote_owner_id: dealOwnerId
+        } : {},
+        // The Seller block the customer reads. The owner above is the CRM record's owner; these
+        // three are what the quote actually prints. Both are needed.
+        ...sender,
         // Acceptance method. HubSpot's Quotes guide documents three values -- clickwrap,
         // esignature and print_and_sign -- and print_and_sign is THE DEFAULT. It is not inherited
         // from the quote template, which is why every generated quote came out "Print and sign"
