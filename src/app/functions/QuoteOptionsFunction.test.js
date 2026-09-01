@@ -889,18 +889,28 @@ test('a generated quote carries the deal owner and the clickwrap acceptance meth
   assert.ok(create, 'the quote create call must be findable');
   const body = create[1];
 
-  assert.match(body, /hubspot_owner_id: dealOwnerId/, 'the seller must be the deal owner');
+  // THE QUOTE CARRIES NO SELLER BLOCK. Holly, 2026-09-01: "We should just be setting the deal
+  // property not setting the quote anything."
+  //
+  // hubspot_owner_id, hs_quote_owner_id and hs_sender_* were set here from 2026-08-28 to fix a
+  // blank Seller. The blank turned out to be a missing crm.objects.owners.read scope, which is
+  // fixed separately and stays fixed -- so HubSpot can resolve the seller from the Deal owner
+  // without the app restating it.
+  //
+  // The evidence for removing them: quote 42631489930 (04:04) renders correctly and carries NONE
+  // of these; the quotes that rendered wrong carry all of them. It is the only difference the CRM
+  // API exposes between the two.
+  assert.doesNotMatch(body, /hubspot_owner_id:/);
+  assert.doesNotMatch(body, /hs_quote_owner_id:/);
+  assert.doesNotMatch(body, /\.\.\.sender,/);
+
+  // The acceptance method STAYS. HubSpot's default is print_and_sign and it is NOT inherited from
+  // the quote template, so dropping this silently changes how every quote is accepted.
   assert.match(
     body,
     /hs_acceptance_method: QUOTE_ACCEPTANCE_METHOD/,
     'the acceptance method must be set, or HubSpot defaults it to print_and_sign',
   );
-  // Guarded, because an empty string is not "no owner" to HubSpot.
-  assert.match(body, /\.\.\.\(dealOwnerId\s*\n?\s*\?\s*\{/);
-  // hs_quote_owner_id is HubSpot's "Quote sender", a DIFFERENT property from hubspot_owner_id.
-  // Quote 42562905272 proved hs_sender_* is accepted and discarded on this quote model, so the
-  // sender id is the remaining documented candidate and must actually be sent.
-  assert.match(body, /hs_quote_owner_id: dealOwnerId,/, 'the quote sender must be set');
 
   // One of the three values HubSpot documents. clickwrap is "accept without signature".
   const method = source.match(/const QUOTE_ACCEPTANCE_METHOD = '([a-z_]+)';/);
@@ -1119,7 +1129,12 @@ test('a partial owner record sends only the fields it has', async () => {
   assert.equal('hs_sender_lastname' in properties, false, 'an empty last name must not be sent');
 });
 
-test('the quote create carries the sender properties', () => {
+// INVERTED 2026-09-01. This used to assert that the sender block reached the create call; it now
+// asserts that it does not. senderProperties itself is deliberately left in place and still
+// resolved -- the card's Seller banner reads it to report what the quote ended up with, and
+// deleting a working owner lookup to remove one spread is a bigger change than the instruction
+// asked for.
+test('the quote create carries no sender block', () => {
   const source = require('node:fs').readFileSync(
     require('node:path').join(__dirname, 'QuoteOptionsFunction.js'),
     'utf8',
@@ -1128,11 +1143,16 @@ test('the quote create carries the sender properties', () => {
     /quote = await client\.crm\.quotes\.basicApi\.create\(\{([\s\S]*?)\n      \},/,
   );
   assert.ok(create, 'the quote create call must be findable');
-  assert.match(create[1], /\.\.\.sender,/, 'the sender block must reach the create call');
-  // Resolved before the try, so a failure cannot leave a half-made quote behind.
-  const senderLine = source.indexOf('const sender = await senderProperties(');
-  const createLine = source.indexOf('quote = await client.crm.quotes.basicApi.create(');
-  assert.ok(senderLine > 0 && senderLine < createLine);
+  // Comment lines stripped: the block above the create explains WHY the sender is gone and names
+  // the properties, and matching on that would assert the opposite of what it says.
+  const code = create[1]
+    .split('\n')
+    .filter((line) => !line.trim().startsWith('//'))
+    .join('\n');
+  assert.doesNotMatch(code, /\.\.\.sender,/, 'the sender block must not reach the create');
+  assert.doesNotMatch(code, /hs_sender_/, 'no sender property may be set on the quote');
+  assert.doesNotMatch(code, /hubspot_owner_id/, 'the quote must not carry an owner');
+  assert.doesNotMatch(code, /hs_quote_owner_id/, 'the quote must not carry a sender id');
 });
 
 // Two unrelated reads must not share a failure.
@@ -3043,22 +3063,66 @@ test('the contract picker defaults only when there is exactly one contract', () 
 // Fixed on both sides, deliberately: the card drops a selection that is no longer on offer, and
 // the server substitutes the category default for anything outside the category's list. The card
 // is not the only way in, so the card alone is not enough.
-test('quote creation uses the template the card sent, without substituting', () => {
+test('the server substitutes a template that does not belong to the Deal category', () => {
   const source = require('node:fs').readFileSync(
     require('node:path').join(__dirname, 'QuoteOptionsFunction.js'),
     'utf8',
   );
-  // REVERTED 2026-09-01 on Holly's instruction. generateQuote briefly built the set of templates
-  // the Deal's category allows and substituted the category default for anything outside it.
-  // That is gone; the card's template is used as sent, exactly as on the night of 2026-08-31.
-  // The reasoning and the evidence are kept in
-  // claude/wrong-template-across-all-three-flows.md.
-  assert.doesNotMatch(source, /allowedTemplateIds/);
-  assert.doesNotMatch(source, /requestedTemplateId/);
+
+  // REMOVED ONCE, AND THE REMOVAL WAS MEASURED. 2026-09-01:
+  //
+  //   17:20:28  guard in place  -> New Business Template   correct
+  //   17:20:58  guard in place  -> New Business Template   correct
+  //   17:22:17  guard in place  -> New Business Template   correct
+  //   18:00:36  guard REMOVED   -> Change Quote Template on a NEW BUSINESS pipeline Deal
+  //
+  // Quote 42609049672 on Deal 64484705454. First Lock in without it, wrong template. This test
+  // exists so that removal has to be deliberate rather than incidental.
+  assert.match(source, /const allowedKinds = quoteKindsForCategory\(category\);/);
   assert.match(
     source,
-    /const templateId =\s*\n?\s*content\.templateId \|\| defaultQuoteTemplateFor\(settings, quoteKindsForCategory\(category\)\[0\]\);/,
+    /const allowedTemplateIds = new Set\(\s*allowedKinds\.flatMap\(\(kind\) =>\s*quoteTemplateSettings\(settings, kind\)\.enabledIds\.map\(String\),\s*\),\s*\);/,
   );
+  assert.match(
+    source,
+    /if \(allowedTemplateIds\.size > 0 && !allowedTemplateIds\.has\(String\(requestedTemplateId\)\)\) \{/,
+  );
+  assert.match(
+    source,
+    /const categoryDefault = defaultQuoteTemplateFor\(settings, allowedKinds\[0\]\);/,
+  );
+  assert.match(
+    source,
+    /if \(\/\^\\d\+\$\/\.test\(String\(categoryDefault\)\)\) templateId = String\(categoryDefault\);/,
+  );
+
+  // An unconfigured portal has no assignments; there an empty list means "offer everything".
+  assert.match(source, /allowedTemplateIds\.size > 0/);
+
+  // Everything downstream reads the SUBSTITUTED id. If any of these read requestedTemplateId
+  // again the substitution becomes decorative.
+  const substitutionEnd = source.indexOf('const quoteKind = quoteKindForTemplate(');
+  const generateEnd = source.indexOf('const hash = contentHash(', substitutionEnd);
+  assert.ok(substitutionEnd > 0 && generateEnd > substitutionEnd);
+  const body = source.slice(substitutionEnd, generateEnd);
+  assert.match(body, /quoteKindForTemplate\(settings, category, templateId\)/);
+  assert.match(body, /describeQuoteTemplate\(\s*client,\s*templateId,\s*\)/);
+  assert.doesNotMatch(
+    body,
+    /requestedTemplateId/,
+    'nothing after the substitution may read the card-supplied id',
+  );
+});
+
+// The quote STATUS stays reverted to the 2026-08-31 behaviour -- that revert was deliberate and
+// separate, and restoring the template guard must not quietly bring it back with it.
+test('the quote status is still the reverted, unconditional behaviour', () => {
+  const source = require('node:fs').readFileSync(
+    require('node:path').join(__dirname, 'QuoteOptionsFunction.js'),
+    'utf8',
+  );
+  assert.match(source, /const desiredQuoteStatus = QUOTE_STATUS_PENDING_APPROVAL;/);
+  assert.doesNotMatch(source, /desiredQuoteStatus = needsApproval/);
 });
 
 test('the card drops a template selection the Deal no longer offers', () => {
