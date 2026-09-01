@@ -4170,6 +4170,34 @@ var markAsPrimaryQuote = async (client, quoteId, dealId) => {
     };
   }
 };
+var quoteToContractTypeIdCache;
+var quoteToContractAssociationTypeId = async (client) => {
+  if (quoteToContractTypeIdCache !== void 0) return quoteToContractTypeIdCache;
+  try {
+    const schema = await client.crm.associations.v4.schema.definitionsApi.getAll(
+      "quotes",
+      "contracts"
+    );
+    const defined = (schema.results || []).find(
+      (definition) => String(definition.category || "") === "HUBSPOT_DEFINED" && definition.typeId != null
+    );
+    quoteToContractTypeIdCache = defined ? Number(defined.typeId) : null;
+    console.info(
+      `Nylas pricing: quote -> contract association type resolved to ${quoteToContractTypeIdCache === null ? "NONE" : quoteToContractTypeIdCache}.`
+    );
+  } catch (error) {
+    quoteToContractTypeIdCache = null;
+    console.warn(
+      `Nylas pricing: could not read the quotes -> contracts association schema. The contract will be attached after the quote is created instead. ${String(error?.body?.message || error?.message || error)}`
+    );
+  }
+  return quoteToContractTypeIdCache;
+};
+var CPQ_QUOTE_TYPE_BY_KIND = {
+  new_business: "INITIAL",
+  change: "CHANGE",
+  renewal: "RENEWAL"
+};
 var generateQuote = async (client, dealId, state, parameters, portalId, settings) => {
   const option = selectedOptionForDraft(state);
   assertCurrentSettings(option, settings);
@@ -4251,6 +4279,17 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
     `Nylas pricing: quote seller resolved -- deal owner=${dealOwnerId || "NONE"} fields=[${Object.keys(sender).join(", ") || "NONE"}]`
   );
   const lineItems = buildQuoteLineItems(option, content);
+  const quoteContractId = String(parameters.contractId || "");
+  const wantsContractOnQuote = quoteContractId !== "" && (quoteKind === "change" || quoteKind === "renewal");
+  const contractAssociationTypeId = wantsContractOnQuote ? await quoteToContractAssociationTypeId(client) : null;
+  const quoteCreateAssociations = [
+    // 286, quote template. The one this whole block exists for.
+    createAssociation(templateId, 286),
+    // 64, deal. Also moved onto the create: the working paths above both had it there, and the
+    // renewal and change flows need HubSpot to see the deal and the contract together.
+    createAssociation(dealId, 64),
+    ...contractAssociationTypeId !== null ? [createAssociation(quoteContractId, contractAssociationTypeId)] : []
+  ];
   let quote;
   const createdLineItemIds = [];
   try {
@@ -4300,6 +4339,13 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
         // it the quote defaults to the legacy model and HubSpot rejects the CPQ template it is
         // associated with.
         hs_template_type: "CPQ_QUOTE",
+        // The CPQ quote type, sent on the create because HubSpot reads it while it initializes
+        // the quote. Patching it afterwards sets a property on a record that has already been
+        // initialized as something else -- the same failure mode as the template association.
+        //
+        // A quote whose template no kind claims falls back to INITIAL rather than being refused:
+        // an unconfigured portal claims nothing, and a standard quote is the safe reading.
+        hs_type: CPQ_QUOTE_TYPE_BY_KIND[String(quoteKind || "")] || "INITIAL",
         // The seller is the DEAL OWNER, explicitly, not whoever clicked Lock in and not whatever
         // the API defaults to. This used to be left unset on the reasoning that a quote inherits
         // the owner from its associated deal -- a sentence from HubSpot's Quotes guide that was
@@ -4350,19 +4396,37 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
         // draft and then update to be published." -- HubSpot, verbatim. The quote is created at
         // DRAFT and moved after its line items exist; see the transition below.
       },
-      associations: []
+      // The template, the deal and (for change and renewal) the contract. Built above, sent here,
+      // because HubSpot reads a quote's associations while it initializes it and never again.
+      associations: quoteCreateAssociations
     });
-    await client.crm.associations.v4.basicApi.create("quotes", String(quote.id), "deals", dealId, [
-      { associationCategory: "HUBSPOT_DEFINED", associationTypeId: 64 }
-    ]);
+    try {
+      const clonedLineItemIds = await associatedIds(
+        client,
+        "quotes",
+        String(quote.id),
+        "line_items",
+        200
+      );
+      if (clonedLineItemIds.length > 0) {
+        console.info(
+          `Nylas pricing: clearing ${clonedLineItemIds.length} line item(s) HubSpot cloned from deal ${dealId} onto quote ${quote.id}; the calculator's own lines follow.`
+        );
+        await inBatches(
+          clonedLineItemIds,
+          (id) => client.crm.lineItems.basicApi.archive(String(id)).catch((error) => {
+            console.warn(
+              `Nylas pricing: could not archive cloned line item ${id} on quote ${quote.id}. ${String(error?.body?.message || error?.message || error)}`
+            );
+          })
+        );
+      }
+    } catch (error) {
+      console.warn(
+        `Nylas pricing: could not read the line items HubSpot cloned onto quote ${quote.id}. Duplicate lines may appear. ${String(error?.body?.message || error?.message || error)}`
+      );
+    }
     const primaryQuote = await markAsPrimaryQuote(client, quote.id, dealId);
-    await client.crm.associations.v4.basicApi.create(
-      "quotes",
-      String(quote.id),
-      "quote_template",
-      templateId,
-      [{ associationCategory: "HUBSPOT_DEFINED", associationTypeId: 286 }]
-    );
     const sendingQuoteLines = lineItems.map((item) => ({
       properties: hubSpotLineItemProperties(item.properties),
       // 68, not 67. Association type ids are directional: 67 is defined FROM the quote (0-14) TO
@@ -4422,9 +4486,9 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
         [{ associationCategory: "HUBSPOT_DEFINED", associationTypeId: 71 }]
       );
     }
-    let contractAssociated = null;
-    const contractId = String(parameters.contractId || "");
-    if (contractId) {
+    let contractAssociated = contractAssociationTypeId !== null ? true : null;
+    const contractId = quoteContractId;
+    if (contractId && contractAssociationTypeId === null) {
       try {
         await client.crm.associations.v4.basicApi.createDefault(
           "quotes",
@@ -4440,13 +4504,34 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
           safeProviderDiagnostics(error, "associate_quote_contract")
         );
       }
+    } else if (contractId && contractAssociationTypeId !== null) {
+      console.info(
+        `Nylas pricing: contract ${contractId} was attached to quote ${quote.id} on the create request (association type ${contractAssociationTypeId}).`
+      );
     }
     const finalized = await client.crm.quotes.basicApi.getById(String(quote.id), [
       "hs_quote_link",
       "hs_status",
+      // Read back so the log can say whether CPQ initialization actually took, instead of the
+      // next person diffing two quote records by hand for a day. See below.
+      "hs_type",
+      "hs_net_payment_terms",
+      "hs_terms",
       ...Object.keys(sender)
     ]);
     const quoteUrl = finalized?.properties?.hs_quote_link || "";
+    const templateApplied = Boolean(
+      finalized?.properties?.hs_terms || finalized?.properties?.hs_net_payment_terms
+    );
+    if (templateApplied) {
+      console.info(
+        `Nylas pricing: quote ${quote.id} initialized from template ${templateId} ("${templateName}") -- hs_type=${finalized?.properties?.hs_type || "unset"}, net terms ${finalized?.properties?.hs_net_payment_terms || "0"}, terms block ${finalized?.properties?.hs_terms ? "present" : "absent"}.`
+      );
+    } else {
+      console.error(
+        `Nylas pricing: quote ${quote.id} carries template ${templateId} ("${templateName}") but was NOT initialized from it -- no terms block and no net payment terms came across. The document will render from HubSpot's default, not this template. The template association is on the create request, so if this fires the create was rejected or reordered; read the create response before changing anything else.`
+      );
+    }
     let quoteStatus = finalized?.properties?.hs_status || "";
     let quoteStatusRepaired = false;
     let quoteStatusError = "";

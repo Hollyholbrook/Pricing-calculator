@@ -2845,6 +2845,59 @@ const markAsPrimaryQuote = async (client, quoteId, dealId) => {
   }
 };
 
+// The quote -> contract association type, discovered rather than guessed.
+//
+// There is no documented association type id for quotes -> contracts, and the previous code
+// used createDefault AFTER the quote existed. That is too late: HubSpot reads the quote's
+// associations while it initializes the CPQ quote, so a contract attached a second later is
+// invisible to the renderer and to the contract lifecycle. To put it on the create request we
+// need the numeric id, so it is read from the portal's own schema -- the same pattern the
+// primary-quote label uses, and for the same reason: guessing an association type id is how the
+// units incident started.
+//
+// null means the portal exposes no quote -> contract definition, in which case the create simply
+// carries no contract and the post-create createDefault below still runs as the fallback.
+let quoteToContractTypeIdCache;
+const quoteToContractAssociationTypeId = async (client) => {
+  if (quoteToContractTypeIdCache !== undefined) return quoteToContractTypeIdCache;
+  try {
+    const schema = await client.crm.associations.v4.schema.definitionsApi.getAll(
+      'quotes',
+      'contracts',
+    );
+    const defined = (schema.results || []).find(
+      (definition) =>
+        String(definition.category || '') === 'HUBSPOT_DEFINED' && definition.typeId != null,
+    );
+    quoteToContractTypeIdCache = defined ? Number(defined.typeId) : null;
+    console.info(
+      `Nylas pricing: quote -> contract association type resolved to ` +
+        `${quoteToContractTypeIdCache === null ? 'NONE' : quoteToContractTypeIdCache}.`,
+    );
+  } catch (error) {
+    quoteToContractTypeIdCache = null;
+    console.warn(
+      'Nylas pricing: could not read the quotes -> contracts association schema. The contract ' +
+        `will be attached after the quote is created instead. ${String(error?.body?.message || error?.message || error)}`,
+    );
+  }
+  return quoteToContractTypeIdCache;
+};
+
+// hs_type is HubSpot's own CPQ quote type -- "The type of the quote. This is in relation to the
+// contract that the quote is a part of." -- with exactly three values. It is what makes a record a
+// change or renewal quote; the template only decides how it looks.
+//
+// Every quote this app has ever created came out INITIAL, including the ones carrying the Renewal
+// and Change templates, because it was never sent. Verified 2026-09-01 against the portal: the one
+// genuine change quote there (42608004129, made through the contract UI) is CHANGE, and app-made
+// 42630561323 on a renewal template is INITIAL.
+const CPQ_QUOTE_TYPE_BY_KIND = {
+  new_business: 'INITIAL',
+  change: 'CHANGE',
+  renewal: 'RENEWAL',
+};
+
 const generateQuote = async (client, dealId, state, parameters, portalId, settings) => {
   const option = selectedOptionForDraft(state);
   assertCurrentSettings(option, settings);
@@ -3073,6 +3126,46 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
 
   // Built before the try so PRODUCT_MAPPING_REQUIRED fails before a quote record exists.
   const lineItems = buildQuoteLineItems(option, content);
+
+  // THE CREATE REQUEST CARRIES EVERYTHING CPQ INITIALIZATION READS.
+  //
+  // Measured 2026-09-01, three quotes on the same Deal (63835136345) and the same New Business
+  // Template (567553820432), differing only in WHEN the template was associated:
+  //
+  //   42630561323  app-made, template associated AFTER create
+  //                hs_terms ABSENT, hs_net_payment_terms 0, source INTEGRATION
+  //   42608127906  hand-made in the Quotes tool
+  //                hs_terms full, hs_net_payment_terms 30, source QUOTES
+  //   42620168501  API-made, template on the CREATE request
+  //                hs_terms full, hs_net_payment_terms 30, source QUOTES
+  //
+  // The template's own net terms are 30 and its terms block is the HubL that renders Billing
+  // schedule / Payment Method / Renewal Terms. A quote created without the template on the create
+  // gets neither -- HubSpot binds the quote to a default at creation and never revisits it, so
+  // adding the association afterwards makes the CRM record LOOK right while the document renders
+  // from something else. That is the "wrong template, defaulting to something unknown" report,
+  // and it is why every property-by-property comparison came back identical: the associations
+  // were identical, the ORDER was not.
+  //
+  // So the template, the deal, the type and (for change and renewal) the contract all go on the
+  // create. Nothing that CPQ reads during initialization may be attached a moment later.
+  const quoteContractId = String(parameters.contractId || '');
+  const wantsContractOnQuote =
+    quoteContractId !== '' && (quoteKind === 'change' || quoteKind === 'renewal');
+  const contractAssociationTypeId = wantsContractOnQuote
+    ? await quoteToContractAssociationTypeId(client)
+    : null;
+  const quoteCreateAssociations = [
+    // 286, quote template. The one this whole block exists for.
+    createAssociation(templateId, 286),
+    // 64, deal. Also moved onto the create: the working paths above both had it there, and the
+    // renewal and change flows need HubSpot to see the deal and the contract together.
+    createAssociation(dealId, 64),
+    ...(contractAssociationTypeId !== null
+      ? [createAssociation(quoteContractId, contractAssociationTypeId)]
+      : []),
+  ];
+
   let quote;
   const createdLineItemIds = [];
   try {
@@ -3124,6 +3217,13 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
         // it the quote defaults to the legacy model and HubSpot rejects the CPQ template it is
         // associated with.
         hs_template_type: 'CPQ_QUOTE',
+        // The CPQ quote type, sent on the create because HubSpot reads it while it initializes
+        // the quote. Patching it afterwards sets a property on a record that has already been
+        // initialized as something else -- the same failure mode as the template association.
+        //
+        // A quote whose template no kind claims falls back to INITIAL rather than being refused:
+        // an unconfigured portal claims nothing, and a standard quote is the safe reading.
+        hs_type: CPQ_QUOTE_TYPE_BY_KIND[String(quoteKind || '')] || 'INITIAL',
         // The seller is the DEAL OWNER, explicitly, not whoever clicked Lock in and not whatever
         // the API defaults to. This used to be left unset on the reasoning that a quote inherits
         // the owner from its associated deal -- a sentence from HubSpot's Quotes guide that was
@@ -3176,28 +3276,58 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
         // draft and then update to be published." -- HubSpot, verbatim. The quote is created at
         // DRAFT and moved after its line items exist; see the transition below.
       },
-      associations: [],
+      // The template, the deal and (for change and renewal) the contract. Built above, sent here,
+      // because HubSpot reads a quote's associations while it initializes it and never again.
+      associations: quoteCreateAssociations,
     });
 
-    // Association type ids stated explicitly rather than relying on createDefault, which picks
-    // the portal's DEFAULT type and not necessarily the one the CPQ quote model expects. These
-    // are all created FROM the quote (0-14): deal 64, contact 69, company 71, quote template
-    // 286. The line item association is declared on the line item itself, so it uses the
-    // opposite direction (68) rather than the quote-side 67.
-    await client.crm.associations.v4.basicApi.create('quotes', String(quote.id), 'deals', dealId, [
-      { associationCategory: 'HUBSPOT_DEFINED', associationTypeId: 64 },
-    ]);
+    // The deal and template associations are NOT made here any more -- they are on the create
+    // request above. Contact 69 and company 71 still are: neither is read during CPQ
+    // initialization, and the contact is chosen from a picker that may add it to the Deal first.
+    //
+    // CLEAR HUBSPOT'S OWN COPY OF THE LINE ITEMS.
+    //
+    // Associating the Deal on the create makes HubSpot clone the Deal's line items onto the new
+    // quote -- verified 2026-09-01: quote 42620168501 came out of the create carrying ten line
+    // items with fresh ids (585154794xx) cloned from the Deal's (585112051xx). The app then
+    // creates its own, so leaving them would print every product twice. Anything associated to
+    // the quote at this instant is HubSpot's clone, because the app has not created a line item
+    // yet.
+    //
+    // NOT a return to "the quote has no line items of its own". The app's own lines are what the
+    // calculator computed and what the Order Form renders; these are duplicates of them.
+    try {
+      const clonedLineItemIds = await associatedIds(
+        client,
+        'quotes',
+        String(quote.id),
+        'line_items',
+        200,
+      );
+      if (clonedLineItemIds.length > 0) {
+        console.info(
+          `Nylas pricing: clearing ${clonedLineItemIds.length} line item(s) HubSpot cloned from ` +
+            `deal ${dealId} onto quote ${quote.id}; the calculator's own lines follow.`,
+        );
+        await inBatches(clonedLineItemIds, (id) =>
+          client.crm.lineItems.basicApi.archive(String(id)).catch((error) => {
+            console.warn(
+              `Nylas pricing: could not archive cloned line item ${id} on quote ${quote.id}. ` +
+                `${String(error?.body?.message || error?.message || error)}`,
+            );
+          }),
+        );
+      }
+    } catch (error) {
+      console.warn(
+        `Nylas pricing: could not read the line items HubSpot cloned onto quote ${quote.id}. ` +
+          `Duplicate lines may appear. ${String(error?.body?.message || error?.message || error)}`,
+      );
+    }
     // Applied on EVERY Lock in, not only the first. Regenerating the quote leaves the label on the
     // old one, so the Deal's primary quote silently goes stale -- Holly, 2026-08-31: "that got
     // deleted", "I need it to refresh again".
     const primaryQuote = await markAsPrimaryQuote(client, quote.id, dealId);
-    await client.crm.associations.v4.basicApi.create(
-      'quotes',
-      String(quote.id),
-      'quote_template',
-      templateId,
-      [{ associationCategory: 'HUBSPOT_DEFINED', associationTypeId: 286 }],
-    );
 
     // The quote owns its line items, and they carry the same information as the Deal's.
     //
@@ -3308,9 +3438,17 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
     //
     // Never fatal. The quote already exists by this point, so throwing here would leave an orphan
     // quote behind a failed lock. The outcome is reported instead, and the card prints it.
-    let contractAssociated = null;
-    const contractId = String(parameters.contractId || '');
-    if (contractId) {
+    // The contract now goes on the CREATE request for change and renewal quotes -- see the
+    // comment above buildQuoteLineItems. This block is the fallback for the two cases the create
+    // could not cover: a portal that exposes no quote -> contract association definition, and a
+    // contract chosen on a quote kind that is neither change nor renewal.
+    //
+    // Attaching it here is better than not attaching it, but it is NOT equivalent: HubSpot has
+    // already initialized the quote by this point, so a contract that only arrives here will show
+    // on the record without driving the change or renewal document.
+    let contractAssociated = contractAssociationTypeId !== null ? true : null;
+    const contractId = quoteContractId;
+    if (contractId && contractAssociationTypeId === null) {
       try {
         await client.crm.associations.v4.basicApi.createDefault(
           'quotes',
@@ -3328,6 +3466,11 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
           safeProviderDiagnostics(error, 'associate_quote_contract'),
         );
       }
+    } else if (contractId && contractAssociationTypeId !== null) {
+      console.info(
+        `Nylas pricing: contract ${contractId} was attached to quote ${quote.id} on the create ` +
+          `request (association type ${contractAssociationTypeId}).`,
+      );
     }
 
     // A quote created through the API is already DRAFT, so the update that set it was redundant
@@ -3336,9 +3479,44 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
     const finalized = await client.crm.quotes.basicApi.getById(String(quote.id), [
       'hs_quote_link',
       'hs_status',
+      // Read back so the log can say whether CPQ initialization actually took, instead of the
+      // next person diffing two quote records by hand for a day. See below.
+      'hs_type',
+      'hs_net_payment_terms',
+      'hs_terms',
       ...Object.keys(sender),
     ]);
     const quoteUrl = finalized?.properties?.hs_quote_link || '';
+
+    // DID THE TEMPLATE ACTUALLY TAKE? One line in the log, every Lock in.
+    //
+    // A quote that was initialized from its template carries the template's own content: net
+    // payment terms and the terms block. A quote that was not carries neither, no matter what its
+    // quote_template association says -- that is the whole failure this create was restructured to
+    // fix, and it is invisible in the association. So it is measured rather than assumed.
+    //
+    // Not fatal, and deliberately not a thrown error: the quote exists and its pricing is right.
+    // What this buys is that "the document came out wrong" stops being a day of bisecting
+    // properties and becomes a line that says which half of the create failed.
+    const templateApplied = Boolean(
+      finalized?.properties?.hs_terms || finalized?.properties?.hs_net_payment_terms,
+    );
+    if (templateApplied) {
+      console.info(
+        `Nylas pricing: quote ${quote.id} initialized from template ${templateId} ` +
+          `("${templateName}") -- hs_type=${finalized?.properties?.hs_type || 'unset'}, ` +
+          `net terms ${finalized?.properties?.hs_net_payment_terms || '0'}, terms block ` +
+          `${finalized?.properties?.hs_terms ? 'present' : 'absent'}.`,
+      );
+    } else {
+      console.error(
+        `Nylas pricing: quote ${quote.id} carries template ${templateId} ("${templateName}") but ` +
+          'was NOT initialized from it -- no terms block and no net payment terms came across. ' +
+          'The document will render from HubSpot\'s default, not this template. The template ' +
+          'association is on the create request, so if this fires the create was rejected or ' +
+          'reordered; read the create response before changing anything else.',
+      );
+    }
     // The Seller block, checked rather than assumed.
     //
     // hs_sender_* was sent on the create above and the block still came out blank. Rather than

@@ -1433,9 +1433,121 @@ test('the quote Seller block is read back and set again if the create dropped it
     'utf8',
   );
   // The read-back must ask for the sender fields, or "missing" is always true.
-  assert.match(source, /'hs_status',\s*\n\s*\.\.\.Object\.keys\(sender\),/);
+  //
+  // Not pinned to sitting immediately after 'hs_status' any more: the same read-back now also
+  // asks for hs_type, hs_net_payment_terms and hs_terms, which is what proves the template was
+  // applied. What matters is that the sender keys are in the list, not what precedes them.
+  assert.match(
+    source,
+    /const finalized = await client\.crm\.quotes\.basicApi\.getById\(String\(quote\.id\), \[[\s\S]{0,600}?\.\.\.Object\.keys\(sender\),/,
+  );
   assert.match(source, /const senderMissing = Object\.entries\(sender\)\.filter\(/);
   assert.match(source, /await client\.crm\.quotes\.basicApi\.update\(String\(quote\.id\), \{/);
+});
+
+// EVERYTHING CPQ INITIALIZATION READS IS ON THE CREATE REQUEST.
+//
+// Measured 2026-09-01 on deal 63835136345 with New Business Template 567553820432: a quote whose
+// template was associated AFTER the create came out with no terms block and net terms 0, while the
+// hand-made quote and an API quote carrying the template ON the create both came out with the
+// template's terms and net terms 30. The association was identical in all three; the ORDER was
+// not. These tests exist so that ordering cannot quietly regress again -- it looks harmless in a
+// diff and costs a day to rediagnose.
+test('the quote template is associated on the create request, never after it', () => {
+  const source = require('node:fs').readFileSync(
+    require('node:path').join(__dirname, 'QuoteOptionsFunction.js'),
+    'utf8',
+  );
+  // 286 is carried into the create's associations array.
+  assert.match(
+    source,
+    /const quoteCreateAssociations = \[[\s\S]{0,600}?createAssociation\(templateId, 286\)/,
+    'the quote template must be on the create request',
+  );
+  assert.match(
+    source,
+    /associations: quoteCreateAssociations,/,
+    'the create must send the built association list, not an empty one',
+  );
+  assert.doesNotMatch(
+    source,
+    /associations: \[\],\n\s*\}\);/,
+    'the quote create must never be sent with an empty associations array',
+  );
+  // And nothing re-associates a template afterwards.
+  assert.doesNotMatch(
+    source,
+    /basicApi\.create\(\s*'quotes',\s*String\(quote\.id\),\s*'quote_template'/,
+    'a template associated after the create does not initialize the quote',
+  );
+});
+
+test('the quote declares its CPQ type on the create', () => {
+  const source = require('node:fs').readFileSync(
+    require('node:path').join(__dirname, 'QuoteOptionsFunction.js'),
+    'utf8',
+  );
+  // The three values HubSpot's hs_type enumeration actually has. Verified against portal 45023718
+  // on 2026-09-01: INITIAL, CHANGE, RENEWAL, described as "the type of the quote in relation to
+  // the contract that the quote is a part of".
+  assert.match(source, /new_business: 'INITIAL',/);
+  assert.match(source, /change: 'CHANGE',/);
+  assert.match(source, /renewal: 'RENEWAL',/);
+  // Sent on the create, inside the properties block -- not patched on afterwards.
+  assert.match(
+    source,
+    /hs_template_type: 'CPQ_QUOTE',[\s\S]{0,800}?hs_type: CPQ_QUOTE_TYPE_BY_KIND\[String\(quoteKind \|\| ''\)\] \|\| 'INITIAL',/,
+    'hs_type must be on the create, beside hs_template_type',
+  );
+  assert.doesNotMatch(
+    source,
+    /properties: \{ hs_type:/,
+    'hs_type must never be patched onto an already-initialized quote',
+  );
+});
+
+test('a change or renewal quote carries its contract on the create request', () => {
+  const source = require('node:fs').readFileSync(
+    require('node:path').join(__dirname, 'QuoteOptionsFunction.js'),
+    'utf8',
+  );
+  assert.match(
+    source,
+    /quoteKind === 'change' \|\| quoteKind === 'renewal'/,
+    'only change and renewal quotes attach a contract at create time',
+  );
+  assert.match(
+    source,
+    /createAssociation\(quoteContractId, contractAssociationTypeId\)/,
+    'the contract must be in the create association list',
+  );
+  // The type id is read from the portal, never hardcoded -- there is no documented id for
+  // quotes -> contracts and guessing one is how the units incident started.
+  assert.match(source, /definitionsApi\.getAll\(\s*'quotes',\s*'contracts',\s*\)/);
+  assert.doesNotMatch(
+    source,
+    /createAssociation\(quoteContractId, \d+\)/,
+    'the quote -> contract association type id must not be hardcoded',
+  );
+});
+
+test("HubSpot's cloned line items are cleared before the calculator's own are created", () => {
+  const source = require('node:fs').readFileSync(
+    require('node:path').join(__dirname, 'QuoteOptionsFunction.js'),
+    'utf8',
+  );
+  // Associating the Deal on the create makes HubSpot clone the Deal's line items onto the quote
+  // (verified: quote 42620168501 came out carrying ten). The app creates its own, so without this
+  // every product prints twice.
+  const afterCreate = source.slice(source.indexOf('const clonedLineItemIds'));
+  assert.match(source, /const clonedLineItemIds = await associatedIds\(/);
+  assert.match(afterCreate.slice(0, 1200), /lineItems\.basicApi\.archive\(String\(id\)\)/);
+  // Order matters: the clearing must happen before the calculator's lines are sent.
+  assert.ok(
+    source.indexOf('const clonedLineItemIds') <
+      source.indexOf('const sendingQuoteLines = lineItems.map'),
+    "HubSpot's clones must be cleared before the calculator's own lines are created",
+  );
 });
 
 // The card is offered only the templates chosen in Settings -- narrowed per QUOTE KIND.
