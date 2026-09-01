@@ -99,6 +99,9 @@ interface QuoteLine {
 interface QuoteAddOn {
   key: string;
   label: string;
+  // The rate card amount, before the pre-approved term and payment-frequency adjustments. Shown
+  // beside List so a figure that differs from Settings explains itself.
+  rateCardAnnualAmount: number;
   listMonthlyAmount: number;
   proposedMonthlyAmount: number;
   listAnnualAmount: number;
@@ -444,7 +447,7 @@ const onboardingOptions = [
 // The Accelerator Package is PRO ANNUAL only. On Enterprise its contents are already in the
 // contract, and the one paid Enterprise add-on is the Shared OAuth App -- same $2,400.
 const addOnOptions = [
-  { value: "shared_oauth_app", label: "Shared OAuth App" },
+  { value: "shared_oauth_app", label: "Shared Google OAuth App" },
   { value: "privacy_filter", label: "Privacy Filter Mode" },
   { value: "verified_oauth", label: "Turnkey Verified OAuth Projects" },
 ];
@@ -1493,11 +1496,30 @@ const OptionEditor = ({
       ? [`Deal-wide ${asPercent(option.input.discretionaryDiscount || 0)}`]
       : []),
   ];
+  // The two pre-approved adjustments, named only when they are non-zero. They are what make a
+  // List figure differ from the rate card amount, and neither is a concession the rep chose.
+  const termDiscountLabel = () => {
+    const term = previewResult?.termDiscount || 0;
+    return term > 0
+      ? ` · ${option.input.termMonths}-month −${asPercent(term)}`
+      : "";
+  };
+  const paymentPremiumLabel = () => {
+    const premium = previewResult?.paymentPremium || 0;
+    if (premium <= 0) return "";
+    const label =
+      paymentOptions.find(
+        ({ value }) => value === option.input.paymentFrequency,
+      )?.label || "Payment";
+    return ` · ${label} +${asPercent(premium)}`;
+  };
+
   const discountPreview = (
     listAmount: number | undefined,
     discount: number,
     proposedAmount: number | undefined,
     unit: string,
+    rateCardAmount?: number,
   ) => {
     if (listAmount == null || proposedAmount == null) {
       return (
@@ -1519,10 +1541,24 @@ const OptionEditor = ({
     if (!pricingIsCurrent) {
       return <Text variant="microcopy">Updating…</Text>;
     }
+    // WHY List differs from the rate card, when it does.
+    //
+    // "Shared Google OAuth App is set to 2,400 in the settings but it's saying List $2,544" --
+    // Holly, 2026-09-01. Both figures were right: 2,400 is the RATE CARD amount and 2,544 is it
+    // after the pre-approved adjustments (12-month term 0%, quarterly in advance +6%). The card
+    // showed only the adjusted number, so a correct figure read as a wrong one.
+    //
+    // The workbook prints Rate Card, Multi-Year Discount and Pmt Frequency Adjustment as their own
+    // columns before List rate. This says the same thing in one line, and only when the
+    // adjustments actually move the number.
+    const adjustment =
+      rateCardAmount != null && Math.abs(rateCardAmount - listAmount) > 0.005
+        ? `Rate card ${currency(rateCardAmount)}${termDiscountLabel()}${paymentPremiumLabel()} · `
+        : "";
     return (
       <Text variant="microcopy">
-        List {currency(listAmount)} {unit} · {percent(discount)} discount saves{" "}
-        {currency(listAmount - proposedAmount)} · Proposed{" "}
+        {adjustment}List {currency(listAmount)} {unit} · {percent(discount)}{" "}
+        discount saves {currency(listAmount - proposedAmount)} · Proposed{" "}
         {currency(proposedAmount)} {unit}
       </Text>
     );
@@ -2134,6 +2170,9 @@ const OptionEditor = ({
                               ({ key }) => key === value,
                             )?.annualAmount,
                             "per year",
+                            previewResult?.selectedAddOns.find(
+                              ({ key }) => key === value,
+                            )?.rateCardAnnualAmount,
                           )}
                         </Flex>
                       ))}

@@ -239,7 +239,7 @@ var require_pricingRules = __commonJS({
           // bundles are already included in the contract -- the single paid Enterprise add-on is the
           // Shared OAuth App. Same 2,400 a year, correct SKU on the customer's quote.
           key: "shared_oauth_app",
-          label: "Shared OAuth App",
+          label: "Shared Google OAuth App",
           annualAmount: 2400
         },
         {
