@@ -876,40 +876,49 @@ test('the quote status reports whether approval is required', () => {
 //
 // print_and_sign is the API's DEFAULT and is not inherited from the quote template, which is why
 // every generated quote came out "Print and sign" while the saved template said otherwise.
-test('a generated quote carries the deal owner and the clickwrap acceptance method', () => {
+test('the quote create sends only what a CPQ quote structurally needs', () => {
   const source = require('node:fs').readFileSync(
     require('node:path').join(__dirname, 'QuoteOptionsFunction.js'),
     'utf8',
   );
   // Read off the source rather than the built object: generateQuote needs a whole portal to run,
-  // and what matters here is that the two properties are on the create call at all.
+  // and what matters here is which properties are on the create call at all.
   const create = source.match(
     /quote = await client\.crm\.quotes\.basicApi\.create\(\{([\s\S]*?)\n      \},/,
   );
   assert.ok(create, 'the quote create call must be findable');
-  const body = create[1];
+  // Comments name the properties they explain the absence of, so match on code only.
+  const body = create[1]
+    .split('\n')
+    .filter((line) => !line.trim().startsWith('//'))
+    .join('\n');
 
+  // THE SELLER STAYS. The template's Seller block is configured to read *Quote owner* -- confirmed
+  // in the template editor 2026-09-01: "The quote owner's name and email will show as the seller
+  // contact on quotes." Removing hubspot_owner_id is what a blank Seller looks like, and it was
+  // removed once and reverted the same day.
   assert.match(body, /hubspot_owner_id: dealOwnerId/, 'the seller must be the deal owner');
-  assert.match(
-    body,
-    /hs_acceptance_method: QUOTE_ACCEPTANCE_METHOD/,
-    'the acceptance method must be set, or HubSpot defaults it to print_and_sign',
-  );
+  assert.match(body, /hs_quote_owner_id: dealOwnerId,/, 'the quote sender must be set');
   // Guarded, because an empty string is not "no owner" to HubSpot.
   assert.match(body, /\.\.\.\(dealOwnerId\s*\n?\s*\?\s*\{/);
-  // hs_quote_owner_id is HubSpot's "Quote sender", a DIFFERENT property from hubspot_owner_id.
-  // Quote 42562905272 proved hs_sender_* is accepted and discarded on this quote model, so the
-  // sender id is the remaining documented candidate and must actually be sent.
-  assert.match(body, /hs_quote_owner_id: dealOwnerId,/, 'the quote sender must be set');
 
-  // One of the three values HubSpot documents. clickwrap is "accept without signature".
-  const method = source.match(/const QUOTE_ACCEPTANCE_METHOD = '([a-z_]+)';/);
-  assert.ok(method, 'the acceptance method must be a named constant');
-  assert.ok(
-    ['clickwrap', 'esignature', 'print_and_sign'].includes(method[1]),
-    `${method[1]} is not one of HubSpot's documented acceptance methods`,
-  );
-  assert.equal(method[1], 'clickwrap', 'Holly: quotes accept without a signature');
+  // NOT SENT. Holly, 2026-09-01: "all 4 of those should not be sent when creating".
+  //
+  // hs_cover_letter and hs_executive_summary are what a hand-made quote carries and a generated
+  // one does not -- HubSpot's Quotes tool writes that prose, and the app is not its owner. The
+  // acceptance method and e-sign flag belong to the template and the portal, not to each quote.
+  for (const property of [
+    'hs_acceptance_method',
+    'hs_esign_enabled',
+    'hs_cover_letter',
+    'hs_executive_summary',
+  ]) {
+    assert.doesNotMatch(
+      body,
+      new RegExp(`${property}\\s*:`),
+      `${property} must not be sent on the quote create`,
+    );
+  }
 
   // The owner has to be read before the Deal update overwrites what we read alongside it.
   assert.match(source, /'hubspot_owner_id',\n\s*\]\);/, 'the deal owner must be read');
