@@ -255,6 +255,11 @@ const SAFE_ERRORS = Object.freeze({
     'card, or change which templates are offered in Settings > Quote Templates.',
   QUOTE_CONTRACT_REQUIRED:
     'Choose which contract this change or renewal is for before locking in.',
+  QUOTE_KIND_NOT_API_CREATABLE:
+    'Everything is saved on the Deal -- line items, pricing and approval tier. HubSpot does not ' +
+    'allow a change or renewal quote to be created by an app, so make this one from the Deal: ' +
+    'click Add quote and choose Change or Renewal. It will pick up the line items and pricing ' +
+    'from this Deal.',
   OPTION_BLOCKED: 'This option has blocking policy issues and cannot be selected.',
   PAYMENT_METHOD_REQUIRES_BANK_TRANSFER:
     'Credit card is not permitted on an invoice above the limit. Set Payment Method to ' +
@@ -2845,58 +2850,28 @@ const markAsPrimaryQuote = async (client, quoteId, dealId) => {
   }
 };
 
-// The quote -> contract association type, discovered rather than guessed.
-//
-// There is no documented association type id for quotes -> contracts, and the previous code
-// used createDefault AFTER the quote existed. That is too late: HubSpot reads the quote's
-// associations while it initializes the CPQ quote, so a contract attached a second later is
-// invisible to the renderer and to the contract lifecycle. To put it on the create request we
-// need the numeric id, so it is read from the portal's own schema -- the same pattern the
-// primary-quote label uses, and for the same reason: guessing an association type id is how the
-// units incident started.
-//
-// null means the portal exposes no quote -> contract definition, in which case the create simply
-// carries no contract and the post-create createDefault below still runs as the fallback.
-let quoteToContractTypeIdCache;
-const quoteToContractAssociationTypeId = async (client) => {
-  if (quoteToContractTypeIdCache !== undefined) return quoteToContractTypeIdCache;
-  try {
-    const schema = await client.crm.associations.v4.schema.definitionsApi.getAll(
-      'quotes',
-      'contracts',
-    );
-    const defined = (schema.results || []).find(
-      (definition) =>
-        String(definition.category || '') === 'HUBSPOT_DEFINED' && definition.typeId != null,
-    );
-    quoteToContractTypeIdCache = defined ? Number(defined.typeId) : null;
-    console.info(
-      `Nylas pricing: quote -> contract association type resolved to ` +
-        `${quoteToContractTypeIdCache === null ? 'NONE' : quoteToContractTypeIdCache}.`,
-    );
-  } catch (error) {
-    quoteToContractTypeIdCache = null;
-    console.warn(
-      'Nylas pricing: could not read the quotes -> contracts association schema. The contract ' +
-        `will be attached after the quote is created instead. ${String(error?.body?.message || error?.message || error)}`,
-    );
-  }
-  return quoteToContractTypeIdCache;
-};
-
 // hs_type is HubSpot's own CPQ quote type -- "The type of the quote. This is in relation to the
-// contract that the quote is a part of." -- with exactly three values. It is what makes a record a
-// change or renewal quote; the template only decides how it looks.
+// contract that the quote is a part of." The property has three values, INITIAL, CHANGE and
+// RENEWAL, and the portal uses all three: the change quote made through the contract UI
+// (42608004129) is CHANGE.
 //
-// Every quote this app has ever created came out INITIAL, including the ones carrying the Renewal
-// and Change templates, because it was never sent. Verified 2026-09-01 against the portal: the one
-// genuine change quote there (42608004129, made through the contract UI) is CHANGE, and app-made
-// 42630561323 on a renewal template is INITIAL.
-const CPQ_QUOTE_TYPE_BY_KIND = {
-  new_business: 'INITIAL',
-  change: 'CHANGE',
-  renewal: 'RENEWAL',
-};
+// THE PUBLIC API WILL ONLY EVER CREATE 'INITIAL'. HubSpot, verbatim, 2026-09-01:
+//
+//   HTTP 400 VALIDATION_ERROR -- "When creating a quote via the public API, 'hs_type' must be set
+//   to 'INITIAL' and cannot be set to any other value."
+//
+// That is the answer to the question this project has been circling for two days, and it is
+// HubSpot's own words rather than an inference from a doc page. A change or renewal quote CANNOT
+// be created through this API at all -- not by setting a property, not by attaching a contract,
+// not by choosing a renewal template. The refusal is at the create.
+//
+// So this constant is deliberately a single value and not a map. Do not reintroduce a
+// kind -> type mapping: every value other than INITIAL fails the create outright and takes the
+// whole Lock in down with it, which is exactly what happened when it was tried.
+//
+// It is sent explicitly rather than omitted so the intent is legible: this app creates initial
+// quotes. What a change or renewal Deal should do instead is a product decision, not a default.
+const CPQ_QUOTE_TYPE_INITIAL = 'INITIAL';
 
 const generateQuote = async (client, dealId, state, parameters, portalId, settings) => {
   const option = selectedOptionForDraft(state);
@@ -3028,6 +3003,38 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
         'make it a change or renewal document.',
     );
   }
+  // CHANGE AND RENEWAL STOP HERE. HubSpot will not create either one through this API.
+  //
+  //   HTTP 400 VALIDATION_ERROR -- "When creating a quote via the public API, 'hs_type' must be
+  //   set to 'INITIAL' and cannot be set to any other value."
+  //
+  // Before this guard the app carried on and produced an INITIAL quote wearing the Change or
+  // Renewal template: a document that looks like a renewal, that will not amend a contract,
+  // prorate, write contract history or create a successor contract when somebody accepts it.
+  // Holly, 2026-09-01, choosing to stop instead: the rep clicks Add quote on the Deal and picks
+  // Change or Renewal, which is HubSpot's own supported path and which reads this Deal's line
+  // items.
+  //
+  // POSITION MATTERS. This throws before describeQuoteTemplate and before anything is created, so
+  // no half-made quote is left behind -- the same rule as every other precondition here. What has
+  // ALREADY happened by this point is deliberate and is the whole point of the option Holly
+  // chose: syncDealLineItems ran before generateQuote was called, and the calculator's pricing and
+  // approval tier were written on select. The Deal is fully prepared; only the quote record is
+  // left to HubSpot.
+  //
+  // Do not "fix" this by falling back to INITIAL. That is the behaviour this replaced.
+  if (quoteKind === 'change' || quoteKind === 'renewal') {
+    console.info(
+      `Nylas pricing: deal ${dealId} is a ${quoteKind} and its Deal-side work is complete. ` +
+        'Handing the quote itself to HubSpot -- the public API cannot create a change or renewal ' +
+        "quote (hs_type must be INITIAL). Template " +
+        `${templateId} was selected and is the one to choose on the Deal.`,
+    );
+    const handoff = new Error('QUOTE_KIND_NOT_API_CREATABLE');
+    handoff.diagnostics = { quoteKind, quoteTemplateId: templateId, dealId: String(dealId) };
+    throw handoff;
+  }
+
   const { type: templateType, name: templateName } = await describeQuoteTemplate(
     client,
     templateId,
@@ -3149,21 +3156,21 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
   //
   // So the template, the deal, the type and (for change and renewal) the contract all go on the
   // create. Nothing that CPQ reads during initialization may be attached a moment later.
+  //
+  // The CONTRACT is deliberately NOT here, and the attempt to put it here was removed the same
+  // evening it was written. The reasoning for it was that CPQ reads a quote's associations while
+  // it initializes, so a contract arriving later is invisible to the renewal and change
+  // lifecycle. That reasoning is sound and it does not matter, because HubSpot refuses to create
+  // a non-INITIAL quote through this API at all -- see CPQ_QUOTE_TYPE_INITIAL. There is no
+  // lifecycle to feed, so putting an unproven association on the critical path of every Lock in
+  // buys nothing and can only fail. It stays where it was: after the create, best effort.
   const quoteContractId = String(parameters.contractId || '');
-  const wantsContractOnQuote =
-    quoteContractId !== '' && (quoteKind === 'change' || quoteKind === 'renewal');
-  const contractAssociationTypeId = wantsContractOnQuote
-    ? await quoteToContractAssociationTypeId(client)
-    : null;
   const quoteCreateAssociations = [
     // 286, quote template. The one this whole block exists for.
     createAssociation(templateId, 286),
-    // 64, deal. Also moved onto the create: the working paths above both had it there, and the
-    // renewal and change flows need HubSpot to see the deal and the contract together.
+    // 64, deal. Also moved onto the create: both paths that produce a correctly initialized quote
+    // -- the Quotes tool and an API create -- have it there.
     createAssociation(dealId, 64),
-    ...(contractAssociationTypeId !== null
-      ? [createAssociation(quoteContractId, contractAssociationTypeId)]
-      : []),
   ];
 
   let quote;
@@ -3217,13 +3224,10 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
         // it the quote defaults to the legacy model and HubSpot rejects the CPQ template it is
         // associated with.
         hs_template_type: 'CPQ_QUOTE',
-        // The CPQ quote type, sent on the create because HubSpot reads it while it initializes
-        // the quote. Patching it afterwards sets a property on a record that has already been
-        // initialized as something else -- the same failure mode as the template association.
-        //
-        // A quote whose template no kind claims falls back to INITIAL rather than being refused:
-        // an unconfigured portal claims nothing, and a standard quote is the safe reading.
-        hs_type: CPQ_QUOTE_TYPE_BY_KIND[String(quoteKind || '')] || 'INITIAL',
+        // Always INITIAL. The public API refuses every other value at the create -- see
+        // CPQ_QUOTE_TYPE_INITIAL above for HubSpot's exact refusal. The quote kind still decides
+        // the TEMPLATE, which is what the rep sees; it cannot decide the CPQ type.
+        hs_type: CPQ_QUOTE_TYPE_INITIAL,
         // The seller is the DEAL OWNER, explicitly, not whoever clicked Lock in and not whatever
         // the API defaults to. This used to be left unset on the reasoning that a quote inherits
         // the owner from its associated deal -- a sentence from HubSpot's Quotes guide that was
@@ -3438,17 +3442,15 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
     //
     // Never fatal. The quote already exists by this point, so throwing here would leave an orphan
     // quote behind a failed lock. The outcome is reported instead, and the card prints it.
-    // The contract now goes on the CREATE request for change and renewal quotes -- see the
-    // comment above buildQuoteLineItems. This block is the fallback for the two cases the create
-    // could not cover: a portal that exposes no quote -> contract association definition, and a
-    // contract chosen on a quote kind that is neither change nor renewal.
+    // The contract, attached after the create, best effort.
     //
-    // Attaching it here is better than not attaching it, but it is NOT equivalent: HubSpot has
-    // already initialized the quote by this point, so a contract that only arrives here will show
-    // on the record without driving the change or renewal document.
-    let contractAssociated = contractAssociationTypeId !== null ? true : null;
+    // This records WHICH contract the rep chose, and that is all it does. It does not make the
+    // quote a change or renewal quote -- HubSpot will not create one of those through this API
+    // under any circumstances. Do not read a successful association here as the lifecycle
+    // working.
+    let contractAssociated = null;
     const contractId = quoteContractId;
-    if (contractId && contractAssociationTypeId === null) {
+    if (contractId) {
       try {
         await client.crm.associations.v4.basicApi.createDefault(
           'quotes',
@@ -3466,11 +3468,6 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
           safeProviderDiagnostics(error, 'associate_quote_contract'),
         );
       }
-    } else if (contractId && contractAssociationTypeId !== null) {
-      console.info(
-        `Nylas pricing: contract ${contractId} was attached to quote ${quote.id} on the create ` +
-          `request (association type ${contractAssociationTypeId}).`,
-      );
     }
 
     // A quote created through the API is already DRAFT, so the update that set it was redundant

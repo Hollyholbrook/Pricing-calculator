@@ -1482,52 +1482,60 @@ test('the quote template is associated on the create request, never after it', (
   );
 });
 
-test('the quote declares its CPQ type on the create', () => {
+test('a change or renewal Deal hands the quote to HubSpot instead of creating one', () => {
   const source = require('node:fs').readFileSync(
     require('node:path').join(__dirname, 'QuoteOptionsFunction.js'),
     'utf8',
   );
-  // The three values HubSpot's hs_type enumeration actually has. Verified against portal 45023718
-  // on 2026-09-01: INITIAL, CHANGE, RENEWAL, described as "the type of the quote in relation to
-  // the contract that the quote is a part of".
-  assert.match(source, /new_business: 'INITIAL',/);
-  assert.match(source, /change: 'CHANGE',/);
-  assert.match(source, /renewal: 'RENEWAL',/);
-  // Sent on the create, inside the properties block -- not patched on afterwards.
+  // The API cannot create either kind -- hs_type must be INITIAL -- so producing an INITIAL quote
+  // wearing a Change or Renewal template makes a document that will not amend a contract when
+  // somebody accepts it. Holly, 2026-09-01: stop instead, and let the rep use Add quote.
   assert.match(
     source,
-    /hs_template_type: 'CPQ_QUOTE',[\s\S]{0,800}?hs_type: CPQ_QUOTE_TYPE_BY_KIND\[String\(quoteKind \|\| ''\)\] \|\| 'INITIAL',/,
-    'hs_type must be on the create, beside hs_template_type',
+    /if \(quoteKind === 'change' \|\| quoteKind === 'renewal'\) \{[\s\S]{0,900}?QUOTE_KIND_NOT_API_CREATABLE/,
+    'change and renewal must throw rather than create a quote',
   );
-  assert.doesNotMatch(
+  assert.match(source, /QUOTE_KIND_NOT_API_CREATABLE:\s*\n\s*'Everything is saved on the Deal/);
+  // Before anything is created, like every other precondition -- no half-made quote left behind.
+  assert.ok(
+    source.indexOf("QUOTE_KIND_NOT_API_CREATABLE');") <
+      source.indexOf('quote = await client.crm.quotes.basicApi.create'),
+    'the handoff must happen before the quote create',
+  );
+  // And the Deal-side work must NOT be skipped: the sync runs before generateQuote is called.
+  assert.match(
     source,
-    /properties: \{ hs_type:/,
-    'hs_type must never be patched onto an already-initialized quote',
+    /const synced = await syncDealLineItems\([^)]*\);\s*\n\s*const quote = await generateQuote\(/,
+    "the Deal's line items are synced before the quote step, so a handoff still leaves them",
   );
 });
 
-test('a change or renewal quote carries its contract on the create request', () => {
+test('the quote is created as INITIAL, because the API refuses every other type', () => {
   const source = require('node:fs').readFileSync(
     require('node:path').join(__dirname, 'QuoteOptionsFunction.js'),
     'utf8',
   );
+  // HubSpot, verbatim, on a create that sent RENEWAL:
+  //   "When creating a quote via the public API, 'hs_type' must be set to 'INITIAL' and cannot be
+  //    set to any other value."
+  // Sending CHANGE or RENEWAL does not produce a wrong quote -- it produces NO quote, HTTP 400,
+  // and a failed Lock in. This test exists because the kind -> type mapping is the obvious thing
+  // to write and it breaks every change and renewal Lock in.
   assert.match(
     source,
-    /quoteKind === 'change' \|\| quoteKind === 'renewal'/,
-    'only change and renewal quotes attach a contract at create time',
+    /hs_template_type: 'CPQ_QUOTE',[\s\S]{0,600}?hs_type: CPQ_QUOTE_TYPE_INITIAL,/,
+    'hs_type must be sent on the create, and must be the INITIAL constant',
   );
-  assert.match(
-    source,
-    /createAssociation\(quoteContractId, contractAssociationTypeId\)/,
-    'the contract must be in the create association list',
-  );
-  // The type id is read from the portal, never hardcoded -- there is no documented id for
-  // quotes -> contracts and guessing one is how the units incident started.
-  assert.match(source, /definitionsApi\.getAll\(\s*'quotes',\s*'contracts',\s*\)/);
+  assert.match(source, /const CPQ_QUOTE_TYPE_INITIAL = 'INITIAL';/);
   assert.doesNotMatch(
     source,
-    /createAssociation\(quoteContractId, \d+\)/,
-    'the quote -> contract association type id must not be hardcoded',
+    /hs_type: ['"`](?:CHANGE|RENEWAL)['"`]/,
+    'the API rejects a create carrying any hs_type but INITIAL',
+  );
+  assert.doesNotMatch(
+    source,
+    /CPQ_QUOTE_TYPE_BY_KIND/,
+    'a kind -> hs_type map cannot exist: every value but INITIAL fails the create',
   );
 });
 

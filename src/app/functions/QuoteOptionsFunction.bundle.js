@@ -2469,6 +2469,7 @@ var SAFE_ERRORS = Object.freeze({
   QUOTE_CONTACT_REQUIRED: "A contact is required on the Quote. Choose one on the pricing card, or associate a contact with this Deal.",
   QUOTE_TEMPLATE_NOT_CPQ: "That quote template is a legacy template and cannot be used. Choose a CPQ template on the card, or change which templates are offered in Settings > Quote Templates.",
   QUOTE_CONTRACT_REQUIRED: "Choose which contract this change or renewal is for before locking in.",
+  QUOTE_KIND_NOT_API_CREATABLE: "Everything is saved on the Deal -- line items, pricing and approval tier. HubSpot does not allow a change or renewal quote to be created by an app, so make this one from the Deal: click Add quote and choose Change or Renewal. It will pick up the line items and pricing from this Deal.",
   OPTION_BLOCKED: "This option has blocking policy issues and cannot be selected.",
   PAYMENT_METHOD_REQUIRES_BANK_TRANSFER: "Credit card is not permitted on an invoice above the limit. Set Payment Method to Bank transfer / ACH before locking in.",
   OPTION_NOT_FOUND: "The selected quote option could not be found.",
@@ -4170,34 +4171,7 @@ var markAsPrimaryQuote = async (client, quoteId, dealId) => {
     };
   }
 };
-var quoteToContractTypeIdCache;
-var quoteToContractAssociationTypeId = async (client) => {
-  if (quoteToContractTypeIdCache !== void 0) return quoteToContractTypeIdCache;
-  try {
-    const schema = await client.crm.associations.v4.schema.definitionsApi.getAll(
-      "quotes",
-      "contracts"
-    );
-    const defined = (schema.results || []).find(
-      (definition) => String(definition.category || "") === "HUBSPOT_DEFINED" && definition.typeId != null
-    );
-    quoteToContractTypeIdCache = defined ? Number(defined.typeId) : null;
-    console.info(
-      `Nylas pricing: quote -> contract association type resolved to ${quoteToContractTypeIdCache === null ? "NONE" : quoteToContractTypeIdCache}.`
-    );
-  } catch (error) {
-    quoteToContractTypeIdCache = null;
-    console.warn(
-      `Nylas pricing: could not read the quotes -> contracts association schema. The contract will be attached after the quote is created instead. ${String(error?.body?.message || error?.message || error)}`
-    );
-  }
-  return quoteToContractTypeIdCache;
-};
-var CPQ_QUOTE_TYPE_BY_KIND = {
-  new_business: "INITIAL",
-  change: "CHANGE",
-  renewal: "RENEWAL"
-};
+var CPQ_QUOTE_TYPE_INITIAL = "INITIAL";
 var generateQuote = async (client, dealId, state, parameters, portalId, settings) => {
   const option = selectedOptionForDraft(state);
   assertCurrentSettings(option, settings);
@@ -4233,6 +4207,14 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
     console.warn(
       `Nylas pricing: quote template ${templateId} is not listed under any quote kind in Settings, so this quote carries no kind. Assign it under Settings > Quote Templates to make it a change or renewal document.`
     );
+  }
+  if (quoteKind === "change" || quoteKind === "renewal") {
+    console.info(
+      `Nylas pricing: deal ${dealId} is a ${quoteKind} and its Deal-side work is complete. Handing the quote itself to HubSpot -- the public API cannot create a change or renewal quote (hs_type must be INITIAL). Template ${templateId} was selected and is the one to choose on the Deal.`
+    );
+    const handoff = new Error("QUOTE_KIND_NOT_API_CREATABLE");
+    handoff.diagnostics = { quoteKind, quoteTemplateId: templateId, dealId: String(dealId) };
+    throw handoff;
   }
   const { type: templateType, name: templateName } = await describeQuoteTemplate(
     client,
@@ -4280,15 +4262,12 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
   );
   const lineItems = buildQuoteLineItems(option, content);
   const quoteContractId = String(parameters.contractId || "");
-  const wantsContractOnQuote = quoteContractId !== "" && (quoteKind === "change" || quoteKind === "renewal");
-  const contractAssociationTypeId = wantsContractOnQuote ? await quoteToContractAssociationTypeId(client) : null;
   const quoteCreateAssociations = [
     // 286, quote template. The one this whole block exists for.
     createAssociation(templateId, 286),
-    // 64, deal. Also moved onto the create: the working paths above both had it there, and the
-    // renewal and change flows need HubSpot to see the deal and the contract together.
-    createAssociation(dealId, 64),
-    ...contractAssociationTypeId !== null ? [createAssociation(quoteContractId, contractAssociationTypeId)] : []
+    // 64, deal. Also moved onto the create: both paths that produce a correctly initialized quote
+    // -- the Quotes tool and an API create -- have it there.
+    createAssociation(dealId, 64)
   ];
   let quote;
   const createdLineItemIds = [];
@@ -4339,13 +4318,10 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
         // it the quote defaults to the legacy model and HubSpot rejects the CPQ template it is
         // associated with.
         hs_template_type: "CPQ_QUOTE",
-        // The CPQ quote type, sent on the create because HubSpot reads it while it initializes
-        // the quote. Patching it afterwards sets a property on a record that has already been
-        // initialized as something else -- the same failure mode as the template association.
-        //
-        // A quote whose template no kind claims falls back to INITIAL rather than being refused:
-        // an unconfigured portal claims nothing, and a standard quote is the safe reading.
-        hs_type: CPQ_QUOTE_TYPE_BY_KIND[String(quoteKind || "")] || "INITIAL",
+        // Always INITIAL. The public API refuses every other value at the create -- see
+        // CPQ_QUOTE_TYPE_INITIAL above for HubSpot's exact refusal. The quote kind still decides
+        // the TEMPLATE, which is what the rep sees; it cannot decide the CPQ type.
+        hs_type: CPQ_QUOTE_TYPE_INITIAL,
         // The seller is the DEAL OWNER, explicitly, not whoever clicked Lock in and not whatever
         // the API defaults to. This used to be left unset on the reasoning that a quote inherits
         // the owner from its associated deal -- a sentence from HubSpot's Quotes guide that was
@@ -4486,9 +4462,9 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
         [{ associationCategory: "HUBSPOT_DEFINED", associationTypeId: 71 }]
       );
     }
-    let contractAssociated = contractAssociationTypeId !== null ? true : null;
+    let contractAssociated = null;
     const contractId = quoteContractId;
-    if (contractId && contractAssociationTypeId === null) {
+    if (contractId) {
       try {
         await client.crm.associations.v4.basicApi.createDefault(
           "quotes",
@@ -4504,10 +4480,6 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
           safeProviderDiagnostics(error, "associate_quote_contract")
         );
       }
-    } else if (contractId && contractAssociationTypeId !== null) {
-      console.info(
-        `Nylas pricing: contract ${contractId} was attached to quote ${quote.id} on the create request (association type ${contractAssociationTypeId}).`
-      );
     }
     const finalized = await client.crm.quotes.basicApi.getById(String(quote.id), [
       "hs_quote_link",
