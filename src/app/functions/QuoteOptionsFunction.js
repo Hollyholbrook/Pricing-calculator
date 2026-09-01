@@ -239,7 +239,9 @@ const MAX_PAYLOAD_LENGTH = 60_000;
 const SAFE_ERRORS = Object.freeze({
   CONFIGURATION_REQUIRED: 'The Nylas Pricing properties have not been provisioned yet.',
   CONFLICT: 'Another user changed these quote options. Reload the card and try again.',
-  INVALID_DEAL: 'Nylas Pricing is available only on New Business Deals.',
+  INVALID_DEAL:
+    'Nylas Pricing is not available on this Deal. Its pipeline is not one of the pipelines ' +
+    'enabled in Settings > Deal Eligibility.',
   INVALID_OPTION: 'The quote option contains invalid or incomplete information.',
   INVALID_QUOTE_CONTENT: 'The quote display choices are invalid or incomplete.',
   LINE_ITEM_SYNC_FAILED: 'HubSpot could not replace the Deal line items. Review the Deal before trying again.',
@@ -494,7 +496,7 @@ const writeDocument = async (client, dealId, document, additionalProperties = {}
 };
 
 const calculateAndSaveOption = async (client, dealId, state, parameters, settings) => {
-  console.log('Nylas pricing calculate: validation started.');
+  console.info('Nylas pricing calculate: validation started.');
   assertRevision(state.document, parameters.expectedRevision);
   const incoming = parameters.option;
   if (!incoming || typeof incoming !== 'object' || Array.isArray(incoming)) {
@@ -507,7 +509,7 @@ const calculateAndSaveOption = async (client, dealId, state, parameters, setting
     settings.version,
     dealCategory(settings, state.dealType, state.pipelineId),
   );
-  console.log('Nylas pricing calculate: calculation completed.');
+  console.info('Nylas pricing calculate: calculation completed.');
   const existingIndex = incoming.id
     ? state.document.options.findIndex(({ id }) => id === incoming.id)
     : -1;
@@ -536,9 +538,9 @@ const calculateAndSaveOption = async (client, dealId, state, parameters, setting
     revision: state.document.revision + 1,
     options,
   };
-  console.log('Nylas pricing calculate: save started.');
+  console.info('Nylas pricing calculate: save started.');
   await writeDocument(client, dealId, document);
-  console.log('Nylas pricing calculate: save completed.');
+  console.info('Nylas pricing calculate: save completed.');
   return { document, option: savedOption };
 };
 
@@ -1467,6 +1469,9 @@ const joinCreatedLineItems = (sent, results) => {
 // nothing and leaves them orphaned.
 const createLineItemsBatch = async (client, items, createdIds = [], attempt = 0) => {
   if (items.length === 0) return [];
+  // What THIS invocation created, so a partial batch can be undone before anything is retried.
+  // Separate from createdIds, which is the caller's rollback list and spans every attempt.
+  const thisAttemptIds = [];
   try {
     const results = [];
     for (const group of chunked(items, LINE_ITEM_BATCH_LIMIT)) {
@@ -1474,7 +1479,10 @@ const createLineItemsBatch = async (client, items, createdIds = [], attempt = 0)
         inputs: group.map(({ properties, associations }) => ({ properties, associations })),
       });
       const created = response?.results || [];
-      for (const item of created) createdIds.push(String(item.id));
+      for (const item of created) {
+        createdIds.push(String(item.id));
+        thisAttemptIds.push(String(item.id));
+      }
       results.push(...created);
       if (response?.errors?.length) {
         const failure = new Error('LINE_ITEM_BATCH_PARTIAL');
@@ -1485,6 +1493,37 @@ const createLineItemsBatch = async (client, items, createdIds = [], attempt = 0)
     }
     return results;
   } catch (error) {
+    // ROLL BACK WHAT THIS ATTEMPT CREATED, BEFORE ANY RETRY.
+    //
+    // Every path below re-sends the WHOLE `items` array -- the transient retry, the dropped-property
+    // recursion, and the per-item fallback all start from scratch. A batch that failed PARTWAY
+    // (chunk one created, chunk two rejected; or a 207 with response.errors) has therefore already
+    // put some of those line items in HubSpot, and re-sending the whole array creates them a second
+    // time. That is duplicated products on a customer-facing quote, and both copies land in
+    // createdIds, so the caller's rollback would archive one set and leave the other.
+    //
+    // Undoing this attempt first restores the invariant every caller assumes: createLineItemsBatch
+    // either created everything it was asked for, or nothing. Archiving is best effort -- if it
+    // fails, the retry is still the better outcome than abandoning the quote, and the warning says
+    // what to look for.
+    if (thisAttemptIds.length > 0) {
+      console.warn(
+        `Nylas pricing: a line item batch failed after creating ${thisAttemptIds.length} of ` +
+          `${items.length}. Removing those before retrying, so the retry cannot duplicate them.`,
+      );
+      await archiveLineItemsBatch(client, thisAttemptIds).catch((archiveError) => {
+        console.error(
+          'Nylas pricing: could not remove the line items a partial batch created. The retry ' +
+            `below may duplicate them -- ids ${thisAttemptIds.join(', ')}. ` +
+            `${String(archiveError?.body?.message || archiveError?.message || archiveError)}`,
+          safeProviderDiagnostics(archiveError, 'archive_partial_line_item_batch'),
+        );
+      });
+      for (const id of thisAttemptIds) {
+        const at = createdIds.indexOf(id);
+        if (at >= 0) createdIds.splice(at, 1);
+      }
+    }
     if (isTransientRejection(error) && attempt < 3) {
       await delay(400 * 2 ** attempt);
       return createLineItemsBatch(client, items, createdIds, attempt + 1);
@@ -1693,11 +1732,14 @@ const syncDealLineItems = async (client, dealId, state, settings) => {
 // exposes no property for an internal CRM record link, and the hand-built
 // /contacts/{portal}/record/0-14/{id} pattern 404s, so it is not built any more. A draft quote
 // with no link yet gets no link, rather than one that leads nowhere.
-// HubSpot accepts only a customizable quote template on this flow. A CPQ template is rejected at
-// the very end, when the quote is flipped to DRAFT and validated as a whole -- after the quote and
-// all of its line items have been created -- so the whole thing is built and then rolled back with
-// a message that says nothing useful. Checking the type first turns that into an immediate,
-// actionable error and creates nothing.
+// This portal's quotes require a CPQ template (hs_type 'cpq_template'); a legacy template is what
+// gets refused. HubSpot only refuses it at the very end, when the quote is validated as a whole --
+// after the quote and all of its line items have been created -- so the whole thing is built and
+// then rolled back with a message that says nothing useful. Checking the type first turns that into
+// an immediate, actionable error and creates nothing.
+//
+// This comment said the opposite until 2026-09-01, naming the CPQ template as the rejected one. It
+// described the behaviour of a portal this app no longer targets.
 //
 // The check itself must not become a new failure mode: if the template cannot be read (scope,
 // permissions, an id that is not a template), it falls through to the original behaviour rather
@@ -1744,8 +1786,12 @@ const readQuoteTemplatePage = async (client, after) => {
 // is not returned, or a different object type name -- then every template fails the comparison
 // and the picker silently shows nothing, which is exactly what happened. A dropdown that hides
 // the templates the user can see in HubSpot is worse than one that lists a template the API will
-// later reject, and assertUsableQuoteTemplate already rejects a CPQ template up front with a
-// clear message. Where hs_type IS present and wrong, the option is labelled rather than removed.
+// later reject. Where hs_type IS present and wrong, the option is labelled rather than removed, and
+// generateQuote refuses a non-CPQ template up front with a clear message (QUOTE_TEMPLATE_NOT_CPQ).
+//
+// This paragraph used to name an `assertUsableQuoteTemplate` function, which does not exist in this
+// repo and may never have; the real guard is the templateType check in generateQuote.
+
 // The templates the card may offer, narrowed to the ones chosen in Settings.
 //
 // An EMPTY enabledQuoteTemplateIds means "all of them" -- the behaviour before this setting
@@ -1810,7 +1856,7 @@ const dealCompanyName = async (client, dealId) => {
 // straight after the confirmation alert, so a message printed there is gone before it can be read.
 // Three rounds of "the seller contact isn't coming through" produced no usable evidence for
 // exactly that reason. This survives the reload, because it re-reads the quote.
-// TEMP DIAGNOSTIC -- REMOVE WHEN THE TEMPLATE CHOICE IS SETTLED.
+// WHICH TEMPLATE THE LIVE QUOTE WAS ACTUALLY BUILT FROM.
 //
 // Which template the LIVE quote was actually built from, read back from HubSpot's own
 // association rather than from what the card believes it sent. The whole point is that it is
@@ -1820,8 +1866,12 @@ const dealCompanyName = async (client, dealId) => {
 // The name is resolved from the template list the picker already loaded, so this costs ONE
 // association read per card load and no extra name lookup.
 //
-// To remove: delete this function, the `latestQuoteTemplate:` line in the list response, and the
-// block on the card marked TEMP.
+// This began as a temporary diagnostic and is now load-bearing: the card preselects the template
+// the LAST quote used, and this is where that comes from. Lock in calls reloadPage(), so the card
+// remounts with an empty selection and the preselect runs again -- without this it fell back to the
+// configured default every time. Holly, 2026-09-01: "Every few minutes it stops using the right
+// template." Every few minutes was every Lock in. The rep-facing readout it also fed was removed
+// once the template choice settled; the data stayed.
 const latestQuoteTemplate = async (client, quoteId, templates) => {
   if (!quoteId) return null;
   try {
@@ -1940,7 +1990,7 @@ const usableQuoteTemplates = async (client) => {
     return [];
   }
   if (excluded.length > 0) {
-    console.log(
+    console.info(
       `Nylas pricing: ${excluded.length} quote template(s) not offered -- not an active ` +
         `${REQUIRED_QUOTE_TEMPLATE_TYPE}: ${excluded.join(', ')}.`,
     );
@@ -1961,7 +2011,7 @@ const describeQuoteTemplate = async (client, templateId) => {
     ]);
     const type = template?.properties?.hs_type || 'unknown';
     const name = template?.properties?.hs_name || '';
-    console.log(
+    console.info(
       `Nylas pricing: quote template ${templateId} ("${name}") has hs_type "${type}" ` +
         `(HubSpot has previously required "${REQUIRED_QUOTE_TEMPLATE_TYPE}").`,
     );
@@ -2035,6 +2085,32 @@ const readOwnerDirectly = async (ownerId) => {
       `Nylas pricing: owners REST read for ${ownerId} failed. ${String(error?.message || error)}`,
     );
     return null;
+  }
+};
+
+// THE SELLER IS THE DEAL OWNER. Always, with no fallback.
+//
+// A fallback to the rep who clicked Lock in was written on 2026-08-31 and removed the same day.
+// Holly: "It needs to use the actual deal owner, not just me. It should be whoever is the deal
+// owner." She is right, and the reasoning behind the fallback was wrong: a quote is a
+// customer-facing document, and printing the WRONG person as the seller is worse than printing
+// nobody. A blank Seller block is visibly broken and gets fixed; a plausible wrong name does not.
+//
+// Blank rather than throwing, on both the read failure and the missing-owner case: an ownerless
+// Deal produces an ownerless quote, loudly, and the card says so. Never fatal -- losing the whole
+// lock over a Seller block would be worse than the blank block it is trying to prevent.
+const dealOwnerIdFor = async (client, dealId) => {
+  try {
+    const ownerRead = await client.crm.deals.basicApi.getById(String(dealId), [
+      'hubspot_owner_id',
+    ]);
+    return ownerRead?.properties?.hubspot_owner_id || '';
+  } catch (error) {
+    console.warn(
+      `Nylas pricing: could not read hubspot_owner_id on deal ${dealId}. ` +
+        `${String(error?.body?.message || error?.message || error)}`,
+    );
+    return '';
   }
 };
 
@@ -2308,10 +2384,10 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
   // stale template. Measured on 2026-09-01: with the guard, the right template three times in a
   // row; without it, a Change Quote Template on a new-business Deal.
   //
-  // That failure mode is gone with the categories: there is one list now, so a template from
-  // yesterday's card is either on it or is not one this portal offers. The CHECK stays for the
-  // second half of the reason -- a stale or hand-built request must not put an arbitrary template
-  // on a customer-facing quote.
+  // The list is now near enough flat -- one shared list, plus the extras a renewal pipeline adds --
+  // so a template from yesterday's card is either on the Deal's list or is not one it may use. The
+  // CHECK stays for the second half of the reason, which has not changed: a stale or hand-built
+  // request must not put an arbitrary template on a customer-facing quote.
   //
   // SUBSTITUTED, NOT REFUSED. Throwing would discard a configuration the rep has already
   // committed, after the guards that exist precisely to fail BEFORE anything is written. A wrong
@@ -2396,18 +2472,7 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
     );
   }
 
-  let dealOwnerId = '';
-  try {
-    const ownerRead = await client.crm.deals.basicApi.getById(String(dealId), [
-      'hubspot_owner_id',
-    ]);
-    dealOwnerId = ownerRead?.properties?.hubspot_owner_id || '';
-  } catch (error) {
-    console.warn(
-      `Nylas pricing: could not read hubspot_owner_id on deal ${dealId}. ` +
-        `${String(error?.body?.message || error?.message || error)}`,
-    );
-  }
+  const dealOwnerId = await dealOwnerIdFor(client, dealId);
   // Said out loud, because three rounds went by with a blank Seller block and no way to tell WHICH
   // step produced nothing -- an ownerless Deal, an unreadable owner, or the right properties on the
   // wrong quote model. `hs project logs` now answers that in one line.
@@ -2526,8 +2591,8 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
         // associated with.
         hs_template_type: 'CPQ_QUOTE',
         // Always INITIAL. The public API refuses every other value at the create -- see
-        // CPQ_QUOTE_TYPE_INITIAL above for HubSpot's exact refusal. The quote kind still decides
-        // the TEMPLATE, which is what the rep sees; it cannot decide the CPQ type.
+        // CPQ_QUOTE_TYPE_INITIAL above for HubSpot's exact refusal. The TEMPLATE is what the rep
+        // chooses and what the customer reads; it has no bearing on the CPQ type sent here.
         hs_type: CPQ_QUOTE_TYPE_INITIAL,
         // The seller is the DEAL OWNER, explicitly, not whoever clicked Lock in and not whatever
         // the API defaults to. This used to be left unset on the reasoning that a quote inherits
@@ -2732,17 +2797,6 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
       );
     }
 
-    // The contract this change or renewal is for. Attached to the quote so HubSpot's change and
-    // renewal templates accept and render -- association only, per REQUIREMENTS section 2. It is
-    // NOT the basis for pricing and no number above depends on it.
-    //
-    // createDefault rather than a typed id: there is no documented quote-to-contract association
-    // type id, and guessing one is how the units incident started. Whether this association can be
-    // written AT ALL is genuinely unknown -- the contracts object is read-only, and section 3 lists
-    // this as one of two things that can only be discovered by trying it.
-    //
-    // Never fatal. The quote already exists by this point, so throwing here would leave an orphan
-    // quote behind a failed lock. The outcome is reported instead, and the card prints it.
     // A quote created through the API is already DRAFT, so the update that set it was redundant
     // -- and it was the call that failed: it revalidates the whole quote, which is where the
     // template-type complaint came from. Read the quote instead of writing to it.
@@ -2808,7 +2862,7 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
     // the whole diagnosis, so it goes where the person who just clicked Lock in can read it.
     let quoteStatusError = '';
     if (quoteStatus !== desiredQuoteStatus) {
-      console.log(
+      console.info(
         `Nylas pricing: quote ${quote.id} was created as "${quoteStatus || 'unset'}"; moving it ` +
           `to ${desiredQuoteStatus}. On an approvals-enabled portal this is the only legal way ` +
           'to reach it -- the create cannot carry a published status.',
@@ -3018,18 +3072,7 @@ const priceExistingQuote = async (client, dealId, state, parameters, settings) =
     normalizeQuoteContent(parameters.quoteContent, ''),
   );
 
-  let dealOwnerId = '';
-  try {
-    const ownerRead = await client.crm.deals.basicApi.getById(String(dealId), [
-      'hubspot_owner_id',
-    ]);
-    dealOwnerId = ownerRead?.properties?.hubspot_owner_id || '';
-  } catch (error) {
-    console.warn(
-      `Nylas pricing: could not read hubspot_owner_id on deal ${dealId}. ` +
-        `${String(error?.body?.message || error?.message || error)}`,
-    );
-  }
+  const dealOwnerId = await dealOwnerIdFor(client, dealId);
   const sender = await senderProperties(client, dealOwnerId);
 
   // HubSpot pre-populates a renewal quote from the CONTRACT's line items. That is not this app's
@@ -3165,7 +3208,7 @@ exports.main = async (context) => {
   try {
     const parameters = context?.parameters || {};
     const action = parameters.action;
-    console.log(`Nylas pricing action started: ${String(action || 'missing')}.`);
+    console.info(`Nylas pricing action started: ${String(action || 'missing')}.`);
     const accessToken = getAccessToken();
     const accountId = accountIdFromContext(context);
     const userId = userIdFromContext(context);
@@ -3207,7 +3250,7 @@ exports.main = async (context) => {
       readDealState(client, dealId),
       readSettings(accessToken, accountId),
     ]);
-    console.log('Nylas pricing action: deal state and settings loaded.');
+    console.info('Nylas pricing action: deal state and settings loaded.');
     if (!settingsState.configured) throw new Error('SETTINGS_CONFIGURATION_REQUIRED');
     const settings = settingsState.settings;
     if (!isDealAllowed(settings, state.dealType, state.pipelineId)) throw new Error('INVALID_DEAL');
@@ -3229,7 +3272,7 @@ exports.main = async (context) => {
         // them so the rep can send this Deal's pricing to one instead of making a new quote.
         adoptableQuotes: await adoptableQuotes(client, dealId),
         dealOwnerId: state.dealOwnerId,
-        // TEMP DIAGNOSTIC -- see latestQuoteTemplate. Remove with it.
+        // What the Deal's last quote was really built from, for the card's preselect.
         latestQuoteTemplate: await latestQuoteTemplate(client, state.latestQuoteId, allTemplates),
         // The card shows this as the Quote title placeholder, so a rep who leaves the field
         // blank can see the name the quote will actually get rather than being surprised by it.
@@ -3372,7 +3415,6 @@ exports._test = Object.freeze({
   lockLiveCalculation,
   autoRenewalProperties,
   contractTermProperties,
-  discountReasonProperties,
   paymentFrequencyProperties,
   paymentMethodProperties,
   syncDealLineItems,

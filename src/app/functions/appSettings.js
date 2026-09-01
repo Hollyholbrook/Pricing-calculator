@@ -100,12 +100,6 @@ const defaultSettings = () => ({
   // so an unconfigured portal behaves exactly as it always has rather than showing an empty picker.
   // Choosing templates here narrows it; it never adds one the portal does not have.
   //
-  // PER QUOTE KIND since 2026-08-30, and the key is the KIND rather than the deal category
-  // because there are three documents and only two categories. A renewal-pipeline Deal prints
-  // either a change quote or a renewal quote depending on what the rep chooses; a new-business
-  // Deal prints the third. Keying these by category would have left the renewal category holding
-  // two defaults in one field.
-  //
   // Everything else in Settings stays shared: one rate card, one set of thresholds. Only the
   // templates differ, so only the templates are nested.
   // ONE LIST. There is no longer a per-kind split.
@@ -137,8 +131,12 @@ const defaultSettings = () => ({
   // EMPTY IS THE DEFAULT and means "renewal Deals see the same list as everyone else", so a portal
   // that never sets this behaves exactly as it did before the key existed.
   renewalQuoteTemplateIds: [],
-  // DERIVED MIRROR, the inverse of what this key used to be. Never edited, never read by this
-  // code, written on every save.
+  // DERIVED MIRROR, the inverse of what this key used to be. Never edited; written on every save.
+  //
+  // It IS still read, in one place and for one reason: a record written before the kinds were
+  // removed carries only this key, so quoteTemplateSettings and normalizeSettings fall back to its
+  // new_business entry. That is the migration. Once a portal saves from the current Settings screen
+  // the flat keys win and this becomes write-only.
   //
   // It exists so a ROLLBACK is survivable, the same reason the flat keys used to exist. Code that
   // predates this change reads quoteTemplatesByKind and would find nothing; every kind therefore

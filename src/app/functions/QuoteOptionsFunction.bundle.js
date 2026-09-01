@@ -1895,12 +1895,6 @@ var require_appSettings = __commonJS({
       // so an unconfigured portal behaves exactly as it always has rather than showing an empty picker.
       // Choosing templates here narrows it; it never adds one the portal does not have.
       //
-      // PER QUOTE KIND since 2026-08-30, and the key is the KIND rather than the deal category
-      // because there are three documents and only two categories. A renewal-pipeline Deal prints
-      // either a change quote or a renewal quote depending on what the rep chooses; a new-business
-      // Deal prints the third. Keying these by category would have left the renewal category holding
-      // two defaults in one field.
-      //
       // Everything else in Settings stays shared: one rate card, one set of thresholds. Only the
       // templates differ, so only the templates are nested.
       // ONE LIST. There is no longer a per-kind split.
@@ -1932,8 +1926,12 @@ var require_appSettings = __commonJS({
       // EMPTY IS THE DEFAULT and means "renewal Deals see the same list as everyone else", so a portal
       // that never sets this behaves exactly as it did before the key existed.
       renewalQuoteTemplateIds: [],
-      // DERIVED MIRROR, the inverse of what this key used to be. Never edited, never read by this
-      // code, written on every save.
+      // DERIVED MIRROR, the inverse of what this key used to be. Never edited; written on every save.
+      //
+      // It IS still read, in one place and for one reason: a record written before the kinds were
+      // removed carries only this key, so quoteTemplateSettings and normalizeSettings fall back to its
+      // new_business entry. That is the migration. Once a portal saves from the current Settings screen
+      // the flat keys win and this becomes write-only.
       //
       // It exists so a ROLLBACK is survivable, the same reason the flat keys used to exist. Code that
       // predates this change reads quoteTemplatesByKind and would find nothing; every kind therefore
@@ -2469,7 +2467,7 @@ var MAX_PAYLOAD_LENGTH = 6e4;
 var SAFE_ERRORS = Object.freeze({
   CONFIGURATION_REQUIRED: "The Nylas Pricing properties have not been provisioned yet.",
   CONFLICT: "Another user changed these quote options. Reload the card and try again.",
-  INVALID_DEAL: "Nylas Pricing is available only on New Business Deals.",
+  INVALID_DEAL: "Nylas Pricing is not available on this Deal. Its pipeline is not one of the pipelines enabled in Settings > Deal Eligibility.",
   INVALID_OPTION: "The quote option contains invalid or incomplete information.",
   INVALID_QUOTE_CONTENT: "The quote display choices are invalid or incomplete.",
   LINE_ITEM_SYNC_FAILED: "HubSpot could not replace the Deal line items. Review the Deal before trying again.",
@@ -2647,7 +2645,7 @@ var writeDocument = async (client, dealId, document, additionalProperties = {}) 
   });
 };
 var calculateAndSaveOption = async (client, dealId, state, parameters, settings) => {
-  console.log("Nylas pricing calculate: validation started.");
+  console.info("Nylas pricing calculate: validation started.");
   assertRevision(state.document, parameters.expectedRevision);
   const incoming = parameters.option;
   if (!incoming || typeof incoming !== "object" || Array.isArray(incoming)) {
@@ -2659,7 +2657,7 @@ var calculateAndSaveOption = async (client, dealId, state, parameters, settings)
     settings.version,
     dealCategory(settings, state.dealType, state.pipelineId)
   );
-  console.log("Nylas pricing calculate: calculation completed.");
+  console.info("Nylas pricing calculate: calculation completed.");
   const existingIndex = incoming.id ? state.document.options.findIndex(({ id }) => id === incoming.id) : -1;
   if (existingIndex === -1 && state.document.options.length >= MAX_OPTIONS) {
     throw new Error("TOO_MANY_OPTIONS");
@@ -2683,9 +2681,9 @@ var calculateAndSaveOption = async (client, dealId, state, parameters, settings)
     revision: state.document.revision + 1,
     options
   };
-  console.log("Nylas pricing calculate: save started.");
+  console.info("Nylas pricing calculate: save started.");
   await writeDocument(client, dealId, document);
-  console.log("Nylas pricing calculate: save completed.");
+  console.info("Nylas pricing calculate: save completed.");
   return { document, option: savedOption };
 };
 var deleteOption = async (client, dealId, state, parameters) => {
@@ -3319,6 +3317,7 @@ var joinCreatedLineItems = (sent, results) => {
 };
 var createLineItemsBatch = async (client, items, createdIds = [], attempt = 0) => {
   if (items.length === 0) return [];
+  const thisAttemptIds = [];
   try {
     const results = [];
     for (const group of chunked(items, LINE_ITEM_BATCH_LIMIT)) {
@@ -3326,7 +3325,10 @@ var createLineItemsBatch = async (client, items, createdIds = [], attempt = 0) =
         inputs: group.map(({ properties, associations }) => ({ properties, associations }))
       });
       const created = response2?.results || [];
-      for (const item of created) createdIds.push(String(item.id));
+      for (const item of created) {
+        createdIds.push(String(item.id));
+        thisAttemptIds.push(String(item.id));
+      }
       results.push(...created);
       if (response2?.errors?.length) {
         const failure = new Error("LINE_ITEM_BATCH_PARTIAL");
@@ -3337,6 +3339,21 @@ var createLineItemsBatch = async (client, items, createdIds = [], attempt = 0) =
     }
     return results;
   } catch (error) {
+    if (thisAttemptIds.length > 0) {
+      console.warn(
+        `Nylas pricing: a line item batch failed after creating ${thisAttemptIds.length} of ${items.length}. Removing those before retrying, so the retry cannot duplicate them.`
+      );
+      await archiveLineItemsBatch(client, thisAttemptIds).catch((archiveError) => {
+        console.error(
+          `Nylas pricing: could not remove the line items a partial batch created. The retry below may duplicate them -- ids ${thisAttemptIds.join(", ")}. ${String(archiveError?.body?.message || archiveError?.message || archiveError)}`,
+          safeProviderDiagnostics(archiveError, "archive_partial_line_item_batch")
+        );
+      });
+      for (const id of thisAttemptIds) {
+        const at = createdIds.indexOf(id);
+        if (at >= 0) createdIds.splice(at, 1);
+      }
+    }
     if (isTransientRejection(error) && attempt < 3) {
       await delay(400 * 2 ** attempt);
       return createLineItemsBatch(client, items, createdIds, attempt + 1);
@@ -3620,7 +3637,7 @@ var usableQuoteTemplates = async (client) => {
     return [];
   }
   if (excluded.length > 0) {
-    console.log(
+    console.info(
       `Nylas pricing: ${excluded.length} quote template(s) not offered -- not an active ${REQUIRED_QUOTE_TEMPLATE_TYPE}: ${excluded.join(", ")}.`
     );
   }
@@ -3634,7 +3651,7 @@ var describeQuoteTemplate = async (client, templateId) => {
     ]);
     const type = template?.properties?.hs_type || "unknown";
     const name = template?.properties?.hs_name || "";
-    console.log(
+    console.info(
       `Nylas pricing: quote template ${templateId} ("${name}") has hs_type "${type}" (HubSpot has previously required "${REQUIRED_QUOTE_TEMPLATE_TYPE}").`
     );
     return { type, name };
@@ -3663,6 +3680,19 @@ var readOwnerDirectly = async (ownerId) => {
       `Nylas pricing: owners REST read for ${ownerId} failed. ${String(error?.message || error)}`
     );
     return null;
+  }
+};
+var dealOwnerIdFor = async (client, dealId) => {
+  try {
+    const ownerRead = await client.crm.deals.basicApi.getById(String(dealId), [
+      "hubspot_owner_id"
+    ]);
+    return ownerRead?.properties?.hubspot_owner_id || "";
+  } catch (error) {
+    console.warn(
+      `Nylas pricing: could not read hubspot_owner_id on deal ${dealId}. ${String(error?.body?.message || error?.message || error)}`
+    );
+    return "";
   }
 };
 var senderProperties = async (client, ownerId) => {
@@ -3838,17 +3868,7 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
       `Nylas pricing: could not read pricing_latest_quote_id on deal ${dealId}. ${String(error?.body?.message || error?.message || error)}`
     );
   }
-  let dealOwnerId = "";
-  try {
-    const ownerRead = await client.crm.deals.basicApi.getById(String(dealId), [
-      "hubspot_owner_id"
-    ]);
-    dealOwnerId = ownerRead?.properties?.hubspot_owner_id || "";
-  } catch (error) {
-    console.warn(
-      `Nylas pricing: could not read hubspot_owner_id on deal ${dealId}. ${String(error?.body?.message || error?.message || error)}`
-    );
-  }
+  const dealOwnerId = await dealOwnerIdFor(client, dealId);
   if (!dealOwnerId) {
     console.warn(
       `Nylas pricing: deal ${dealId} has no hubspot_owner_id. The quote will carry no owner and no Seller contact. Set an owner on the Deal -- the seller is never substituted.`
@@ -3916,8 +3936,8 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
         // associated with.
         hs_template_type: "CPQ_QUOTE",
         // Always INITIAL. The public API refuses every other value at the create -- see
-        // CPQ_QUOTE_TYPE_INITIAL above for HubSpot's exact refusal. The quote kind still decides
-        // the TEMPLATE, which is what the rep sees; it cannot decide the CPQ type.
+        // CPQ_QUOTE_TYPE_INITIAL above for HubSpot's exact refusal. The TEMPLATE is what the rep
+        // chooses and what the customer reads; it has no bearing on the CPQ type sent here.
         hs_type: CPQ_QUOTE_TYPE_INITIAL,
         // The seller is the DEAL OWNER, explicitly, not whoever clicked Lock in and not whatever
         // the API defaults to. This used to be left unset on the reasoning that a quote inherits
@@ -4086,7 +4106,7 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
     let quoteStatusRepaired = false;
     let quoteStatusError = "";
     if (quoteStatus !== desiredQuoteStatus) {
-      console.log(
+      console.info(
         `Nylas pricing: quote ${quote.id} was created as "${quoteStatus || "unset"}"; moving it to ${desiredQuoteStatus}. On an approvals-enabled portal this is the only legal way to reach it -- the create cannot carry a published status.`
       );
       try {
@@ -4225,17 +4245,7 @@ var priceExistingQuote = async (client, dealId, state, parameters, settings) => 
     option,
     normalizeQuoteContent(parameters.quoteContent, "")
   );
-  let dealOwnerId = "";
-  try {
-    const ownerRead = await client.crm.deals.basicApi.getById(String(dealId), [
-      "hubspot_owner_id"
-    ]);
-    dealOwnerId = ownerRead?.properties?.hubspot_owner_id || "";
-  } catch (error) {
-    console.warn(
-      `Nylas pricing: could not read hubspot_owner_id on deal ${dealId}. ${String(error?.body?.message || error?.message || error)}`
-    );
-  }
+  const dealOwnerId = await dealOwnerIdFor(client, dealId);
   const sender = await senderProperties(client, dealOwnerId);
   const existingLineItemIds = await associatedIds(client, "quotes", quoteId, "line_items", 200);
   const createdLineItemIds = [];
@@ -4339,7 +4349,7 @@ exports.main = async (context) => {
   try {
     const parameters = context?.parameters || {};
     const action = parameters.action;
-    console.log(`Nylas pricing action started: ${String(action || "missing")}.`);
+    console.info(`Nylas pricing action started: ${String(action || "missing")}.`);
     const accessToken = getAccessToken();
     const accountId = accountIdFromContext(context);
     const userId = userIdFromContext(context);
@@ -4379,7 +4389,7 @@ exports.main = async (context) => {
       readDealState(client, dealId),
       readSettings(accessToken, accountId)
     ]);
-    console.log("Nylas pricing action: deal state and settings loaded.");
+    console.info("Nylas pricing action: deal state and settings loaded.");
     if (!settingsState.configured) throw new Error("SETTINGS_CONFIGURATION_REQUIRED");
     const settings = settingsState.settings;
     if (!isDealAllowed(settings, state.dealType, state.pipelineId)) throw new Error("INVALID_DEAL");
@@ -4400,7 +4410,7 @@ exports.main = async (context) => {
         // them so the rep can send this Deal's pricing to one instead of making a new quote.
         adoptableQuotes: await adoptableQuotes(client, dealId),
         dealOwnerId: state.dealOwnerId,
-        // TEMP DIAGNOSTIC -- see latestQuoteTemplate. Remove with it.
+        // What the Deal's last quote was really built from, for the card's preselect.
         latestQuoteTemplate: await latestQuoteTemplate(client, state.latestQuoteId, allTemplates),
         // The card shows this as the Quote title placeholder, so a rep who leaves the field
         // blank can see the name the quote will actually get rather than being surprised by it.
@@ -4537,7 +4547,6 @@ exports._test = Object.freeze({
   lockLiveCalculation,
   autoRenewalProperties,
   contractTermProperties,
-  discountReasonProperties,
   paymentFrequencyProperties,
   paymentMethodProperties,
   syncDealLineItems,

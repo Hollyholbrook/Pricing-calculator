@@ -255,7 +255,8 @@ interface ServerlessBody {
     reason?: string | null;
   };
   dealOwnerId?: string;
-  // TEMP DIAGNOSTIC -- remove with the block marked TEMP below.
+  // What the Deal's last quote was really built from, read back from HubSpot's own association
+  // rather than echoed from this card. Feeds the template preselect below -- see `lastUsed`.
   latestQuoteTemplate?: {
     quoteId: string;
     id: string;
@@ -922,12 +923,6 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
   >("none");
   const [contactId, setContactId] = useState("");
   const [dealOwnerId, setDealOwnerId] = useState<string>("");
-  // TEMP DIAGNOSTIC
-  const [latestQuoteTemplate, setLatestQuoteTemplate] = useState<{
-    quoteId: string;
-    id: string;
-    name: string;
-  } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [unsupportedDeal, setUnsupportedDeal] = useState(false);
 
@@ -935,10 +930,6 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
     if (body.dealName) setDealName(body.dealName);
     if (body.companyName !== undefined) setCompanyName(body.companyName);
     if (body.dealOwnerId !== undefined) setDealOwnerId(body.dealOwnerId);
-    // TEMP DIAGNOSTIC
-    if (body.latestQuoteTemplate !== undefined) {
-      setLatestQuoteTemplate(body.latestQuoteTemplate);
-    }
     if (body.contacts) {
       setContacts(body.contacts);
       setContactSource(body.contactSource || "none");
@@ -1268,7 +1259,6 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
         onQuoteTitleChange={setQuoteTitle}
         onInputChange={updateInput}
         dealOwnerId={dealOwnerId}
-        latestQuoteTemplate={latestQuoteTemplate}
         contacts={contacts}
         contactSource={contactSource}
         contactId={contactId}
@@ -1301,7 +1291,6 @@ const OptionEditor = ({
   onQuoteTitleChange,
   onInputChange,
   dealOwnerId,
-  latestQuoteTemplate,
   contacts,
   contactSource,
   contactId,
@@ -1332,8 +1321,6 @@ const OptionEditor = ({
     value: QuoteInput[K],
   ) => void;
   dealOwnerId: string;
-  // TEMP DIAGNOSTIC
-  latestQuoteTemplate: { quoteId: string; id: string; name: string } | null;
   contacts: { id: string; label: string }[];
   contactSource: "deal" | "company" | "none";
   contactId: string;
@@ -1868,19 +1855,6 @@ const OptionEditor = ({
                   }))}
                   onChange={(value) => onTemplateChange(String(value))}
                 />
-              )}
-              {/* TEMP DIAGNOSTIC -- what the LAST quote was actually built from, read back from
-                  HubSpot rather than echoed from this card. Remove this block, the
-                  latestQuoteTemplate state/prop/type above, and latestQuoteTemplate in
-                  QuoteOptionsFunction.js once the template choice is settled. */}
-              {latestQuoteTemplate && (
-                <Text variant="microcopy">
-                  {latestQuoteTemplate.id
-                    ? `Last quote ${latestQuoteTemplate.quoteId} was built from ${
-                        latestQuoteTemplate.name || "an unnamed template"
-                      } (${latestQuoteTemplate.id}).`
-                    : `Last quote ${latestQuoteTemplate.quoteId} has no template associated to it.`}
-                </Text>
               )}
               <Select
                 label="Payment Method"

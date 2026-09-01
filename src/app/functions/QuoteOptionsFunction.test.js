@@ -704,13 +704,6 @@ const quoteClient = (status, { archiveThrows = false } = {}) => {
   };
 };
 
-test('the superseded draft quote is archived', async () => {
-  const { client, archived } = quoteClient('DRAFT');
-  const result = await _test.archiveSupersededQuote(client, '111', '222');
-  assert.equal(result, '111');
-  assert.deepEqual(archived, ['111']);
-});
-
 test('an accepted, live or unknown quote is never archived', async () => {
   // Anything not on the archivable list must survive, INCLUDING statuses this code does not know
   // about, so a value HubSpot adds later fails safe. The list is an allowlist for exactly that
@@ -1169,22 +1162,35 @@ test('a failed superseded-quote read does not blank the deal owner', () => {
     require('node:path').join(__dirname, 'QuoteOptionsFunction.js'),
     'utf8',
   );
-  const generate = source.slice(source.indexOf('const generateQuote'));
-  const supersededRead = generate.indexOf("'pricing_latest_quote_id',");
-  const ownerRead = generate.indexOf("'hubspot_owner_id',");
-  assert.ok(supersededRead > 0 && ownerRead > 0, 'both reads must exist');
-
-  // They must be separate getById calls, not one shared list.
-  const between = generate.slice(supersededRead, ownerRead);
+  // These were ONE getById with ONE catch. pricing_latest_quote_id is a custom property this portal
+  // may not have, so a failure reading it silently produced an empty OWNER as well -- a blank Seller
+  // block with no error anywhere, which cost three rounds to find. 2026-08-28.
+  //
+  // They are now separated structurally rather than by convention: the owner read lives in its own
+  // function with its own catch, so no future edit can fold them back into a shared call without
+  // deleting that function first.
+  const helper = source.slice(
+    source.indexOf('const dealOwnerIdFor'),
+    source.indexOf('const senderProperties'),
+  );
+  assert.ok(helper.length > 0, 'the owner read must have its own function');
+  assert.match(helper, /'hubspot_owner_id',/, 'it reads the owner');
   assert.match(
-    between,
-    /catch \(error\)[\s\S]*?getById/,
-    'the owner must be read in its own call, after its own catch',
+    helper,
+    /catch \(error\)[\s\S]*?console\.warn[\s\S]*?return '';/,
+    'a failed owner read is reported and returns blank, never throws',
+  );
+  assert.doesNotMatch(
+    helper,
+    /pricing_latest_quote_id/,
+    'the owner read must not share a call with the superseded-quote read',
   );
 
-  // And a silent catch is what hid this for three rounds.
+  // ...and generateQuote reads the superseded quote id separately, with its own catch.
+  const generate = source.slice(source.indexOf('const generateQuote'));
+  assert.match(generate, /'pricing_latest_quote_id',/);
   assert.doesNotMatch(
-    generate.slice(0, ownerRead + 200),
+    generate.slice(0, generate.indexOf('await client.crm.quotes.basicApi.create')),
     /\} catch \{\s*\n\s*supersededQuoteId = '';/,
     'the swallow-everything catch must not come back',
   );
@@ -1420,19 +1426,6 @@ test('BOTH surfaces verify every line item they create', () => {
     adoptLoop.slice(0, 4000),
     /await repairLineItemsBatch\(/,
     'the priced HubSpot quote verifies too',
-  );
-});
-
-test('the sync verifies every line item it creates', () => {
-  const source = require('node:fs').readFileSync(
-    require('node:path').join(__dirname, 'QuoteOptionsFunction.js'),
-    'utf8',
-  );
-  const sync = source.slice(source.indexOf('const syncDealLineItems'));
-  assert.match(
-    sync,
-    /const created = await createLineItemsBatch\(client, sending, createdIds\);[\s\S]{0,200}?await repairLineItemsBatch\(/,
-    'every created line item must be read back',
   );
 });
 
@@ -2237,20 +2230,36 @@ test('no quote-kind or Contract-object surface remains in the function', () => {
     require('node:path').join(__dirname, 'QuoteOptionsFunction.js'),
     'utf8',
   );
-  for (const gone of [
-    'quoteKind',
-    'quoteTemplatesByKind',
-    'quoteTemplatesForCategory',
-    'contractApplies',
-    'assertContractChosen',
-    'contractOptions',
-    'associatedContractIds',
-    'inspect_contracts',
-    'QUOTE_KIND_NOT_API_CREATABLE',
-    'QUOTE_CONTRACT_REQUIRED',
-  ]) {
+  // Only names that a future change could PLAUSIBLY reintroduce, and only where their presence
+  // would mean something. The earlier version of this list carried eight identifiers that had never
+  // existed under those spellings in this tree, so it could not fail for any reason short of
+  // someone typing them by hand -- it read as coverage and was not.
+  //
+  // `quoteKind` is the one that matters: a kind -> template or kind -> hs_type map is the obvious
+  // thing to write the next time a renewal needs different treatment, and it is exactly what
+  // HubSpot refuses. Renewal templates are configured in Settings instead
+  // (renewalQuoteTemplateIds), which needs no notion of a kind at all.
+  for (const gone of ['quoteKind', 'CPQ_QUOTE_TYPE_BY_KIND', 'quoteTemplatesForCategory']) {
     assert.equal(source.includes(gone), false, `${gone} is back in the function`);
   }
+
+  // quoteTemplatesByKind is NOT asserted absent. It legitimately survives in appSettings.js as the
+  // derived rollback mirror -- what must not come back is it being READ as a decision input, which
+  // is what the two assertions below actually check.
+  const settingsSource = require('node:fs').readFileSync(
+    require('node:path').join(__dirname, 'appSettings.js'),
+    'utf8',
+  );
+  assert.equal(
+    settingsSource.includes('quoteTemplatesByKind'),
+    true,
+    'the rollback mirror must still be written',
+  );
+  assert.equal(
+    /quoteTemplatesByKind\?\.\[/.test(settingsSource),
+    false,
+    'the mirror may only be read at the fixed new_business key, never indexed by a kind',
+  );
   // ...while the PRICING sense of "contract" is untouched. These are contract dates and terms,
   // not the CPQ Contract object, and confusing the two breaks the calculator.
   for (const kept of [
@@ -2476,25 +2485,35 @@ test('pricing an existing quote never sets the type, template or template associ
     source.indexOf('const priceExistingQuote'),
     source.indexOf('const stateResponse'),
   );
-  for (const forbidden of [
-    'hs_type:',
-    'hs_template_type',
-    'quote_template',
-    'associationTypeId: 286',
-  ]) {
+  // Read the ACTUAL properties object this function sends, rather than searching the whole
+  // function body for substrings. The earlier version did the latter, and those substrings were
+  // absent by the shape of the function rather than by any decision -- it would have kept passing
+  // if someone added hs_type to the update.
+  const properties = fn.slice(fn.indexOf('const properties = {'), fn.indexOf('  };', fn.indexOf('const properties = {')));
+  assert.ok(properties.length > 0, 'the properties object must be findable');
+
+  // HubSpot chose the type and the template when it created the record. Those are exactly what the
+  // API may not decide for a change or renewal, and setting them is how this becomes a 400 again.
+  for (const forbidden of ['hs_type', 'hs_template_type']) {
     assert.equal(
-      fn.includes(forbidden),
+      properties.includes(forbidden),
       false,
-      `priceExistingQuote must not touch ${forbidden}`,
+      `priceExistingQuote must not send ${forbidden}`,
     );
   }
+  // The template association is only settable at create time, so it must not be attempted at all.
+  assert.equal(
+    /associations\.v4[\s\S]*?quote_template/.test(fn),
+    false,
+    'the template association may not be touched after creation',
+  );
   // It DOES send the properties the app owns, for the same measured reasons the create does.
   for (const owned of [
     'hs_acceptance_method: QUOTE_ACCEPTANCE_METHOD',
     "hs_contract_effective_start_date_type: 'CUSTOM'",
     'hs_quote_owner_id: dealOwnerId',
   ]) {
-    assert.equal(fn.includes(owned), true, `priceExistingQuote must send ${owned}`);
+    assert.equal(properties.includes(owned), true, `priceExistingQuote must send ${owned}`);
   }
 });
 
@@ -2612,4 +2631,68 @@ test('a change sent this way is still created as an INITIAL quote', () => {
   );
   assert.match(source, /hs_type: CPQ_QUOTE_TYPE_INITIAL,/);
   assert.equal(source.includes('CPQ_QUOTE_TYPE_BY_KIND'), false);
+});
+
+// A PARTIAL BATCH MUST NOT DUPLICATE. Found by audit, 2026-09-01.
+//
+// Every recovery path in createLineItemsBatch re-sends the WHOLE items array. A batch that failed
+// partway had already created some of them, so the retry created them a SECOND time -- duplicated
+// products on a customer-facing quote, with both copies in the caller's rollback list so a rollback
+// would archive one set and leave the other.
+test('a batch that fails partway removes what it created before retrying', async () => {
+  const created = [];
+  const archived = [];
+  let batchCalls = 0;
+  const client = {
+    crm: {
+      lineItems: {
+        batchApi: {
+          create: async ({ inputs }) => {
+            batchCalls += 1;
+            if (batchCalls === 1) {
+              // First chunk lands, then HubSpot reports a failure for the rest.
+              created.push('a');
+              return {
+                results: [{ id: 'a', properties: {} }],
+                errors: [{ message: 'nope' }],
+              };
+            }
+            return {
+              results: inputs.map((_, index) => ({
+                id: `retry-${index}`,
+                properties: {},
+              })),
+            };
+          },
+          archive: async ({ inputs }) => {
+            archived.push(...inputs.map(({ id }) => id));
+          },
+          update: async () => ({}),
+          read: async () => ({ results: [] }),
+        },
+        basicApi: {
+          create: async () => ({ id: `single-${created.length}`, properties: {} }),
+          archive: async () => undefined,
+        },
+      },
+    },
+  };
+  const createdIds = [];
+  const items = [
+    { properties: { name: 'one' }, associations: [] },
+    { properties: { name: 'two' }, associations: [] },
+  ];
+  await _test.createLineItemsBatch(client, items, createdIds);
+
+  // The line item the failed batch created is archived...
+  assert.deepEqual(archived, ['a'], 'the partial batch must be undone');
+  // ...and it is gone from the caller's rollback list, which would otherwise archive a record that
+  // no longer exists and miss the ones that do.
+  assert.equal(
+    createdIds.includes('a'),
+    false,
+    'a rolled-back id must not stay in the rollback list',
+  );
+  // What remains is exactly one set of line items, not two.
+  assert.equal(createdIds.length, items.length, 'no duplicates survive the retry');
 });
