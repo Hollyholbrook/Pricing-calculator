@@ -251,6 +251,7 @@ interface ServerlessBody {
   productLibrary?: ProductLibraryReport;
   discountReason?: string;
   quoteTemplates?: { id: string; name: string }[];
+  catalogConfiguration?: CatalogConfiguration;
   seller?: {
     ownerId?: string;
     sent?: string[];
@@ -359,7 +360,36 @@ interface CrmExtensionProps {
   actions: ExtensionPointApiActions<"crm.record.tab">;
 }
 
-const products: {
+interface CatalogOptionEntry {
+  enabled: boolean;
+  order: number;
+  name: string;
+  description: string;
+  productId: string;
+}
+
+interface CatalogConfiguration {
+  products: Record<
+    ProductKey,
+    CatalogOptionEntry & { section: string; inputUnit: string }
+  >;
+  options: {
+    support: Record<string, CatalogOptionEntry>;
+    onboarding: Record<string, CatalogOptionEntry>;
+    addOns: Record<string, CatalogOptionEntry>;
+    professionalServices: Record<string, CatalogOptionEntry>;
+  };
+  contractTerms: Record<
+    string,
+    { enabled: boolean; order: number; label: string }
+  >;
+  paymentOptions: Record<
+    string,
+    { enabled: boolean; order: number; label: string }
+  >;
+}
+
+const defaultProducts: {
   key: ProductKey;
   label: string;
   description: string;
@@ -411,7 +441,7 @@ const products: {
   },
 ];
 
-const paymentOptions = [
+const defaultPaymentOptions = [
   { value: "annual_in_advance", label: "Annual in Advance" },
   { value: "semi_annual_in_advance", label: "Semi-Annual in Advance" },
   { value: "quarterly_in_advance", label: "Quarterly in Advance" },
@@ -443,13 +473,13 @@ const permittedPaymentMethodOptions = (requiresBankTransfer: boolean) =>
 
 const DEFAULT_PAYMENT_METHOD = "credit_card";
 
-const supportOptions = [
+const defaultSupportOptions = [
   { value: "basic", label: "Basic" },
   { value: "full", label: "Full" },
   { value: "premium", label: "Premium" },
 ];
 
-const onboardingOptions = [
+const defaultOnboardingOptions = [
   // Onboarding is optional; "None" produces no onboarding line item.
   { value: "none", label: "None" },
   { value: "quick_launch", label: "Quick Launch" },
@@ -459,7 +489,7 @@ const onboardingOptions = [
 
 // The Accelerator Package is PRO ANNUAL only. On Enterprise its contents are already in the
 // contract, and the one paid Enterprise add-on is the Shared OAuth App -- same $2,400.
-const addOnOptions = [
+const defaultAddOnOptions = [
   { value: "shared_oauth_app", label: "Shared OAuth App" },
   { value: "privacy_filter", label: "Privacy Filter Mode" },
   { value: "verified_oauth", label: "Turnkey Verified OAuth Projects" },
@@ -482,10 +512,10 @@ const LEGACY_ADD_ON = {
 };
 const addOnOptionsFor = (selected: readonly string[]) =>
   selected.includes(LEGACY_ADD_ON.value)
-    ? [...addOnOptions, LEGACY_ADD_ON]
-    : addOnOptions;
+    ? [...defaultAddOnOptions, LEGACY_ADD_ON]
+    : defaultAddOnOptions;
 
-const professionalServiceOptions = [
+const defaultProfessionalServiceOptions = [
   { value: "google_verification_review", label: "Google Verification Review" },
   {
     value: "architecture_workflow_review",
@@ -863,6 +893,8 @@ const quoteStatusSummary = (body: ServerlessBody) => {
 
 const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
   const dealId = String(context.crm.objectId);
+  const [catalogConfiguration, setCatalogConfiguration] =
+    useState<CatalogConfiguration | null>(null);
   const [quoteTemplates, setQuoteTemplates] = useState<
     { id: string; name: string }[]
   >([]);
@@ -970,6 +1002,9 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
   const [unsupportedDeal, setUnsupportedDeal] = useState(false);
 
   const updateFromBody = (body: ServerlessBody) => {
+    if (body.catalogConfiguration) {
+      setCatalogConfiguration(body.catalogConfiguration);
+    }
     if (body.dealName) setDealName(body.dealName);
     if (body.companyName !== undefined) setCompanyName(body.companyName);
     if (body.latestQuoteSeller !== undefined) {
@@ -1252,6 +1287,7 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
         discountReason={discountReason}
         onDiscountReasonChange={setDiscountReason}
         quoteTemplates={quoteTemplates}
+        catalogConfiguration={catalogConfiguration}
         templateId={templateId}
         onTemplateChange={setTemplateId}
         dealCategory={dealCategory}
@@ -1288,6 +1324,7 @@ const OptionEditor = ({
   discountReason,
   onDiscountReasonChange,
   quoteTemplates,
+  catalogConfiguration,
   templateId,
   onTemplateChange,
   dealCategory,
@@ -1319,6 +1356,7 @@ const OptionEditor = ({
   discountReason: string;
   onDiscountReasonChange: (value: string) => void;
   quoteTemplates: { id: string; name: string }[];
+  catalogConfiguration: CatalogConfiguration | null;
   templateId: string;
   onTemplateChange: (value: string) => void;
   dealCategory: DealCategory;
@@ -1361,6 +1399,77 @@ const OptionEditor = ({
   onPreview: (input: QuoteInput) => Promise<QuoteResult>;
   onLock: () => void;
 }) => {
+  const configuredProducts = catalogConfiguration
+    ? (
+        Object.entries(catalogConfiguration.products) as [
+          ProductKey,
+          CatalogConfiguration["products"][ProductKey],
+        ][]
+      )
+        .filter(
+          ([key, entry]) =>
+            entry.enabled ||
+            option.input.volumes[key] > 0 ||
+            (option.input.productDiscounts?.[key] || 0) > 0,
+        )
+        .sort(([, left], [, right]) => left.order - right.order)
+        .map(([key, entry]) => ({
+          key,
+          label: entry.name,
+          description: entry.description,
+          inputUnit: entry.inputUnit,
+          section: entry.section,
+        }))
+    : defaultProducts.map((product) => ({ ...product, section: "Products" }));
+  const configuredOptions = (
+    group: keyof CatalogConfiguration["options"],
+    selected: readonly string[],
+    fallback: { value: string; label: string }[],
+  ) =>
+    catalogConfiguration
+      ? Object.entries(catalogConfiguration.options[group])
+          .filter(([key, entry]) => entry.enabled || selected.includes(key))
+          .sort(([, left], [, right]) => left.order - right.order)
+          .map(([value, entry]) => ({ value, label: entry.name }))
+      : fallback;
+  const supportOptions = configuredOptions(
+    "support",
+    [option.input.supportLevel],
+    defaultSupportOptions,
+  );
+  const onboardingOptions = configuredOptions(
+    "onboarding",
+    [option.input.onboardingPackage],
+    defaultOnboardingOptions,
+  );
+  const addOnOptions = configuredOptions(
+    "addOns",
+    option.input.addOns,
+    addOnOptionsFor(option.input.addOns),
+  );
+  const professionalServiceOptions = configuredOptions(
+    "professionalServices",
+    option.input.professionalServices,
+    defaultProfessionalServiceOptions,
+  );
+  const configuredTermOptions = catalogConfiguration
+    ? Object.entries(catalogConfiguration.contractTerms)
+        .filter(
+          ([months, entry]) =>
+            entry.enabled || Number(months) === option.input.termMonths,
+        )
+        .sort(([, left], [, right]) => left.order - right.order)
+        .map(([value, entry]) => ({ value: Number(value), label: entry.label }))
+    : termOptions;
+  const paymentOptions = catalogConfiguration
+    ? Object.entries(catalogConfiguration.paymentOptions)
+        .filter(
+          ([key, entry]) =>
+            entry.enabled || key === option.input.paymentFrequency,
+        )
+        .sort(([, left], [, right]) => left.order - right.order)
+        .map(([value, entry]) => ({ value, label: entry.label }))
+    : defaultPaymentOptions;
   // Keep the result together with the input that produced it. Freshness is then a fact about
   // the data rather than a flag that has to be kept in sync — updateInput allocates a new input
   // object on every edit, so reference identity is an exact "these numbers describe what is on
@@ -1415,7 +1524,7 @@ const OptionEditor = ({
   const previewResult = preview?.result;
   const pricingIsCurrent = preview?.input === option.input && !previewError;
   const previewLoading = !pricingIsCurrent && !previewError;
-  const committedProductCount = products.filter(
+  const committedProductCount = configuredProducts.filter(
     ({ key }) => option.input.volumes[key] > 0,
   ).length;
   // Any discount anywhere, from the rep's own entries rather than from the calculated result: the
@@ -1440,14 +1549,14 @@ const OptionEditor = ({
   // real entry sitting in an otherwise empty row, and it is the easiest one to lose track of.
   const asPercent = (value: number) => `${Math.round(value * 100)}%`;
   const discountedItems: string[] = [
-    ...products
+    ...configuredProducts
       .filter(({ key }) => (option.input.productDiscounts?.[key] || 0) > 0)
       .map(
         ({ key, label }) =>
           `${label} ${asPercent(option.input.productDiscounts?.[key] || 0)}` +
           ((option.input.volumes[key] || 0) > 0 ? "" : " (no volume)"),
       ),
-    ...addOnOptionsFor(option.input.addOns)
+    ...addOnOptions
       .filter(
         ({ value }) => (option.input.addOnDiscounts?.[String(value)] || 0) > 0,
       )
@@ -1568,7 +1677,7 @@ const OptionEditor = ({
     return <Text>{rateCurrency(line.displayProposedUnitRate)}</Text>;
   };
 
-  const productTable = (tableProducts: typeof products) => (
+  const productTable = (tableProducts: typeof configuredProducts) => (
     <Table density="compact" flush>
       <TableHead>
         <TableRow>
@@ -1790,7 +1899,7 @@ const OptionEditor = ({
                 label="Initial Term"
                 name="term_months"
                 value={option.input.termMonths}
-                options={termOptions}
+                options={configuredTermOptions}
                 onChange={(value) => onInputChange("termMonths", Number(value))}
               />
               <Select
@@ -1951,7 +2060,18 @@ const OptionEditor = ({
               Enter committed monthly usage. Discounts are optional, entered
               manually, and determine the required approval level.
             </Text>
-            {productTable(products)}
+            {Array.from(
+              new Set(configuredProducts.map(({ section }) => section)),
+            ).map((section) => (
+              <Flex direction="column" gap="sm" key={section}>
+                <Heading>{section}</Heading>
+                {productTable(
+                  configuredProducts.filter(
+                    (product) => product.section === section,
+                  ),
+                )}
+              </Flex>
+            ))}
             {committedProductCount === 0 && (
               <Alert title="Add at least one commitment" variant="warning">
                 Add committed usage for at least one product.
@@ -2055,7 +2175,7 @@ const OptionEditor = ({
                       label="Subscription Add-ons"
                       name="add_ons"
                       value={option.input.addOns}
-                      options={addOnOptionsFor(option.input.addOns)}
+                      options={addOnOptions}
                       onChange={(value) =>
                         onInputChange("addOns", value.map(String))
                       }
@@ -2064,7 +2184,7 @@ const OptionEditor = ({
                       option meant a column of read-only 0% inputs for things nobody is buying,
                       which is most of this section's height and reads as broken rather than
                       inactive. */}
-                    {addOnOptionsFor(option.input.addOns)
+                    {addOnOptions
                       .filter(({ value }) =>
                         option.input.addOns.includes(String(value)),
                       )

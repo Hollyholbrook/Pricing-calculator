@@ -150,6 +150,74 @@ const withPositions = (items) =>
     properties: { ...item.properties, hs_position_on_quote: String(index) },
   }));
 
+const configuredProductId = (itemKey, configuration) => {
+  if (!configuration) return null;
+  if (itemKey.startsWith('metered:')) {
+    return configuration.products?.[itemKey.slice('metered:'.length)]?.productId || null;
+  }
+  if (itemKey.startsWith('support:')) {
+    return configuration.options?.support?.[itemKey.slice('support:'.length)]?.productId || null;
+  }
+  if (itemKey.startsWith('addon:')) {
+    return configuration.options?.addOns?.[itemKey.slice('addon:'.length)]?.productId || null;
+  }
+  if (itemKey.startsWith('onboarding:')) {
+    return configuration.options?.onboarding?.[itemKey.slice('onboarding:'.length)]?.productId || null;
+  }
+  if (itemKey.startsWith('professional_service:')) {
+    return configuration.options?.professionalServices?.[
+      itemKey.slice('professional_service:'.length)
+    ]?.productId || null;
+  }
+  if (itemKey.startsWith('subscription:')) {
+    return configuration.hubspotMappings?.products?.enterprise || null;
+  }
+  return null;
+};
+
+const applyCatalogConfiguration = (items, configuration) => {
+  if (!configuration) return items;
+  const lineItemMappings = configuration.hubspotMappings?.lineItemProperties || {};
+  const propertyRenames = {
+    committed_quantity: lineItemMappings.committedQuantity,
+    proposed_rate: lineItemMappings.proposedRate,
+    one_time_fees: lineItemMappings.oneTimeFees,
+    recurring_fees: lineItemMappings.recurringFees,
+    total_fees_for_term: lineItemMappings.totalFeesForTerm,
+  };
+  const configured = items.map((item, originalIndex) => {
+    const properties = { ...item.properties };
+    const productId = configuredProductId(item.key, configuration);
+    if (productId) properties.hs_product_id = productId;
+    for (const [from, to] of Object.entries(propertyRenames)) {
+      if (to && to !== from && properties[from] != null) {
+        properties[to] = properties[from];
+        delete properties[from];
+      }
+    }
+    const productKey = item.key.startsWith('metered:')
+      ? item.key.slice('metered:'.length)
+      : null;
+    return {
+      ...item,
+      properties,
+      _configuredOrder: productKey
+        ? configuration.products?.[productKey]?.order ?? 10_000
+        : null,
+      _originalIndex: originalIndex,
+    };
+  });
+  configured.sort((left, right) => {
+    if (left._configuredOrder == null || right._configuredOrder == null) {
+      return left._originalIndex - right._originalIndex;
+    }
+    return left._configuredOrder - right._configuredOrder;
+  });
+  return withPositions(
+    configured.map(({ _configuredOrder, _originalIndex, ...item }) => item),
+  );
+};
+
 // The four fee columns from the Contract Summary, carried on each line item that holds money.
 //
 // EMPTY UNTIL THE PORTAL'S INTERNAL NAMES ARE FILLED IN. These are custom Line item properties, so
@@ -765,7 +833,10 @@ const buildProfessionalServiceLines = (option, source) => {
   });
 };
 
-const buildLineItems = (option, { source, presentation = 'itemized_products' }) => {
+const buildLineItems = (
+  option,
+  { source, presentation = 'itemized_products', catalogConfiguration },
+) => {
   if (!option?.id || !option?.input || !option?.result?.stateHash) {
     throw new Error('OPTION_REQUIRED');
   }
@@ -776,7 +847,7 @@ const buildLineItems = (option, { source, presentation = 'itemized_products' }) 
     buildSubscriptionSummaryLine(option, source),
     ...(presentation === 'subscription_summary' ? [] : buildMeteredLines(option, source)),
   ];
-  return withFeeTotals(
+  return applyCatalogConfiguration(withFeeTotals(
     withPositions([
       ...subscriptionLines,
       ...buildSupportLine(option, source),
@@ -785,14 +856,14 @@ const buildLineItems = (option, { source, presentation = 'itemized_products' }) 
       ...buildProfessionalServiceLines(option, source),
     ]),
     option,
-  );
+  ), catalogConfiguration);
 };
 
 // The Deal carries the same structure as the Quote: drawdown fee first with the platform total,
 // then the zero-priced product rate schedule, then support, add-ons and one-time charges. Both
 // surfaces showing the same lines in the same order is the point.
-const buildDealLineItems = (option) =>
-  withFeeTotals(
+const buildDealLineItems = (option, catalogConfiguration) =>
+  applyCatalogConfiguration(withFeeTotals(
     withPositions([
       buildDealBundleLine(option),
       ...buildMeteredLines(option, 'deal'),
@@ -802,12 +873,13 @@ const buildDealLineItems = (option) =>
       ...buildProfessionalServiceLines(option, 'deal'),
     ]),
     option,
-  );
+  ), catalogConfiguration);
 
-const buildQuoteLineItems = (option, content) =>
+const buildQuoteLineItems = (option, content, catalogConfiguration) =>
   buildLineItems(option, {
     source: 'quote',
     presentation: content.presentation,
+    catalogConfiguration,
   });
 
 

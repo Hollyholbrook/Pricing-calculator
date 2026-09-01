@@ -8,6 +8,27 @@ const { _test } = require('./QuoteOptionsFunction');
 
 const OPTION_PROPERTY = 'pricing_quote_options_payload';
 
+// Line item writes are BATCHED -- one create, one read-back, one update, one archive per surface,
+// instead of one of each per line item. A HubSpot app function is killed at 10 seconds and the
+// per-item version spent the whole budget before it could create the quote. These fakes speak the
+// batch shape; `read` answers "every fee property landed" so a test that is not about the repair
+// does not have to describe one.
+const batchLineItems = ({ create, archive, read, update } = {}) => ({
+  batchApi: {
+    create,
+    archive,
+    read:
+      read ||
+      (async ({ inputs }) => ({
+        results: inputs.map(({ id }) => ({
+          id,
+          properties: { one_time_fees: '1', recurring_fees: '1', total_fees_for_term: '1' },
+        })),
+      })),
+    update: update || (async () => undefined),
+  },
+});
+
 test('deleting the customer-selected option clears its Deal line items and selection', async () => {
   const archived = [];
   const updates = [];
@@ -20,7 +41,9 @@ test('deleting the customer-selected option clears its Deal line items and selec
           },
         },
       },
-      lineItems: { basicApi: { archive: async (id) => archived.push(id) } },
+      lineItems: batchLineItems({
+        archive: async ({ inputs }) => inputs.forEach(({ id }) => archived.push(String(id))),
+      }),
       deals: {
         basicApi: { update: async (_id, payload) => updates.push(payload) },
       },
@@ -82,11 +105,21 @@ test('a rejected line item leaves the Deal holding everything it already had', a
         results: [{ toObjectId: 'existing-1' }, { toObjectId: 'existing-2' }],
       }) } } },
       lineItems: {
+        ...batchLineItems({
+          archive: async ({ inputs }) => inputs.forEach(({ id }) => archived.push(String(id))),
+          // A batch fails as ONE unit. `units` is not one of the optional custom properties, so
+          // it is not droppable, and the create falls back to one line item at a time -- where
+          // the fifth is refused, exactly as before.
+          create: async () => {
+            const error = new Error('PROPERTY_DOESNT_EXIST');
+            error.code = 400;
+            error.body = { message: 'Property "units" was not one of the allowed options' };
+            throw error;
+          },
+        }),
         basicApi: {
-          archive: async (id) => archived.push(id),
           create: async () => {
             createCalls += 1;
-            // The fifth one is refused, the way HubSpot refuses an unknown enumeration value.
             if (createCalls === 5) {
               const error = new Error('PROPERTY_DOESNT_EXIST');
               error.code = 400;
@@ -128,20 +161,22 @@ test('a failure while archiving keeps the replacements rather than emptying the 
       associations: { v4: { basicApi: { getPage: async () => ({
         results: [{ toObjectId: 'existing-1' }, { toObjectId: 'existing-2' }],
       }) } } },
-      lineItems: {
-        basicApi: {
-          archive: async (id) => {
-            // The first original archives; the second refuses.
+      lineItems: batchLineItems({
+        archive: async ({ inputs }) => {
+          // The first original archives; the second refuses, part-way through the batch.
+          for (const { id } of inputs) {
             if (id === 'existing-2') throw new Error('rate limited');
-            archived.push(id);
-          },
-          create: async () => {
+            archived.push(String(id));
+          }
+        },
+        create: async ({ inputs }) => ({
+          results: inputs.map(({ properties }) => {
             const id = `new-${created.length + 1}`;
             created.push(id);
-            return { id };
-          },
-        },
-      },
+            return { id, properties };
+          }),
+        }),
+      }),
       deals: { basicApi: { update: async () => undefined } },
     },
   };
@@ -193,10 +228,11 @@ test('locking an option creates the replacements BEFORE archiving what was there
           },
         },
       },
-      lineItems: {
-        basicApi: {
-          archive: async (id) => events.push(`archive:${id}`),
-          create: async ({ properties }) => {
+      lineItems: batchLineItems({
+        archive: async ({ inputs }) =>
+          inputs.forEach(({ id }) => events.push(`archive:${id}`)),
+        create: async ({ inputs }) => ({
+          results: inputs.map(({ properties }, index) => {
             // Assert on a HubSpot-defined property. nylas_line_item_key is bookkeeping that only
             // exists in portals where it was provisioned, so it is filtered out of the payload;
             // sending it made every create fail with a 400 in portals that lack it.
@@ -204,10 +240,10 @@ test('locking an option creates the replacements BEFORE archiving what was there
             // Line items carry no `name` -- the product library owns it. The label is looked up
             // locally so this ordered list stays readable.
             events.push(`create:${labelForProductId(properties.hs_product_id)}`);
-            return { id: 'new-1' };
-          },
-        },
-      },
+            return { id: `new-${index + 1}`, properties };
+          }),
+        }),
+      }),
       deals: { basicApi: { update: async () => undefined } },
     },
   };
@@ -1061,14 +1097,16 @@ const lineItemClient = (stored, { updateThrows = false, getThrows = false } = {}
     client: {
       crm: {
         lineItems: {
-          basicApi: {
-            getById: async (id) => {
+          batchApi: {
+            read: async ({ inputs }) => {
               if (getThrows) throw new Error('gone');
-              return { id, properties: stored };
+              return { results: inputs.map(({ id }) => ({ id, properties: stored })) };
             },
-            update: async (id, body) => {
+            update: async ({ inputs }) => {
               if (updateThrows) throw new Error('read-only');
-              patched.push({ id: String(id), ...body.properties });
+              for (const { id, properties } of inputs) {
+                patched.push({ id: String(id), ...properties });
+              }
             },
           },
         },
@@ -1091,8 +1129,8 @@ test('a fee property HubSpot dropped is patched back', async () => {
     recurring_fees: '0',
     total_fees_for_term: '1760',
   });
-  const repaired = await _test.repairLineItemProperties(client, 'li-1', sentFees);
-  assert.deepEqual(repaired, ['one_time_fees']);
+  const repaired = await _test.repairLineItemsBatch(client, [{ id: 'li-1', sent: sentFees }]);
+  assert.deepEqual(repaired, ['li-1']);
   assert.deepEqual(patched, [{ id: 'li-1', one_time_fees: '1760' }]);
 });
 
@@ -1102,23 +1140,151 @@ test('a line item that kept everything is left alone', async () => {
     recurring_fees: '0',
     total_fees_for_term: '1760',
   });
-  assert.equal(await _test.repairLineItemProperties(client, 'li-2', sentFees), null);
+  assert.deepEqual(await _test.repairLineItemsBatch(client, [{ id: 'li-2', sent: sentFees }]), []);
   assert.deepEqual(patched, [], 'no write when nothing is missing');
 });
 
 test('only fee properties are verified, and only ones actually sent', async () => {
   const { client, patched } = lineItemClient({ one_time_fees: '' });
   // price is not a fee property; a metered line sends no fee properties at all.
-  assert.equal(await _test.repairLineItemProperties(client, 'li-3', { price: '1.36' }), null);
+  assert.deepEqual(
+    await _test.repairLineItemsBatch(client, [{ id: 'li-3', sent: { price: '1.36' } }]),
+    [],
+  );
   assert.deepEqual(patched, []);
 });
 
 test('a failed verify or repair never fails the lock', async () => {
   const missing = { one_time_fees: '', recurring_fees: '0', total_fees_for_term: '1760' };
   const read = lineItemClient(missing, { getThrows: true });
-  assert.equal(await _test.repairLineItemProperties(read.client, 'li-4', sentFees), null);
+  assert.deepEqual(
+    await _test.repairLineItemsBatch(read.client, [{ id: 'li-4', sent: sentFees }]),
+    [],
+  );
   const write = lineItemClient(missing, { updateThrows: true });
-  assert.equal(await _test.repairLineItemProperties(write.client, 'li-5', sentFees), null);
+  assert.deepEqual(
+    await _test.repairLineItemsBatch(write.client, [{ id: 'li-5', sent: sentFees }]),
+    [],
+  );
+});
+
+// A batch fails as ONE unit, so a property the portal does not have cannot be dropped from just
+// the line whose name appeared in the message -- it has to come off every input.
+test('a property this portal lacks is dropped from EVERY input, then the batch is retried', async () => {
+  const attempts = [];
+  const client = {
+    crm: {
+      lineItems: {
+        batchApi: {
+          create: async ({ inputs }) => {
+            attempts.push(inputs.map(({ properties }) => Object.keys(properties).sort().join(',')));
+            if (inputs.some(({ properties }) => properties.proposed_rate != null)) {
+              const error = new Error('PROPERTY_DOESNT_EXIST');
+              error.code = 400;
+              error.body = { message: 'Property "proposed_rate" does not exist' };
+              throw error;
+            }
+            return { results: inputs.map((_input, index) => ({ id: `li-${index}`, properties: {} })) };
+          },
+        },
+      },
+    },
+  };
+  const createdIds = [];
+  const results = await _test.createLineItemsBatch(
+    client,
+    [
+      { properties: { price: '1', proposed_rate: '1' }, associations: [] },
+      { properties: { price: '2', proposed_rate: '2' }, associations: [] },
+    ],
+    createdIds,
+  );
+  assert.equal(results.length, 2);
+  assert.equal(attempts.length, 2, 'one refused batch, then one retry');
+  assert.deepEqual(attempts[1], ['price', 'price'], 'dropped from BOTH inputs, not just one');
+  assert.deepEqual(createdIds, ['li-0', 'li-1']);
+});
+
+// A batch refused for a reason we do not recognise must not cost the whole quote. Per-item is
+// where the bundle fallback and the single-property drop still live.
+test('a batch refused for an unrecognised reason falls back to one create per line item', async () => {
+  const perItem = [];
+  const client = {
+    crm: {
+      lineItems: {
+        batchApi: {
+          create: async () => {
+            const error = new Error('nope');
+            error.code = 400;
+            error.body = { message: 'something else entirely' };
+            throw error;
+          },
+        },
+        basicApi: {
+          create: async ({ properties }) => {
+            perItem.push(properties.price);
+            return { id: `li-${perItem.length}` };
+          },
+        },
+      },
+    },
+  };
+  const createdIds = [];
+  const results = await _test.createLineItemsBatch(
+    client,
+    [
+      { properties: { price: '1' }, associations: [] },
+      { properties: { price: '2' }, associations: [] },
+    ],
+    createdIds,
+  );
+  assert.deepEqual(perItem, ['1', '2'], 'every line item was created individually');
+  assert.deepEqual(results.map(({ id }) => id), ['li-1', 'li-2'], 'results stay in input order');
+  assert.deepEqual([...createdIds].sort(), ['li-1', 'li-2'], 'ids recorded for the rollback');
+});
+
+// The repair patches by id. Patching the WRONG record would be worse than not patching at all, so
+// a join that cannot be verified is abandoned and the repair is skipped.
+test('the join back to what was sent is abandoned rather than guessed', () => {
+  const sent = [
+    { properties: { hs_product_id: 'p1', one_time_fees: '10' } },
+    { properties: { hs_product_id: 'p2', one_time_fees: '20' } },
+  ];
+  assert.equal(
+    _test.joinCreatedLineItems(sent, [{ id: 'a', properties: { hs_product_id: 'p1' } }]),
+    null,
+    'a short result set must not be joined by position',
+  );
+  assert.equal(
+    _test.joinCreatedLineItems(sent, [
+      { id: 'a', properties: { hs_product_id: 'p2' } },
+      { id: 'b', properties: { hs_product_id: 'p1' } },
+    ]),
+    null,
+    'a reordered result set must not be joined by position',
+  );
+  // A LONGER result set is the case the count guard exists for on its own: every position lines
+  // up, so nothing else notices, and the extra record means the correspondence is not what it
+  // looks like.
+  assert.equal(
+    _test.joinCreatedLineItems(sent, [
+      { id: 'a', properties: { hs_product_id: 'p1' } },
+      { id: 'b', properties: { hs_product_id: 'p2' } },
+      { id: 'c', properties: { hs_product_id: 'p3' } },
+    ]),
+    null,
+    'a result set with more records than were sent must not be joined',
+  );
+  assert.deepEqual(
+    _test.joinCreatedLineItems(sent, [
+      { id: 'a', properties: { hs_product_id: 'p1' } },
+      { id: 'b', properties: { hs_product_id: 'p2' } },
+    ]),
+    [
+      { id: 'a', sent: sent[0].properties },
+      { id: 'b', sent: sent[1].properties },
+    ],
+  );
 });
 
 test('BOTH surfaces verify every line item they create', () => {
@@ -1130,14 +1296,16 @@ test('BOTH surfaces verify every line item they create', () => {
     require('node:path').join(__dirname, 'QuoteOptionsFunction.js'),
     'utf8',
   );
-  const calls = source.match(/await repairLineItemProperties\(client, created\.id, sent\);/g) || [];
-  assert.equal(calls.length, 2, 'the Deal sync AND the quote line item loop must both verify');
+  const calls = source.match(/await repairLineItemsBatch\(/g) || [];
+  assert.equal(calls.length, 2, 'the Deal sync AND the quote line items must both verify');
 
   const dealLoop = source.slice(source.indexOf('const syncDealLineItems'));
-  assert.match(dealLoop.slice(0, 2000), /await repairLineItemProperties\(/, 'Deal sync verifies');
+  // 3000, not 2000: the rollback invariant now carries a comment explaining why it is a flag
+  // rather than a count, which pushed the repair call past the old window.
+  assert.match(dealLoop.slice(0, 3000), /await repairLineItemsBatch\(/, 'Deal sync verifies');
 
   const quoteLoop = source.slice(source.indexOf('The quote owns its line items'));
-  assert.match(quoteLoop.slice(0, 4000), /await repairLineItemProperties\(/, 'quote loop verifies');
+  assert.match(quoteLoop.slice(0, 4000), /await repairLineItemsBatch\(/, 'quote loop verifies');
 });
 
 test('the sync verifies every line item it creates', () => {
@@ -1148,7 +1316,7 @@ test('the sync verifies every line item it creates', () => {
   const sync = source.slice(source.indexOf('const syncDealLineItems'));
   assert.match(
     sync,
-    /createdIds\.push\(String\(created\.id\)\);\s*\n\s*\/\/[\s\S]{0,120}?await repairLineItemProperties\(client, created\.id, sent\);/,
+    /const created = await createLineItemsBatch\(client, sending, createdIds\);[\s\S]{0,200}?await repairLineItemsBatch\(/,
     'every created line item must be read back',
   );
 });

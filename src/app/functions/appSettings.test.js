@@ -8,9 +8,52 @@ const {
   defaultSettings,
   isDealAllowed,
   normalizeSettings,
+  normalizeCatalogConfiguration,
   quoteKindsForCategory,
   quoteTemplateSettings,
 } = require('./appSettings');
+
+test('catalog configuration defaults preserve the current builder and HubSpot mappings', () => {
+  const catalog = defaultSettings().catalogConfiguration;
+  assert.deepEqual(
+    new Set(Object.keys(catalog.products)),
+    new Set(pricingRules.products.map(({ key }) => key)),
+  );
+  assert.ok(Object.values(catalog.products).every(({ enabled, productId }) => enabled && /^\d+$/.test(productId)));
+  assert.equal(catalog.products.agent_email_thousands.order, 70);
+  assert.equal(catalog.options.addOns.enterprise_accelerator.enabled, false);
+  assert.equal(catalog.hubspotMappings.products.enterprise, '46037350773');
+  assert.equal(
+    catalog.hubspotMappings.lineItemProperties.proposedRate,
+    'proposed_rate',
+  );
+});
+
+test('legacy settings acquire catalog defaults without changing their pricing policy', () => {
+  const legacy = defaultSettings();
+  delete legacy.catalogConfiguration;
+  legacy.schemaVersion = '1.0';
+  const normalized = normalizeSettings(legacy);
+  assert.equal(normalized.schemaVersion, '1.1');
+  assert.equal(normalized.catalogConfiguration.products.connect_ca.enabled, true);
+  assert.deepEqual(normalized.pricingPolicy, legacy.pricingPolicy);
+});
+
+test('catalog configuration validates keys and fails closed on unsafe mappings', () => {
+  const catalog = defaultSettings().catalogConfiguration;
+  catalog.hubspotMappings.lineItemProperties.proposedRate = 'bad-property!';
+  assert.throws(
+    () => normalizeCatalogConfiguration(catalog),
+    /INVALID_SETTINGS:hubspotMappings\.lineItemProperties\.proposedRate/,
+  );
+
+  const noProducts = defaultSettings().catalogConfiguration;
+  for (const product of Object.values(noProducts.products)) product.enabled = false;
+  assert.throws(
+    () => normalizeCatalogConfiguration(noProducts),
+    /INVALID_SETTINGS:products\.enabled/,
+  );
+});
 
 test('deal eligibility defaults to New Business only', () => {
   const settings = defaultSettings();

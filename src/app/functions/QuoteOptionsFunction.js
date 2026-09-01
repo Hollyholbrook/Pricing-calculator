@@ -539,7 +539,7 @@ const deleteOption = async (client, dealId, state, parameters) => {
       'line_items',
       1_000,
     );
-    await inBatches(existingLineItemIds, (id) => client.crm.lineItems.basicApi.archive(id));
+    await archiveLineItemsBatch(client, existingLineItemIds);
     await client.crm.deals.basicApi.update(dealId, {
       properties: {
         pricing_selected_option_id: '',
@@ -1132,6 +1132,177 @@ const createLineItem = async (client, properties, associations, attempt = 0) => 
   }
 };
 
+// BATCHED LINE ITEM WRITES
+//
+// A HubSpot app function is KILLED AT 10 SECONDS of execution. A Lock in used to make roughly 120
+// API calls: one create and one read-back per line item, on the Deal AND again on the quote, plus
+// one archive per previous line item. A 15-line configuration spent the whole budget inside the
+// Deal sync, and the function was killed before generateQuote could create the quote at all --
+// Deal line items written, no quote, and NO exception, because nothing threw. No amount of error
+// handling catches that. The fix is to stop making the calls.
+//
+// Batched, each surface costs four calls instead of about fifty.
+const LINE_ITEM_BATCH_LIMIT = 100;
+
+const chunked = (values, size) => {
+  const groups = [];
+  for (let index = 0; index < values.length; index += size) {
+    groups.push(values.slice(index, index + size));
+  }
+  return groups;
+};
+
+// The batch response is joined back to what was sent BY POSITION, cross-checked on hs_product_id.
+// Patching the wrong record would be worse than not patching at all, so a join that cannot be
+// verified is abandoned rather than guessed at -- the caller then simply skips the repair, which
+// is the behaviour that existed before the repair was written.
+const joinCreatedLineItems = (sent, results) => {
+  if (!Array.isArray(results) || results.length !== sent.length) return null;
+  const pairs = [];
+  for (let index = 0; index < sent.length; index += 1) {
+    const created = results[index];
+    if (!created?.id) return null;
+    const sentProductId = sent[index].properties.hs_product_id;
+    const storedProductId = created.properties?.hs_product_id;
+    if (sentProductId && storedProductId && String(storedProductId) !== String(sentProductId)) {
+      return null;
+    }
+    pairs.push({ id: String(created.id), sent: sent[index].properties });
+  }
+  return pairs;
+};
+
+// `createdIds` is the CALLER'S array and is appended to as soon as each id exists, exactly as the
+// per-item loop did. A batch can come back MULTI_STATUS -- some created, some refused -- so the
+// ids that did land have to be recorded before this throws, or the caller's rollback archives
+// nothing and leaves them orphaned.
+const createLineItemsBatch = async (client, items, createdIds = [], attempt = 0) => {
+  if (items.length === 0) return [];
+  try {
+    const results = [];
+    for (const group of chunked(items, LINE_ITEM_BATCH_LIMIT)) {
+      const response = await client.crm.lineItems.batchApi.create({
+        inputs: group.map(({ properties, associations }) => ({ properties, associations })),
+      });
+      const created = response?.results || [];
+      for (const item of created) createdIds.push(String(item.id));
+      results.push(...created);
+      if (response?.errors?.length) {
+        const failure = new Error('LINE_ITEM_BATCH_PARTIAL');
+        failure.body = { message: JSON.stringify(response.errors).slice(0, 2_000) };
+        failure.code = 400;
+        throw failure;
+      }
+    }
+    return results;
+  } catch (error) {
+    if (isTransientRejection(error) && attempt < 3) {
+      await delay(400 * 2 ** attempt);
+      return createLineItemsBatch(client, items, createdIds, attempt + 1);
+    }
+    // A batch fails as ONE unit, so a property this portal does not have must be dropped from
+    // EVERY input rather than from the one line whose name appeared in the message.
+    const rejected = OPTIONAL_CUSTOM_LINE_ITEM_PROPERTIES.find(
+      (property) =>
+        items.some(({ properties }) => properties[property] != null) &&
+        isUnknownPropertyRejection(error, property),
+    );
+    if (rejected) {
+      console.error(
+        `Nylas pricing: HubSpot rejected ${rejected} as a Line Item property this portal does ` +
+          'not have. Recreating every line item WITHOUT it -- that field will be blank. ' +
+          `Rejection: ${String(error?.body?.message || error?.message || error)}`,
+      );
+      return createLineItemsBatch(
+        client,
+        items.map(({ properties, associations }) => {
+          const { [rejected]: unused, ...rest } = properties;
+          return { properties: rest, associations };
+        }),
+        createdIds,
+        attempt,
+      );
+    }
+    // Anything else: fall back to one create per line item. A batch refused for a reason we do
+    // not recognise must not cost the whole quote, and per-item is where the bundle fallback and
+    // the single-property drop still live. Slower, but only on the path that was already failing.
+    console.error(
+      'Nylas pricing: batch line item create failed; falling back to one create per line item. ' +
+        `${String(error?.body?.message || error?.message || error)}`,
+    );
+    const created = new Array(items.length);
+    const indexed = items.map((item, index) => ({ item, index }));
+    await inBatches(indexed, async ({ item, index }) => {
+      const record = await createLineItem(client, item.properties, item.associations);
+      createdIds.push(String(record.id));
+      created[index] = record;
+    });
+    return created;
+  }
+};
+
+// One read and at most one update, instead of a getById per line item on both surfaces.
+// Same guarantee as before: the fee properties are read back, and anything HubSpot silently
+// dropped is written again. Failures here are logged and swallowed -- a quote that exists with a
+// blank fee column is worth more than no quote.
+const repairLineItemsBatch = async (client, pairs) => {
+  const expected = pairs
+    .map(({ id, sent }) => ({
+      id,
+      properties: Object.fromEntries(
+        VERIFIED_LINE_ITEM_PROPERTIES.filter((name) => sent[name] != null).map((name) => [
+          name,
+          String(sent[name]),
+        ]),
+      ),
+    }))
+    .filter(({ properties }) => Object.keys(properties).length > 0);
+  if (expected.length === 0) return [];
+  try {
+    const stored = await client.crm.lineItems.batchApi.read({
+      properties: VERIFIED_LINE_ITEM_PROPERTIES,
+      inputs: expected.map(({ id }) => ({ id })),
+    });
+    const storedById = new Map(
+      (stored?.results || []).map((record) => [String(record.id), record.properties || {}]),
+    );
+    const updates = [];
+    for (const { id, properties } of expected) {
+      const have = storedById.get(id);
+      if (!have) continue;
+      const missing = Object.fromEntries(
+        Object.entries(properties).filter(([name]) => {
+          const value = have[name];
+          return value == null || value === '';
+        }),
+      );
+      if (Object.keys(missing).length > 0) updates.push({ id, properties: missing });
+    }
+    if (updates.length === 0) return [];
+    console.error(
+      `Nylas pricing: ${updates.length} line item(s) were created WITHOUT fee properties that ` +
+        'were sent. Patching them back.',
+    );
+    await client.crm.lineItems.batchApi.update({ inputs: updates });
+    return updates.map(({ id }) => id);
+  } catch (error) {
+    console.error(
+      'Nylas pricing: could not verify or repair line item fee properties. ' +
+        String(error?.body?.message || error?.message || error),
+    );
+    return [];
+  }
+};
+
+const archiveLineItemsBatch = async (client, ids) => {
+  if (ids.length === 0) return;
+  for (const group of chunked(ids, LINE_ITEM_BATCH_LIMIT)) {
+    await client.crm.lineItems.batchApi.archive({
+      inputs: group.map((id) => ({ id: String(id) })),
+    });
+  }
+};
+
 // Check that the fee properties actually landed, and put back any that did not.
 //
 // Written because a single professional-services line came back missing `one_time_fees` while four
@@ -1147,49 +1318,23 @@ const createLineItem = async (client, properties, associations, attempt = 0) => 
 // right; a missing display field is worth a warning, not a refused Lock in that empties the Deal.
 const VERIFIED_LINE_ITEM_PROPERTIES = ['one_time_fees', 'recurring_fees', 'total_fees_for_term'];
 
-const repairLineItemProperties = async (client, createdId, sentProperties) => {
-  const expected = Object.fromEntries(
-    VERIFIED_LINE_ITEM_PROPERTIES.filter((name) => sentProperties[name] != null).map((name) => [
-      name,
-      String(sentProperties[name]),
-    ]),
-  );
-  if (Object.keys(expected).length === 0) return null;
-  try {
-    const stored = await client.crm.lineItems.basicApi.getById(
-      String(createdId),
-      Object.keys(expected),
-    );
-    const missing = Object.fromEntries(
-      Object.entries(expected).filter(([name]) => {
-        const value = stored?.properties?.[name];
-        return value == null || value === '';
-      }),
-    );
-    if (Object.keys(missing).length === 0) return null;
-    console.error(
-      `Nylas pricing: line item ${createdId} was created WITHOUT ` +
-        `[${Object.keys(missing).join(', ')}] even though they were sent. Patching them back.`,
-    );
-    await client.crm.lineItems.basicApi.update(String(createdId), { properties: missing });
-    return Object.keys(missing);
-  } catch (error) {
-    console.warn(
-      `Nylas pricing: could not verify or repair line item ${createdId}. ` +
-        `${String(error?.body?.message || error?.message || error)}`,
-    );
-    return null;
-  }
-};
-
 const syncDealLineItems = async (client, dealId, state, settings) => {
   const option = selectedOptionForDraft(state);
   assertCurrentSettings(option, settings);
   const desired = buildDealLineItems(option);
   const createdIds = [];
-  // How many of the OLD line items have actually gone. It decides whether a failure can be rolled
-  // back: while it is 0, the Deal still holds everything it started with.
+  // How many of the OLD line items have gone, for the message below.
   let archivedCount = 0;
+  // Whether archiving has BEGUN. It decides whether a failure can be rolled back: while this is
+  // false the Deal still holds everything it started with, so the replacements can be removed.
+  //
+  // This used to be `archivedCount === 0`, counted one archive at a time. The archive is now a
+  // single batch call, so a failure part-way through is not countable -- and the conservative
+  // reading is the safe one. Once the archive has been ATTEMPTED we no longer know whether an
+  // original survived, so the replacements are KEPT. That preserves the invariant that actually
+  // matters (the Deal is never left empty) and costs only that a failed archive may leave
+  // duplicates, which is the trade this ordering already accepts.
+  let archiveStarted = false;
   try {
     const existingIds = await associatedIds(client, 'deals', dealId, 'line_items', 1_000);
 
@@ -1204,18 +1349,17 @@ const syncDealLineItems = async (client, dealId, state, settings) => {
     // Creating first means a failed create is survivable. The replacements are rolled back and
     // the Deal is exactly as it was. The cost is that the Deal briefly holds both sets, roughly
     // 26 line items on a typical quote against a 1,000 association ceiling, which is not close.
-    await inBatches(desired, async (item) => {
-      const sent = hubSpotLineItemProperties(item.properties);
-      const created = await createLineItem(client, sent, [createAssociation(dealId, 20)]);
-      createdIds.push(String(created.id));
-      // Read back and repair rather than trust the write. See repairLineItemProperties.
-      await repairLineItemProperties(client, created.id, sent);
-    });
+    const sending = desired.map((item) => ({
+      properties: hubSpotLineItemProperties(item.properties),
+      associations: [createAssociation(dealId, 20)],
+    }));
+    const created = await createLineItemsBatch(client, sending, createdIds);
+    // Read back and repair rather than trust the write. See repairLineItemsBatch.
+    await repairLineItemsBatch(client, joinCreatedLineItems(sending, created) || []);
 
-    await inBatches(existingIds, async (id) => {
-      await client.crm.lineItems.basicApi.archive(id);
-      archivedCount += 1;
-    });
+    archiveStarted = true;
+    await archiveLineItemsBatch(client, existingIds);
+    archivedCount = existingIds.length;
 
     const syncedAt = new Date().toISOString();
     await client.crm.deals.basicApi.update(dealId, {
@@ -1231,11 +1375,8 @@ const syncDealLineItems = async (client, dealId, state, settings) => {
     // ordering exists to prevent. So a failure during the archive phase deliberately leaves the
     // Deal holding both sets: duplicated line items are visible and fixable by hand, an empty
     // Deal is silent and is not.
-    if (archivedCount === 0) {
-      await inBatches(
-        createdIds,
-        (id) => client.crm.lineItems.basicApi.archive(id).catch(() => undefined),
-      );
+    if (!archiveStarted) {
+      await archiveLineItemsBatch(client, createdIds).catch(() => undefined);
     } else {
       console.error(
         `Nylas pricing: line item sync failed after archiving ${archivedCount} of the Deal's ` +
@@ -2549,29 +2690,29 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
     // Batched, not one Promise.all over every line. Thirteen simultaneous creates is what made a
     // rate limit likely in the first place, and the Deal sync has always batched -- this path was
     // the odd one out. inBatches keeps the same concurrency ceiling as everywhere else.
-    await inBatches(
-      lineItems,
-      async (item) => {
-        const sent = hubSpotLineItemProperties(item.properties);
-        const created = await createLineItem(
-          client,
-          sent,
-          // 68, not 67. Association type ids are directional: 67 is defined FROM the quote
-          // (0-14) TO the line item, but this association is declared on the line item's own
-          // create call, so the "from" side is the line item (0-8). HubSpot rejected it with
-          // "invalid from object type 0-8 ... expected: 0-14. For definition 0-67". 68 is the
-          // line-item-to-quote direction -- the same reason the Deal sync uses 20.
-          [createAssociation(quote.id, 68)],
-        );
-        createdLineItemIds.push(String(created.id));
-        // Read back and repair, exactly as the Deal sync does.
-        //
-        // THE QUOTE HAS ITS OWN LINE ITEMS -- separate records from the Deal's, created here. The
-        // printed Order Form renders from THESE. When the verify-and-repair was added it went on
-        // the Deal sync only, so the surface the customer actually reads was still unchecked and a
-        // dropped `one_time_fees` still printed as a dash. 2026-08-28.
-        await repairLineItemProperties(client, created.id, sent);
-      },
+    const sendingQuoteLines = lineItems.map((item) => ({
+      properties: hubSpotLineItemProperties(item.properties),
+      // 68, not 67. Association type ids are directional: 67 is defined FROM the quote (0-14) TO
+      // the line item, but this association is declared on the line item's own create, so the
+      // "from" side is the line item (0-8). HubSpot rejected it with "invalid from object type
+      // 0-8 ... expected: 0-14. For definition 0-67". 68 is the line-item-to-quote direction --
+      // the same reason the Deal sync uses 20.
+      associations: [createAssociation(quote.id, 68)],
+    }));
+    const createdQuoteLines = await createLineItemsBatch(
+      client,
+      sendingQuoteLines,
+      createdLineItemIds,
+    );
+    // Read back and repair, exactly as the Deal sync does.
+    //
+    // THE QUOTE HAS ITS OWN LINE ITEMS -- separate records from the Deal's, created here. The
+    // printed Order Form renders from THESE. When the verify-and-repair was added it went on the
+    // Deal sync only, so the surface the customer actually reads was still unchecked and a
+    // dropped `one_time_fees` still printed as a dash. 2026-08-28.
+    await repairLineItemsBatch(
+      client,
+      joinCreatedLineItems(sendingQuoteLines, createdQuoteLines) || [],
     );
 
     const [dealContactIds, companyIds] = await Promise.all([
@@ -2794,9 +2935,7 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
   } catch (error) {
     // Archive the quote's own line items before the quote, so a failed attempt leaves nothing
     // orphaned. The Deal's line items are syncDealLineItems' to roll back, not this function's.
-    for (const id of createdLineItemIds) {
-      await client.crm.lineItems.basicApi.archive(id).catch(() => undefined);
-    }
+    await archiveLineItemsBatch(client, createdLineItemIds).catch(() => undefined);
     if (quote?.id) await client.crm.quotes.basicApi.archive(quote.id).catch(() => undefined);
     await client.crm.deals.basicApi
       .update(dealId, { properties: { pricing_quote_generation_status: 'failed' } })
@@ -2893,6 +3032,7 @@ exports.main = async (context) => {
         // The resolved flow, so the card renders that flow's view rather than guessing from a
         // deal type it never sees.
         dealCategory: listCategory,
+        catalogConfiguration: settings.catalogConfiguration,
         quoteTemplates: listTemplates.templates,
         defaultQuoteTemplateId: listTemplates.defaultTemplateId,
         // Which kind claims each template. The card reads this to decide whether the contract
@@ -3087,7 +3227,10 @@ exports._test = Object.freeze({
   quoteKindForTemplate,
   contractApplies,
   resolveQuoteKind,
-  repairLineItemProperties,
+  repairLineItemsBatch,
+  createLineItemsBatch,
+  archiveLineItemsBatch,
+  joinCreatedLineItems,
   senderProperties,
   associatedIds,
   createLineItem,
