@@ -3329,12 +3329,12 @@ var defaultQuoteTemplateFor = (settings, quoteKind) => quoteTemplateSettings(set
 var quoteKindForTemplate = (settings, category, templateId) => {
   const id = String(templateId || "");
   if (!id) return null;
-  return QUOTE_KINDS.find(
+  return ["change", "renewal", "new_business"].find(
     (kind) => quoteTemplateSettings(settings, kind).enabledIds.map(String).includes(id)
   ) || null;
 };
 var quoteTemplatesForCategory = (templates, settings, category) => {
-  const kinds = QUOTE_KINDS;
+  const kinds = quoteKindsForCategory(category);
   const seen = /* @__PURE__ */ new Set();
   const merged = [];
   const templateKinds = {};
@@ -3351,7 +3351,7 @@ var quoteTemplatesForCategory = (templates, settings, category) => {
   return {
     templates: merged,
     templateKinds,
-    defaultTemplateId: defaultQuoteTemplateFor(settings, quoteKindsForCategory(category)[0])
+    defaultTemplateId: defaultQuoteTemplateFor(settings, kinds[0])
   };
 };
 var contractApplies = (quoteKind) => quoteKind === "change" || quoteKind === "renewal";
@@ -4347,7 +4347,9 @@ exports.main = async (context) => {
         ...await quoteContactOptions(client, dealId),
         // Only where a contract can apply. A new-business Deal has no change or renewal kind, so
         // asking its company for contracts is a wasted round trip on every card load.
-        ...await contractOptions(client, dealId),
+        ...Object.values(listTemplates.templateKinds).some(
+          (kind) => kind === "change" || kind === "renewal"
+        ) ? await contractOptions(client, dealId) : {},
         dealOwnerId: state.dealOwnerId,
         // TEMP DIAGNOSTIC -- see latestQuoteTemplate. Remove with it.
         latestQuoteTemplate: await latestQuoteTemplate(client, state.latestQuoteId, allTemplates),

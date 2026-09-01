@@ -1190,8 +1190,17 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
           `The Quote is on the Deal's Quotes card.`,
         type: "success",
       });
-      // After the alert, so the rep sees the confirmation before the page goes.
-      actions.reloadPage();
+      // NO reloadPage(). It was here so the Line items and Quotes cards beside this one would
+      // refresh, and it cost far more than it bought: reloading remounts THIS card, which threw
+      // away the confirmation alert a fraction of a second after showing it and reset the
+      // template picker to the category default. A rep who chose the Change template, locked in,
+      // and locked in again got a New Business quote the second time without ever being told the
+      // selection had moved. Holly, 2026-09-01: "I literally only need this to use the quote
+      // that's chosen."
+      //
+      // refreshObjectProperties above still updates the Deal's own fields. The neighbouring cards
+      // catch up on the next manual refresh, which is a far smaller price than silently changing
+      // what the rep selected.
     } catch (lockError) {
       setError(
         lockError instanceof Error

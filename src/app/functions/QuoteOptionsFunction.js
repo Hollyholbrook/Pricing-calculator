@@ -1494,8 +1494,16 @@ const defaultQuoteTemplateFor = (settings, quoteKind) =>
 const quoteKindForTemplate = (settings, category, templateId) => {
   const id = String(templateId || '');
   if (!id) return null;
+  // CHANGE AND RENEWAL FIRST, new_business last.
+  //
+  // Not QUOTE_KINDS order. Listing a template under new_business means "this pipeline may quote
+  // from it"; listing it under change or renewal is a statement about what the DOCUMENT IS. So a
+  // template put in both -- which is exactly how an upsell in the new business pipeline gets the
+  // Change document -- keeps its own identity rather than being renamed by the pipeline that
+  // borrowed it. Otherwise it would print the change document while the app called it new
+  // business, and the contract picker would never appear.
   return (
-    QUOTE_KINDS.find((kind) =>
+    ['change', 'renewal', 'new_business'].find((kind) =>
       quoteTemplateSettings(settings, kind).enabledIds.map(String).includes(id),
     ) || null
   );
@@ -1511,7 +1519,7 @@ const quoteKindForTemplate = (settings, category, templateId) => {
 // template", which is what an unconfigured portal has. Those templates simply carry no kind, and
 // no contract is asked for -- see the comment on contractApplies below.
 const quoteTemplatesForCategory = (templates, settings, category) => {
-  const kinds = QUOTE_KINDS;
+  const kinds = quoteKindsForCategory(category);
   const seen = new Set();
   const merged = [];
   const templateKinds = {};
@@ -1528,7 +1536,7 @@ const quoteTemplatesForCategory = (templates, settings, category) => {
   return {
     templates: merged,
     templateKinds,
-    defaultTemplateId: defaultQuoteTemplateFor(settings, quoteKindsForCategory(category)[0]),
+    defaultTemplateId: defaultQuoteTemplateFor(settings, kinds[0]),
   };
 };
 
@@ -3059,7 +3067,11 @@ exports.main = async (context) => {
         ...(await quoteContactOptions(client, dealId)),
         // Only where a contract can apply. A new-business Deal has no change or renewal kind, so
         // asking its company for contracts is a wasted round trip on every card load.
-        ...(await contractOptions(client, dealId)),
+        ...(Object.values(listTemplates.templateKinds).some(
+          (kind) => kind === 'change' || kind === 'renewal',
+        )
+          ? await contractOptions(client, dealId)
+          : {}),
         dealOwnerId: state.dealOwnerId,
         // TEMP DIAGNOSTIC -- see latestQuoteTemplate. Remove with it.
         latestQuoteTemplate: await latestQuoteTemplate(client, state.latestQuoteId, allTemplates),
