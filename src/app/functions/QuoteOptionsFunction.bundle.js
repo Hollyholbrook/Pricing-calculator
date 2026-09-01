@@ -2457,6 +2457,7 @@ var SAFE_ERRORS = Object.freeze({
   LINE_ITEM_SYNC_FAILED: "HubSpot could not replace the Deal line items. Review the Deal before trying again.",
   DISCOUNT_REASON_REQUIRED: "A discount reason is required when any discount is applied. Add one and try again.",
   QUOTE_CONTACT_REQUIRED: "A contact is required on the Quote. Choose one on the pricing card, or associate a contact with this Deal.",
+  QUOTE_TEMPLATE_NOT_CPQ: "That quote template is a legacy template and cannot be used. Choose a CPQ template on the card, or change which templates are offered in Settings > Quote Templates.",
   QUOTE_CONTRACT_REQUIRED: "Choose which contract this change or renewal is for before locking in.",
   OPTION_BLOCKED: "This option has blocking policy issues and cannot be selected.",
   PAYMENT_METHOD_REQUIRES_BANK_TRANSFER: "Credit card is not permitted on an invoice above the limit. Set Payment Method to Bank transfer / ACH before locking in.",
@@ -3291,7 +3292,7 @@ var syncDealLineItems = async (client, dealId, state, settings) => {
     throw failure;
   }
 };
-var REQUIRED_QUOTE_TEMPLATE_TYPE = "customizable_quote_template";
+var REQUIRED_QUOTE_TEMPLATE_TYPE = "cpq_template";
 var QUOTE_TEMPLATE_OBJECT_TYPES = ["quote_template", "quote_templates"];
 var readQuoteTemplatePage = async (client, after) => {
   let lastError;
@@ -3301,7 +3302,7 @@ var readQuoteTemplatePage = async (client, after) => {
         objectType,
         100,
         after,
-        ["hs_name", "hs_type"],
+        ["hs_name", "hs_type", "hs_active"],
         void 0,
         void 0,
         false
@@ -3793,11 +3794,21 @@ var quoteContactOptions = async (client, dealId) => {
 };
 var usableQuoteTemplates = async (client) => {
   const templates = [];
+  const excluded = [];
   let after;
   try {
     do {
       const page = await readQuoteTemplatePage(client, after);
       for (const template of page?.results || []) {
+        const type = template?.properties?.hs_type || "";
+        if (type !== REQUIRED_QUOTE_TEMPLATE_TYPE) {
+          excluded.push(`${template?.id} (${type || "no type"})`);
+          continue;
+        }
+        if (String(template?.properties?.hs_active) === "false") {
+          excluded.push(`${template?.id} (archived)`);
+          continue;
+        }
         templates.push({
           id: String(template.id),
           name: String(
@@ -3813,6 +3824,11 @@ var usableQuoteTemplates = async (client) => {
       safeProviderDiagnostics(error, "list_quote_templates")
     );
     return [];
+  }
+  if (excluded.length > 0) {
+    console.log(
+      `Nylas pricing: ${excluded.length} quote template(s) not offered -- not an active ${REQUIRED_QUOTE_TEMPLATE_TYPE}: ${excluded.join(", ")}.`
+    );
   }
   return templates.sort((left, right) => left.name.localeCompare(right.name));
 };
@@ -3967,6 +3983,14 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
     client,
     templateId
   );
+  if (templateType !== REQUIRED_QUOTE_TEMPLATE_TYPE && templateType !== "unknown") {
+    console.error(
+      `Nylas pricing: refusing to build a quote from template ${templateId} ("${templateName}") -- hs_type is "${templateType}", not "${REQUIRED_QUOTE_TEMPLATE_TYPE}".`
+    );
+    const failure = new Error("QUOTE_TEMPLATE_NOT_CPQ");
+    failure.diagnostics = { quoteTemplateId: templateId, quoteTemplateType: templateType };
+    throw failure;
+  }
   const hash = contentHash(option, { ...content, templateId });
   let supersededQuoteId = "";
   try {
@@ -4516,6 +4540,7 @@ exports._test = Object.freeze({
   readContractProbe,
   isQuotableContract,
   offeredQuoteTemplates,
+  usableQuoteTemplates,
   defaultQuoteTemplateFor,
   quoteTemplatesForCategory,
   quoteKindForTemplate,

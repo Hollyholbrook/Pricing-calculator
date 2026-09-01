@@ -1390,6 +1390,58 @@ test('the template picker is narrowed per kind, and never left empty', () => {
 // THE TEMPLATE DECIDES THE KIND. There is no separate Quote Type control -- one existed briefly
 // and let the two disagree on screen: Quote Type "Change" beside the New Business template. The
 // template is what actually prints, so it is the input and the kind is read off it.
+// Only ACTIVE CPQ templates may be offered. A quote is created with hs_template_type CPQ_QUOTE;
+// associating it to a legacy customizable_quote_template is a mismatch HubSpot reports as
+// "One or more associations are invalid", naming the association rather than the template.
+// This portal holds three legacy records -- Default Original, Default Basic, Default Modern.
+test('legacy and archived quote templates are never offered', async () => {
+  const page = {
+    results: [
+      { id: '567553820432', properties: { hs_name: 'New Business Template', hs_type: 'cpq_template', hs_active: 'true' } },
+      { id: '583243623796', properties: { hs_name: 'Change Quote Template', hs_type: 'cpq_template', hs_active: 'true' } },
+      // The portal's real legacy records.
+      { id: '292990114640', properties: { hs_name: 'Default Original', hs_type: 'customizable_quote_template', hs_active: 'true' } },
+      { id: '292990114638', properties: { hs_name: 'Default Basic', hs_type: 'customizable_quote_template', hs_active: 'false' } },
+      // A CPQ template that has been archived is no more usable than a legacy one.
+      { id: '559754016006', properties: { hs_name: 'Template - Proof of Concept (POC)', hs_type: 'cpq_template', hs_active: 'false' } },
+      // No type at all -- treated as not CPQ rather than assumed to be fine.
+      { id: '999999999999', properties: { hs_name: 'Mystery' } },
+    ],
+  };
+  const client = { crm: { objects: { basicApi: { getPage: async () => page } } } };
+  const offered = await _test.usableQuoteTemplates(client);
+  assert.deepEqual(
+    offered.map(({ id }) => id),
+    ['583243623796', '567553820432'],
+    'only the active cpq_template records, sorted by name',
+  );
+});
+
+// The picker filter is not enough on its own: a stale card, a stored option, or the configured
+// secret can all put a template id into the lock that the picker never offered. The lock refuses
+// it too -- and BEFORE the quote record exists, so a refusal leaves nothing behind.
+test('the lock refuses a legacy template, before any quote is created', () => {
+  const source = require('node:fs').readFileSync(
+    require('node:path').join(__dirname, 'QuoteOptionsFunction.js'),
+    'utf8',
+  );
+  assert.match(
+    source,
+    /if \(templateType !== REQUIRED_QUOTE_TEMPLATE_TYPE && templateType !== 'unknown'\) \{[\s\S]{0,600}?QUOTE_TEMPLATE_NOT_CPQ/,
+    'a non-CPQ template must throw QUOTE_TEMPLATE_NOT_CPQ',
+  );
+  const guardAt = source.indexOf("throw failure;\n  }\n  // A new Quote every time");
+  const createAt = source.indexOf('quote = await client.crm.quotes.basicApi.create({');
+  assert.ok(guardAt > 0, 'the guard must be findable');
+  assert.ok(createAt > 0, 'the quote create must be findable');
+  assert.ok(
+    guardAt < createAt,
+    'the template type must be checked BEFORE the quote record is created',
+  );
+  // And the rep gets told which thing to change, not just that something failed.
+  assert.match(source, /QUOTE_TEMPLATE_NOT_CPQ:\s*\n?\s*'That quote template is a legacy template/);
+});
+
 test('the template list is narrowed to the Deal, and the kind still comes from the template', () => {
   const settings = normalizeSettings({
     ...defaultSettings(),

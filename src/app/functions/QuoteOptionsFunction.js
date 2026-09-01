@@ -234,6 +234,9 @@ const SAFE_ERRORS = Object.freeze({
   QUOTE_CONTACT_REQUIRED:
     'A contact is required on the Quote. Choose one on the pricing card, or associate a contact ' +
     'with this Deal.',
+  QUOTE_TEMPLATE_NOT_CPQ:
+    'That quote template is a legacy template and cannot be used. Choose a CPQ template on the ' +
+    'card, or change which templates are offered in Settings > Quote Templates.',
   QUOTE_CONTRACT_REQUIRED:
     'Choose which contract this change or renewal is for before locking in.',
   OPTION_BLOCKED: 'This option has blocking policy issues and cannot be selected.',
@@ -1417,7 +1420,17 @@ const syncDealLineItems = async (client, dealId, state, settings) => {
 // The check itself must not become a new failure mode: if the template cannot be read (scope,
 // permissions, an id that is not a template), it falls through to the original behaviour rather
 // than blocking a quote that might have worked.
-const REQUIRED_QUOTE_TEMPLATE_TYPE = 'customizable_quote_template';
+// The only template model this app will build a quote from.
+//
+// A portal can still hold `customizable_quote_template` records -- this one has three ("Default
+// Original", "Default Basic", "Default Modern"). They are the LEGACY model. A quote created with
+// hs_template_type CPQ_QUOTE and then associated to one of them is a mismatch, and HubSpot
+// reports it as "One or more associations are invalid" without naming the template.
+//
+// This constant used to name the legacy type as the required one, which is backwards and is why
+// nothing was filtered. Holly, 2026-09-01: "make sure the only templates we are creating are CPQ
+// and not legacy."
+const REQUIRED_QUOTE_TEMPLATE_TYPE = 'cpq_template';
 
 // HubSpot's object type name for quote templates is not consistent across its APIs, so both
 // spellings are tried rather than guessing one and failing the whole listing.
@@ -1431,7 +1444,7 @@ const readQuoteTemplatePage = async (client, after) => {
         objectType,
         100,
         after,
-        ['hs_name', 'hs_type'],
+        ['hs_name', 'hs_type', 'hs_active'],
         undefined,
         undefined,
         false,
@@ -2222,15 +2235,28 @@ const quoteContactOptions = async (client, dealId) => {
 
 const usableQuoteTemplates = async (client) => {
   const templates = [];
+  const excluded = [];
   let after;
   try {
     do {
       const page = await readQuoteTemplatePage(client, after);
       for (const template of page?.results || []) {
-        // No "(not supported)" suffix. That label came from the same wrong inference as the
-        // filter before it: a cpq_template is not unsupported, it is the current model, and the
-        // quote just had to declare hs_template_type CPQ_QUOTE to match it. Marking every real
-        // template in the portal as unsupported was misinformation in the UI.
+        // ACTIVE CPQ TEMPLATES ONLY.
+        //
+        // An earlier version marked every template "(not supported)", which was the opposite
+        // error -- a cpq_template IS the current model. The fix was to drop that label, but the
+        // filter went with it, so the picker started offering the portal's legacy
+        // customizable_quote_template records and its archived ones too. Neither can back a
+        // CPQ_QUOTE.
+        const type = template?.properties?.hs_type || '';
+        if (type !== REQUIRED_QUOTE_TEMPLATE_TYPE) {
+          excluded.push(`${template?.id} (${type || 'no type'})`);
+          continue;
+        }
+        if (String(template?.properties?.hs_active) === 'false') {
+          excluded.push(`${template?.id} (archived)`);
+          continue;
+        }
         templates.push({
           id: String(template.id),
           name: String(
@@ -2248,6 +2274,12 @@ const usableQuoteTemplates = async (client) => {
       safeProviderDiagnostics(error, 'list_quote_templates'),
     );
     return [];
+  }
+  if (excluded.length > 0) {
+    console.log(
+      `Nylas pricing: ${excluded.length} quote template(s) not offered -- not an active ` +
+        `${REQUIRED_QUOTE_TEMPLATE_TYPE}: ${excluded.join(', ')}.`,
+    );
   }
   return templates.sort((left, right) => left.name.localeCompare(right.name));
 };
@@ -2523,6 +2555,20 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
     client,
     templateId,
   );
+  // Before anything is created. A legacy template produces a quote HubSpot then refuses to
+  // associate, and the failure names the association rather than the template -- so it is caught
+  // here, where the message can say which template and why. 'unknown' is allowed through: it means
+  // the read failed, not that the template is legacy, and refusing on a failed read would block
+  // every lock in a portal where the template object is not readable.
+  if (templateType !== REQUIRED_QUOTE_TEMPLATE_TYPE && templateType !== 'unknown') {
+    console.error(
+      `Nylas pricing: refusing to build a quote from template ${templateId} ("${templateName}") ` +
+        `-- hs_type is "${templateType}", not "${REQUIRED_QUOTE_TEMPLATE_TYPE}".`,
+    );
+    const failure = new Error('QUOTE_TEMPLATE_NOT_CPQ');
+    failure.diagnostics = { quoteTemplateId: templateId, quoteTemplateType: templateType };
+    throw failure;
+  }
   // A new Quote every time. There is deliberately no reuse branch.
   //
   // There used to be: an unchanged content hash returned the stored quote instead of creating one.
@@ -3254,6 +3300,7 @@ exports._test = Object.freeze({
   readContractProbe,
   isQuotableContract,
   offeredQuoteTemplates,
+  usableQuoteTemplates,
   defaultQuoteTemplateFor,
   quoteTemplatesForCategory,
   quoteKindForTemplate,
