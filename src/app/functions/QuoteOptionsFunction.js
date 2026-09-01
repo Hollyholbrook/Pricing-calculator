@@ -2412,6 +2412,35 @@ const senderProperties = async (client, ownerId) => {
   }
 };
 
+// QUOTE EXPIRATION. Holly, 2026-09-01: "Expiration date can't be in the past for ones we're
+// creating. Order start date should be the expiration date + 5 days."
+//
+// It used to be pinned to the order start date itself, on the reasoning that inventing a rolling
+// date would print something on a customer-facing quote that nobody chose. The cost of that was
+// worse: a back-dated or same-day contract start produced a quote that was already expired --
+// quote 42607873610 was created on 2026-08-31 and expired 2025-08-31 -- and an expired quote
+// cannot be accepted.
+//
+// So: start + 5 days, and never in the past. When the contract start is behind us the five days
+// are counted from TODAY instead, because the point of the field is that the customer has time
+// to sign. hs_contract_effective_start_date still carries the real order start date, so nothing
+// about the contract itself moves.
+const QUOTE_EXPIRY_DAYS = 5;
+
+const quoteExpirationDate = (contractStartDate, now = new Date()) => {
+  const plusDays = (date) => {
+    const moved = new Date(date.getTime());
+    moved.setUTCDate(moved.getUTCDate() + QUOTE_EXPIRY_DAYS);
+    return moved;
+  };
+  const today = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  const floor = plusDays(today);
+  const parsed = contractStartDate ? new Date(`${contractStartDate}T00:00:00Z`) : null;
+  const fromStart = parsed && !Number.isNaN(parsed.getTime()) ? plusDays(parsed) : null;
+  const chosen = fromStart && fromStart.getTime() > floor.getTime() ? fromStart : floor;
+  return chosen.toISOString().slice(0, 10);
+};
+
 const archiveSupersededQuote = async (client, supersededQuoteId, newQuoteId) => {
   if (!supersededQuoteId || supersededQuoteId === String(newQuoteId)) return null;
   try {
@@ -2696,21 +2725,16 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
     quote = await client.crm.quotes.basicApi.create({
       properties: {
         hs_title: content.title,
-        // Both dates are the order start date -- the contract start the calculator derived from
-        // the rep's Start Date, not the raw input, so the quote and the Deal's contract dates
-        // cannot disagree.
+        // The contract start is the calculator's derived order start date, not the rep's raw
+        // input, so the quote and the Deal's contract dates cannot disagree.
         //
-        // hs_expiration_date is listed as required at creation, so it cannot simply be dropped.
-        // Rather than invent a rolling "30 days from whenever this ran" and print a date on a
-        // customer-facing quote that nobody chose, it is pinned to the order start date too.
-        //
-        // Never send an empty string for a date: in HubSpot that is not "no date", it lands as
-        // the epoch and prints as January 1, 1970.
+        // The EXPIRATION is start + 5 days and never in the past -- see quoteExpirationDate.
+        // It is always sent: hs_expiration_date is required at creation, and never send an empty
+        // string for a date in HubSpot -- that is not "no date", it lands on the epoch and prints
+        // as January 1, 1970.
+        hs_expiration_date: quoteExpirationDate(option.result.dates.contractStartDate),
         ...(option.result.dates.contractStartDate
-          ? {
-              hs_expiration_date: option.result.dates.contractStartDate,
-              hs_contract_effective_start_date: option.result.dates.contractStartDate,
-            }
+          ? { hs_contract_effective_start_date: option.result.dates.contractStartDate }
           : {}),
         // hs_comments and hs_terms are deliberately not sent.
         //
@@ -3330,6 +3354,7 @@ exports.main = async (context) => {
 
 exports._test = Object.freeze({
   archiveSupersededQuote,
+  quoteExpirationDate,
   assertContractChosen,
   contractOptions,
   contractUnavailableReason,

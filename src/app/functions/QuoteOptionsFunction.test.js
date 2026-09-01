@@ -753,6 +753,48 @@ test('a failed archive does not fail the Lock in', async () => {
 //
 // Values confirmed against portal 45023718 by reading the property definition, not from docs:
 // DRAFT, PENDING_APPROVAL, REJECTED, APPROVED, APPROVAL_NOT_NEEDED, ACCEPTED, VOID.
+// A quote that is already expired cannot be accepted. Quote 42607873610 was created on
+// 2026-08-31 and expired 2025-08-31, because the expiration was pinned to the contract start.
+test('the quote expiration is the order start plus five days, and never in the past', () => {
+  const expiry = _test.quoteExpirationDate;
+  const now = new Date('2026-09-01T10:00:00Z');
+
+  // A future start: five days after it.
+  assert.equal(expiry('2026-12-01', now), '2026-12-06');
+  // Today's start: five days from today.
+  assert.equal(expiry('2026-09-01', now), '2026-09-06');
+
+  // THE CASE THIS EXISTS FOR. A back-dated contract start must not produce an expired quote --
+  // the five days are counted from today instead.
+  assert.equal(expiry('2025-08-31', now), '2026-09-06');
+  assert.equal(expiry('2026-08-30', now), '2026-09-06');
+
+  // No start date at all still yields a real, future date -- never an empty string, which HubSpot
+  // reads as the epoch and prints as January 1, 1970.
+  assert.equal(expiry('', now), '2026-09-06');
+  assert.equal(expiry(null, now), '2026-09-06');
+  assert.match(expiry('not a date', now), /^\d{4}-\d{2}-\d{2}$/);
+
+  // Month and year boundaries.
+  assert.equal(expiry('2026-12-30', new Date('2026-12-30T00:00:00Z')), '2027-01-04');
+  assert.equal(expiry('2027-02-25', new Date('2027-01-01T00:00:00Z')), '2027-03-02');
+
+  // And it is always sent on the create -- an absent expiration is refused, an empty string lands
+  // on the epoch.
+  const source = require('node:fs').readFileSync(
+    require('node:path').join(__dirname, 'QuoteOptionsFunction.js'),
+    'utf8',
+  );
+  const create = source.match(
+    /quote = await client\.crm\.quotes\.basicApi\.create\(\{([\s\S]*?)\n      \},/,
+  );
+  assert.match(
+    create[1],
+    /hs_expiration_date: quoteExpirationDate\(option\.result\.dates\.contractStartDate\),/,
+    'the expiration must be derived, not pinned to the contract start',
+  );
+});
+
 test('the quote status reports whether approval is required', () => {
   const source = require('node:fs').readFileSync(
     require('node:path').join(__dirname, 'QuoteOptionsFunction.js'),
