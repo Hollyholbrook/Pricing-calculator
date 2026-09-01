@@ -2874,70 +2874,44 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
   // are created before the read-back below, so that one is satisfied. The sender email is not
   // always available, which is exactly why the transition was failing silently.
   //
-  // GATED ON needsApproval. This was unconditionally PENDING_APPROVAL, which meant every lock in
-  // asked for a status the deal had not earned -- including deals whose approval tier is 'none',
-  // where nobody has to sign off and there is no workflow to enrol. Holly, 2026-09-01: "for some
-  // reason it was set to Pending Approval". Two lock ins on deal 60785797504 minutes apart came
-  // out PENDING_APPROVAL and then DRAFT from identical inputs, because the transition below is
-  // non-fatal: when it fails the quote simply keeps whatever status it had. A 'none' quote landing
-  // in DRAFT was luck, not intent.
+  // REVERTED to last night's behaviour at Holly's instruction, 2026-09-01.
   //
-  // Now a 'none' deal never attempts the transition at all -- the quote is created as DRAFT and
-  // desiredQuoteStatus already matches, so the block below is skipped and there is nothing left to
-  // fail. A deal that does need approval is unchanged: it still flips, and the approval workflow
-  // still enrols it.
-  const desiredQuoteStatus = needsApproval
-    ? QUOTE_STATUS_PENDING_APPROVAL
-    : QUOTE_STATUS_DRAFT;
+  // This was briefly gated on needsApproval, so a 'none'-tier Deal was created as DRAFT and the
+  // transition below was skipped entirely. That is arguably the right behaviour and the reasoning
+  // is in claude/quote-status-ignores-approval-tier.md -- but the instruction was to put quote
+  // creation back exactly as it was on the night of 2026-08-31, and this is one of only two
+  // places it differed.
+  //
+  // CONSEQUENCE, stated so it is not rediscovered: every Lock in now asks for PENDING_APPROVAL
+  // whether or not the deal earned it. The transition is non-fatal, so when HubSpot refuses it
+  // the quote silently keeps DRAFT -- which is why the same Deal produced PENDING_APPROVAL and
+  // then DRAFT three minutes apart from identical inputs.
+  const desiredQuoteStatus = QUOTE_STATUS_PENDING_APPROVAL;
 
   const category = dealCategory(settings, state.dealType, state.pipelineId);
   // The default is the category's first kind's default -- there is no separate Quote Type to read
   // a default from any more. The card normally sends an explicit templateId, so this only matters
   // for a configuration restored from before the picker existed.
-  const requestedTemplateId =
+  const templateId =
     content.templateId || defaultQuoteTemplateFor(settings, quoteKindsForCategory(category)[0]);
-  if (!/^\d+$/.test(requestedTemplateId)) throw new Error('QUOTE_CONFIGURATION_REQUIRED');
+  if (!/^\d+$/.test(templateId)) throw new Error('QUOTE_CONFIGURATION_REQUIRED');
 
-  // THE CATEGORY DECIDES THE TEMPLATE. Not the card.
+  // REVERTED to last night's behaviour at Holly's instruction, 2026-09-01.
   //
-  // This used to be "warned about, never refused", on the reasoning that the card only ever offers
-  // its own flow's list, so anything outside it meant the card and Settings had drifted. That
-  // reasoning was wrong in one specific and entirely ordinary case: the Deal's PIPELINE changes
-  // while the card is open. templateId is component state and the preselect keeps `current` when
-  // it already has one, so a card loaded on the new business pipeline goes on holding the New
-  // Business template after the Deal is moved to the renewal pipeline -- and Lock in sends it.
+  // Between 10:56 and now this substituted the category's default whenever the card sent a
+  // template not assigned to the Deal's category in Settings. That was added because a Deal that
+  // changes pipeline while the card is open leaves the card holding a template the new pipeline
+  // does not offer -- see claude/wrong-template-across-all-three-flows.md.
   //
-  // Nothing warned, either. quoteKindForTemplate is not narrowed by category, so it answered
-  // 'new_business' quite happily for a renewal Deal and the "no kind claims this" branch below
-  // never fired. Deal 63835136345 sat in renewal pipeline 876727403 with a quote built from New
-  // Business Template 567553820432, and the only trace was the quote itself. Holly, 2026-09-01:
-  // "Now new business is loading the wrong quote."
+  // The card-side guard for that is DELIBERATELY STILL IN PLACE: NylasPricingBuilder drops a
+  // selection the Deal no longer offers. So the 1:1 still holds through the UI; what is gone is
+  // the server refusing to be told otherwise.
   //
-  // SUBSTITUTED, NOT REFUSED. Throwing here would discard a configuration the rep has already
-  // committed, after the guards that exist precisely to fail BEFORE anything is written -- and the
-  // original comment was right that a lost configuration is worse than a visible mistake. So the
-  // category's own default is used instead and the substitution is logged. The rep still gets a
-  // quote; it is the RIGHT quote.
-  //
-  // Only when the category actually has templates assigned: an unconfigured portal has none, and
-  // there "not in the list" means the list is empty, not that the choice is wrong.
-  const allowedKinds = quoteKindsForCategory(category);
-  const allowedTemplateIds = new Set(
-    allowedKinds.flatMap((kind) =>
-      quoteTemplateSettings(settings, kind).enabledIds.map(String),
-    ),
-  );
-  let templateId = requestedTemplateId;
-  if (allowedTemplateIds.size > 0 && !allowedTemplateIds.has(String(requestedTemplateId))) {
-    const categoryDefault = defaultQuoteTemplateFor(settings, allowedKinds[0]);
-    console.error(
-      `Nylas pricing: template ${requestedTemplateId} is not assigned to a ${category} Deal ` +
-        `(${allowedKinds.join('/')}: ${[...allowedTemplateIds].join(', ')}). ` +
-        `Using ${categoryDefault} instead. The card most likely still held a template from ` +
-        'before this Deal changed pipeline.',
-    );
-    if (/^\d+$/.test(String(categoryDefault))) templateId = String(categoryDefault);
-  }
+  // Warned about, never refused. The card only ever offers this flow's list, so a template from
+  // outside it means the card and Settings have drifted -- and refusing the lock here would throw
+  // away a configuration the rep has already committed, after the guards that exist precisely to
+  // fail BEFORE anything is written. A wrong template is visible on the quote and recoverable; a
+  // lost configuration is not.
   // Which kind this template belongs to, now that the template is the input rather than the
   // output. null means no kind claims it -- normal on an unconfigured portal.
   const quoteKind = quoteKindForTemplate(settings, category, templateId);

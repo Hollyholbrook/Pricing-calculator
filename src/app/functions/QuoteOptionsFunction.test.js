@@ -817,45 +817,23 @@ test('the quote status reports whether approval is required', () => {
     source,
     /const needsApproval =\s*\n?\s*String\(option\.result\?\.approvalTierRequired \|\| 'none'\) !== 'none';/,
   );
-  // GATED ON needsApproval, not unconditional.
+  // ALWAYS PENDING_APPROVAL. Reverted to last night's behaviour on Holly's instruction,
+  // 2026-09-01: "update the logic for the quote creation to the logic it was last night".
   //
-  // This assertion used to pin `const desiredQuoteStatus = QUOTE_STATUS_PENDING_APPROVAL;` --
-  // every lock in asked for PENDING_APPROVAL whether or not the deal had earned it. needsApproval
-  // was computed directly above and then never consulted, so a 'none'-tier deal still asked to be
-  // published into an approval workflow that had nothing to approve.
-  //
-  // What made it look like it worked: the transition below is deliberately non-fatal, so when
-  // HubSpot refused it the quote just kept DRAFT and nobody noticed. Two lock ins on deal
-  // 60785797504 three minutes apart, identical inputs, came out PENDING_APPROVAL and then DRAFT.
-  // The correct-looking one was luck.
+  // It was briefly gated on needsApproval so a 'none'-tier Deal stayed DRAFT. The reasoning for
+  // that, and the evidence, is in claude/quote-status-ignores-approval-tier.md -- kept because
+  // this is a decision that will be revisited, not a dead end.
   //
   // The portal's rejection -- "Quote cannot be published without going through the pending
   // approval state" -- refuses PUBLISHING. APPROVAL_NOT_NEEDED is a published state and is
   // refused; PENDING_APPROVAL is the state that message names as the way through.
   //
   // Never APPROVAL_NOT_NEEDED: on this portal that is the value that loses the whole quote.
-  assert.doesNotMatch(
-    source,
-    /const desiredQuoteStatus = QUOTE_STATUS_PENDING_APPROVAL;/,
-    'the desired status must depend on needsApproval, not be hardcoded',
-  );
-  assert.match(
-    source,
-    /const desiredQuoteStatus = needsApproval\s+\? QUOTE_STATUS_PENDING_APPROVAL\s+: QUOTE_STATUS_DRAFT;/,
-  );
-  assert.match(source, /const QUOTE_STATUS_DRAFT = 'DRAFT';/);
+  assert.match(source, /const desiredQuoteStatus = QUOTE_STATUS_PENDING_APPROVAL;/);
   assert.doesNotMatch(
     source,
     /desiredQuoteStatus = QUOTE_STATUS_APPROVAL_NOT_NEEDED/,
     'APPROVAL_NOT_NEEDED is refused on this portal and loses the quote',
-  );
-
-  // A 'none' deal must reach the transition block already satisfied, so nothing is attempted and
-  // nothing can fail. That only holds while the create leaves the quote at HubSpot's own default
-  // of DRAFT -- which the create assertion below pins by refusing any hs_status on it.
-  assert.ok(
-    source.indexOf('const desiredQuoteStatus = needsApproval') <
-      source.indexOf('if (quoteStatus !== desiredQuoteStatus)'),
   );
 
   // NEVER ON THE CREATE. HubSpot, verbatim, after this was tried both ways:
@@ -3065,46 +3043,21 @@ test('the contract picker defaults only when there is exactly one contract', () 
 // Fixed on both sides, deliberately: the card drops a selection that is no longer on offer, and
 // the server substitutes the category default for anything outside the category's list. The card
 // is not the only way in, so the card alone is not enough.
-test('the server refuses a template that does not belong to the Deal category', () => {
+test('quote creation uses the template the card sent, without substituting', () => {
   const source = require('node:fs').readFileSync(
     require('node:path').join(__dirname, 'QuoteOptionsFunction.js'),
     'utf8',
   );
-
-  // The allowed set is built from the category's own kinds, from SETTINGS -- no API call, and no
-  // second opinion about which templates a flow may use.
-  assert.match(source, /const allowedKinds = quoteKindsForCategory\(category\);/);
+  // REVERTED 2026-09-01 on Holly's instruction. generateQuote briefly built the set of templates
+  // the Deal's category allows and substituted the category default for anything outside it.
+  // That is gone; the card's template is used as sent, exactly as on the night of 2026-08-31.
+  // The reasoning and the evidence are kept in
+  // claude/wrong-template-across-all-three-flows.md.
+  assert.doesNotMatch(source, /allowedTemplateIds/);
+  assert.doesNotMatch(source, /requestedTemplateId/);
   assert.match(
     source,
-    /const allowedTemplateIds = new Set\(\s*allowedKinds\.flatMap\(\(kind\) =>\s*quoteTemplateSettings\(settings, kind\)\.enabledIds\.map\(String\),\s*\),\s*\);/,
-  );
-
-  // SUBSTITUTED, not thrown. Throwing would discard a configuration the rep already committed.
-  assert.match(
-    source,
-    /if \(allowedTemplateIds\.size > 0 && !allowedTemplateIds\.has\(String\(requestedTemplateId\)\)\) \{/,
-  );
-  assert.match(source, /const categoryDefault = defaultQuoteTemplateFor\(settings, allowedKinds\[0\]\);/);
-  assert.match(source, /if \(\/\^\\d\+\$\/\.test\(String\(categoryDefault\)\)\) templateId = String\(categoryDefault\);/);
-
-  // An unconfigured portal has no assigned templates, and there an empty list means "offer
-  // everything", not "every choice is wrong". The size check is what keeps that working.
-  assert.match(source, /allowedTemplateIds\.size > 0/);
-
-  // Everything downstream must read the SUBSTITUTED id, not what the card asked for. If any of
-  // these ever read requestedTemplateId again the substitution becomes decorative.
-  // Sliced from AFTER the substitution block -- inside it, reading requestedTemplateId is the
-  // whole point. Everything past it must speak only of the resolved `templateId`.
-  const substitutionEnd = source.indexOf('const quoteKind = quoteKindForTemplate(');
-  const generateEnd = source.indexOf('const hash = contentHash(', substitutionEnd);
-  assert.ok(substitutionEnd > 0 && generateEnd > substitutionEnd);
-  const body = source.slice(substitutionEnd, generateEnd);
-  assert.match(body, /quoteKindForTemplate\(settings, category, templateId\)/);
-  assert.match(body, /describeQuoteTemplate\(\s*client,\s*templateId,\s*\)/);
-  assert.doesNotMatch(
-    body,
-    /requestedTemplateId/,
-    'nothing after the substitution may read the card-supplied id',
+    /const templateId =\s*\n?\s*content\.templateId \|\| defaultQuoteTemplateFor\(settings, quoteKindsForCategory\(category\)\[0\]\);/,
   );
 });
 

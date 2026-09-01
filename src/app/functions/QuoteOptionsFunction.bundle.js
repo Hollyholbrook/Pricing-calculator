@@ -2448,7 +2448,6 @@ var discountReasonProperties = (discountReason) => {
 };
 var QUOTE_STATUS_PENDING_APPROVAL = "PENDING_APPROVAL";
 var QUOTE_STATUS_APPROVAL_NOT_NEEDED = "APPROVAL_NOT_NEEDED";
-var QUOTE_STATUS_DRAFT = "DRAFT";
 var ARCHIVABLE_QUOTE_STATUSES = Object.freeze([
   "DRAFT",
   QUOTE_STATUS_PENDING_APPROVAL,
@@ -4182,24 +4181,10 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
     ) || `${state.dealName} \u2013 ${option.name}`
   );
   const needsApproval = String(option.result?.approvalTierRequired || "none") !== "none";
-  const desiredQuoteStatus = needsApproval ? QUOTE_STATUS_PENDING_APPROVAL : QUOTE_STATUS_DRAFT;
+  const desiredQuoteStatus = QUOTE_STATUS_PENDING_APPROVAL;
   const category = dealCategory(settings, state.dealType, state.pipelineId);
-  const requestedTemplateId = content.templateId || defaultQuoteTemplateFor(settings, quoteKindsForCategory(category)[0]);
-  if (!/^\d+$/.test(requestedTemplateId)) throw new Error("QUOTE_CONFIGURATION_REQUIRED");
-  const allowedKinds = quoteKindsForCategory(category);
-  const allowedTemplateIds = new Set(
-    allowedKinds.flatMap(
-      (kind) => quoteTemplateSettings(settings, kind).enabledIds.map(String)
-    )
-  );
-  let templateId = requestedTemplateId;
-  if (allowedTemplateIds.size > 0 && !allowedTemplateIds.has(String(requestedTemplateId))) {
-    const categoryDefault = defaultQuoteTemplateFor(settings, allowedKinds[0]);
-    console.error(
-      `Nylas pricing: template ${requestedTemplateId} is not assigned to a ${category} Deal (${allowedKinds.join("/")}: ${[...allowedTemplateIds].join(", ")}). Using ${categoryDefault} instead. The card most likely still held a template from before this Deal changed pipeline.`
-    );
-    if (/^\d+$/.test(String(categoryDefault))) templateId = String(categoryDefault);
-  }
+  const templateId = content.templateId || defaultQuoteTemplateFor(settings, quoteKindsForCategory(category)[0]);
+  if (!/^\d+$/.test(templateId)) throw new Error("QUOTE_CONFIGURATION_REQUIRED");
   const quoteKind = quoteKindForTemplate(settings, category, templateId);
   if (!quoteKind) {
     console.warn(
