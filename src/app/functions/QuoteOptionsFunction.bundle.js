@@ -2767,7 +2767,7 @@ var summaryMoney = (value) => {
 var summaryPercent = (fraction) => {
   const value = Number(fraction);
   if (!Number.isFinite(value) || value === 0) return null;
-  const percent = Math.round(value * 1e6) / 1e4;
+  const percent = Math.round(value * 1e4) / 100;
   return `${percent}%`;
 };
 var summaryNumber = (value) => Number(value || 0).toLocaleString("en-US");
@@ -2790,6 +2790,14 @@ var summaryDate = (iso) => {
   ];
   return `${day} ${months[month - 1]} ${year}`;
 };
+var summaryApprovalTier = (tier) => ({
+  none: "No approval needed",
+  sales_director: "Sales Director",
+  head_sales: "Head of Sales",
+  cs_director: "CS Director",
+  ccso: "CCSO",
+  finance: "Finance"
+})[tier || "none"] || tier;
 var summarySection = (heading, rows) => rows.length === 0 ? [] : [heading, ...rows.map((row) => `  ${row}`), ""];
 var contractSummaryText = (option) => {
   const { input, result } = option;
@@ -2861,18 +2869,21 @@ var contractSummaryText = (option) => {
     );
   }
   out.push(...summarySection("INCLUDED", extraRows));
+  const DISCOUNT_LABEL_WIDTH = 22;
   const discountRows = [];
+  const discountRow = (label, value) => discountRows.push(`${label.padEnd(DISCOUNT_LABEL_WIDTH)}${value}`);
   const termDiscount = summaryPercent(result.termDiscount);
-  if (termDiscount) discountRows.push(`Multi-year term      ${termDiscount}`);
+  if (termDiscount) discountRow("Multi-year term", termDiscount);
   const premium = summaryPercent(result.paymentPremium);
-  if (premium) discountRows.push(`Payment frequency    +${premium}`);
+  if (premium) discountRow("Payment frequency", `+${premium}`);
   const largest = summaryPercent(result.largestDiscretionaryDiscount);
-  if (largest) discountRows.push(`Largest line discount ${largest}`);
+  if (largest) discountRow("Largest line discount", largest);
   const effective = Number(result.listTcv) > 0 ? 1 - Number(result.tcv) / Number(result.listTcv) : 0;
   const blended = summaryPercent(effective);
   if (blended) {
-    discountRows.push(
-      `Blended effective    ${blended} (${summaryMoney(Number(result.listTcv) - Number(result.tcv))} off list)`
+    discountRow(
+      "Blended effective",
+      `${blended} (${summaryMoney(Number(result.listTcv) - Number(result.tcv))} off list)`
     );
   }
   out.push(...summarySection("DISCOUNTS", discountRows));
@@ -2885,7 +2896,7 @@ var contractSummaryText = (option) => {
     ])
   );
   const approvalRows = [
-    `Required             ${result.approvalTierRequired === "none" ? "No approval needed" : result.approvalTierRequired}`
+    `Required             ${summaryApprovalTier(result.approvalTierRequired)}`
   ];
   for (const reason of result.approvalReasons || []) approvalRows.push(`- ${reason}`);
   out.push(...summarySection("APPROVAL", approvalRows));

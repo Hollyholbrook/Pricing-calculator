@@ -2893,3 +2893,150 @@ test('a new configuration starts with no onboarding', () => {
   assert.ok(none, "onboardingRules must offer 'none'");
   assert.equal(none.oneTimeAmount, 0);
 });
+
+// THE CONTRACT SUMMARY IN WORDS. Holly, 2026-09-01: "I created a multi line text field property
+// called pricing_contract_summary and I want you to write in a readable format what the contract
+// summary was."
+//
+// Everything in it already exists on the Deal, either as a scattered pricing_* property or inside
+// the pricing_quote_inputs_payload blob. Neither is readable. This asserts the summary says what
+// the calculation says -- a summary that drifts from the quote beside it is worse than none.
+const summaryFor = (input, name = 'Option A') => {
+  const result = calculateQuote(input, defaultSettings());
+  return _test.contractSummaryText({
+    id: 'o1',
+    name,
+    input: result.normalizedInput || input,
+    result,
+  });
+};
+
+const FULL_INPUT = Object.freeze({
+  startDate: '2026-10-01',
+  termMonths: 24,
+  paymentFrequency: 'quarterly_in_advance',
+  volumes: { connect_ca: 5000, calendar_ca: 1000 },
+  supportLevel: 'full',
+  onboardingPackage: 'quick_launch',
+  addOns: ['shared_oauth_app', 'privacy_filter'],
+  professionalServices: ['gtm_review', 'google_verification_review'],
+  autoRenewal: true,
+  renewalTermMonths: 12,
+  discretionaryDiscount: 0.05,
+});
+
+test('the contract summary states the term, dates and billing in words', () => {
+  const summary = summaryFor(FULL_INPUT);
+
+  assert.match(summary, /^Option A\n=+\n/);
+  assert.match(summary, /Term {12}24 months/);
+  // Day-month-year with a named month. "10/01/2026" means two different dates depending on who
+  // is reading it, and this field is read by people, which is the whole point of it.
+  assert.match(summary, /Starts {10}1 Oct 2026/);
+  assert.match(summary, /Ends {12}30 Sep 2028/);
+  assert.match(summary, /Billing {9}Quarterly In Advance/);
+  assert.match(summary, /Auto-renews {5}1 Oct 2028 for 12 months/);
+  assert.match(summary, /Notice by {7}1 Aug 2028/);
+});
+
+test('the contract summary prices every product, extra and discount', () => {
+  const summary = summaryFor(FULL_INPUT);
+  const result = calculateQuote(FULL_INPUT, defaultSettings());
+
+  // Products, with the volume and the rate the customer is actually charged.
+  assert.match(summary, /5,000 CA\/month at \$1\.39 = \$83,182\.95\/year \(5% off list\)/);
+
+  // The extras, each named and priced.
+  assert.match(summary, /Support: Full Support = \$9,793\.17\/year/);
+  assert.match(summary, /Onboarding: Quick Launch = \$5,000\.00 one-time/);
+  assert.match(summary, /Add-on: Shared Google OAuth App = \$2,484\.00\/year/);
+  assert.match(summary, /Add-on: Privacy Filter Mode = \$5,175\.00\/year/);
+  assert.match(
+    summary,
+    /Professional services \(2\): Go-to-Market Review, Google Verification Review = \$3,800\.00 one-time/,
+  );
+
+  // Discounts named individually -- "why is this below list" is what this section answers.
+  assert.match(summary, /Multi-year term {7}2\.5%/);
+  assert.match(summary, /Payment frequency {5}\+6%/);
+  assert.match(summary, /Largest line discount 5%/);
+  // Two decimals, not the raw 4.2839%. The exact figure lives on
+  // pricing_blended_effective_discount_pct; this is a summary.
+  assert.match(summary, /Blended effective {5}4\.28% \(\$10,722\.26 off list\)/);
+
+  // TOTALS must equal the calculation, not a second arithmetic done here.
+  assert.ok(summary.includes(`Total contract value $${result.tcv.toLocaleString('en-US', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`));
+  assert.match(summary, /Per quarter/);
+});
+
+test('the contract summary states the approval answer by name, including none', () => {
+  // A real tier prints the approver's name, never the raw key -- "ccso" in a summary reads as a
+  // bug rather than as a person.
+  assert.match(summaryFor(FULL_INPUT), /Required {13}Sales Director/);
+
+  // 'none' is STATED, not omitted. A blank here would read as "not checked" rather than
+  // "checked, and nobody has to sign off".
+  const clean = summaryFor({
+    startDate: '2026-10-01',
+    termMonths: 12,
+    paymentFrequency: 'annual_in_advance',
+    volumes: { connect_ca: 1000 },
+    supportLevel: 'basic',
+    onboardingPackage: 'none',
+    addOns: [],
+    professionalServices: [],
+    autoRenewal: false,
+  });
+  assert.match(clean, /Required {13}No approval needed/);
+  assert.match(clean, /Auto-renews {5}No/);
+  assert.match(clean, /Onboarding: None/);
+  // Sections with nothing in them are left out entirely rather than printed empty.
+  assert.doesNotMatch(clean, /Add-on:/);
+  assert.doesNotMatch(clean, /Professional services/);
+  assert.doesNotMatch(clean, /DISCOUNTS/);
+  // A zero-volume product is not on the contract and must not be listed.
+  assert.doesNotMatch(clean, /Notetaker/);
+});
+
+test('the contract summary is written to the Deal and guarded', () => {
+  const result = calculateQuote(FULL_INPUT, defaultSettings());
+  const properties = _test.buildSelectedProperties(
+    { id: 'o1', name: 'Option A', input: result.normalizedInput || FULL_INPUT, result },
+    'draft',
+  );
+  assert.equal(
+    properties.pricing_contract_summary,
+    _test.contractSummaryText({
+      id: 'o1',
+      name: 'Option A',
+      input: result.normalizedInput || FULL_INPUT,
+      result,
+    }),
+  );
+  // Multi-line, because that is the property type and the point.
+  assert.ok(properties.pricing_contract_summary.includes('\n'));
+
+  const source = require('node:fs').readFileSync(
+    require('node:path').join(__dirname, 'QuoteOptionsFunction.js'),
+    'utf8',
+  );
+  const guarded = source.match(/const UNVERIFIED_DEAL_PROPERTIES = \[([\s\S]*?)\n\];/);
+  assert.match(guarded[1], /'pricing_contract_summary',/);
+});
+
+// A single contract is not a choice. Lock in fails with QUOTE_CONTRACT_REQUIRED when the picker is
+// left empty, so leaving it on "Choose a contract…" when there is exactly one only invites a
+// failure whose answer was never in doubt. Two or more stays empty on purpose: guessing which of
+// several contracts a renewal belongs to is a guess about the customer's paperwork.
+test('the contract picker defaults only when there is exactly one contract', () => {
+  const card = require('node:fs').readFileSync(
+    require('node:path').join(__dirname, '..', 'cards', 'NylasPricingBuilder.tsx'),
+    'utf8',
+  );
+  assert.match(card, /body\.contracts\.length === 1 \? body\.contracts\[0\]\.id : ""/);
+  // The rep's own choice always wins over the default.
+  assert.match(card, /setContractId\(\(current\) => current \|\| only\)/);
+});

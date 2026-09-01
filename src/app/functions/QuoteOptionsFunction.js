@@ -691,7 +691,10 @@ const summaryPercent = (fraction) => {
   const value = Number(fraction);
   if (!Number.isFinite(value) || value === 0) return null;
   // Two decimals only when they carry something: "2.5%", not "2.50%", and "12.75%" when it is.
-  const percent = Math.round(value * 1000000) / 10000;
+  // Rounded to two BEFORE trailing zeros are dropped, so a blended discount prints "4.28%" rather
+  // than the raw 4.2839% -- this is a summary, not the audit trail. The exact figures stay on
+  // pricing_blended_effective_discount_pct and in pricing_calculation_payload.
+  const percent = Math.round(value * 10000) / 100;
   return `${percent}%`;
 };
 
@@ -707,6 +710,18 @@ const summaryDate = (iso) => {
   ];
   return `${day} ${months[month - 1]} ${year}`;
 };
+
+// The same names the card's banner uses. A raw key like "ccso" in a customer-adjacent summary
+// reads as a bug; these are the words the approver is actually called.
+const summaryApprovalTier = (tier) =>
+  ({
+    none: 'No approval needed',
+    sales_director: 'Sales Director',
+    head_sales: 'Head of Sales',
+    cs_director: 'CS Director',
+    ccso: 'CCSO',
+    finance: 'Finance',
+  })[tier || 'none'] || tier;
 
 const summarySection = (heading, rows) =>
   rows.length === 0 ? [] : [heading, ...rows.map((row) => `  ${row}`), ''];
@@ -802,20 +817,25 @@ const contractSummaryText = (option) => {
 
   // --- Discounts. Each one named, because "why is this cheaper than list" is the question this
   // summary gets opened to answer. ---
+  // One column width for every label here, so the percentages line up however long the longest
+  // label is. Hand-counted spaces drifted the moment "Largest line discount" was added.
+  const DISCOUNT_LABEL_WIDTH = 22;
   const discountRows = [];
+  const discountRow = (label, value) =>
+    discountRows.push(`${label.padEnd(DISCOUNT_LABEL_WIDTH)}${value}`);
   const termDiscount = summaryPercent(result.termDiscount);
-  if (termDiscount) discountRows.push(`Multi-year term      ${termDiscount}`);
+  if (termDiscount) discountRow('Multi-year term', termDiscount);
   const premium = summaryPercent(result.paymentPremium);
-  if (premium) discountRows.push(`Payment frequency    +${premium}`);
+  if (premium) discountRow('Payment frequency', `+${premium}`);
   const largest = summaryPercent(result.largestDiscretionaryDiscount);
-  if (largest) discountRows.push(`Largest line discount ${largest}`);
+  if (largest) discountRow('Largest line discount', largest);
   const effective =
     Number(result.listTcv) > 0 ? 1 - Number(result.tcv) / Number(result.listTcv) : 0;
   const blended = summaryPercent(effective);
   if (blended) {
-    discountRows.push(
-      `Blended effective    ${blended} ` +
-        `(${summaryMoney(Number(result.listTcv) - Number(result.tcv))} off list)`,
+    discountRow(
+      'Blended effective',
+      `${blended} (${summaryMoney(Number(result.listTcv) - Number(result.tcv))} off list)`,
     );
   }
   out.push(...summarySection('DISCOUNTS', discountRows));
@@ -836,7 +856,7 @@ const contractSummaryText = (option) => {
   // --- Approval. 'none' is a real answer and is stated, not omitted: a blank here would read as
   // "not checked" rather than "checked, nobody needs to sign off". ---
   const approvalRows = [
-    `Required             ${result.approvalTierRequired === 'none' ? 'No approval needed' : result.approvalTierRequired}`,
+    `Required             ${summaryApprovalTier(result.approvalTierRequired)}`,
   ];
   for (const reason of result.approvalReasons || []) approvalRows.push(`- ${reason}`);
   out.push(...summarySection('APPROVAL', approvalRows));
