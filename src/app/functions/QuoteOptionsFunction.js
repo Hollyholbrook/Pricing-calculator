@@ -3090,22 +3090,25 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
         ...(option.result.dates.contractStartDate
           ? {
               hs_contract_effective_start_date: option.result.dates.contractStartDate,
-              // CUSTOM, sent explicitly alongside the date. Holly, 2026-09-01: "the effective date
-              // needs to be the first of the next month. there can't be where the line items date
-              // is after the effective date."
+              // CUSTOM, sent explicitly alongside the date. Holly, 2026-09-01: "the effective
+              // date needs to be the first of the next month."
               //
               // All three quote templates carry hs_contract_effective_start_date_type =
               // ON_AGREEMENT, which means "effective when the customer accepts" -- HubSpot then
-              // resolves the effective date to the acceptance date, i.e. today. Quote 42608004129
-              // (20:39, made through the contract UI) came out effective 2026-09-01 while its line
-              // items were dated 2026-10-01: the lines start a month AFTER the contract does.
+              // resolves the effective date to the acceptance date. Quote 42608004129 (20:39, made
+              // through the contract UI) came out effective 2026-09-01 rather than the 2026-10-01
+              // order start. Pinning the type is what makes the date the app sends survive; sending
+              // the date alone is not enough, because the type is what HubSpot reads to decide
+              // whether to keep it.
               //
-              // The line items are right. hs_recurring_billing_start_date is set from the same
-              // contractStartDate as this field (see lineItemModel), so pinning the type here is
-              // what keeps the two in agreement rather than letting acceptance move one of them.
-              //
-              // Sending the date without the type is not enough: the type is what HubSpot reads to
-              // decide whether the date it was given survives.
+              // NOT because line items must match this date. A line item billing start AFTER the
+              // effective date is a SUPPORTED configuration -- HubSpot files it under Future
+              // payments. An earlier version of this comment claimed the 2026-10-01 lines against
+              // a 2026-09-01 effective date were the defect; they were not. The real rules are:
+              // billing end must not precede billing start; frequency, term and number of payments
+              // must agree; and a custom effective date must be in the future when BILLING IS
+              // ENABLED. Billing is disabled on this portal (hs_billing_enabled: false) and the
+              // date is the first of next month, so it satisfies that rule either way.
               hs_contract_effective_start_date_type: 'CUSTOM',
             }
           : {}),

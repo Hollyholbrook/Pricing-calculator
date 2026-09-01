@@ -3220,17 +3220,20 @@ test('a restored start date must be strictly after today', () => {
   assert.match(body, /if \(!saved \|\| !\/\^\\d\{4\}-\\d\{2\}-\\d\{2\}\$\/\.test\(saved\)\)/);
 });
 
-// THE EFFECTIVE DATE AND THE LINE ITEM BILLING START MUST BE THE SAME DATE.
+// THE EFFECTIVE DATE IS PINNED TO THE ORDER START.
 //
-// Holly, 2026-09-01: "the effective date needs to be the first of the next month. there can't be
-// where the line items date is after the effective date."
+// Holly, 2026-09-01: "the effective date needs to be the first of the next month."
 //
 // All three quote templates carry hs_contract_effective_start_date_type = ON_AGREEMENT, so
-// HubSpot resolves the effective date to the acceptance date. Quote 42608004129 (20:39, created
-// through the contract UI) came out effective 2026-09-01 with line items dated 2026-10-01 -- the
-// lines starting a month after the contract. Pinning the type to CUSTOM is what makes the date the
-// app sends survive.
-test('the quote effective start date is pinned, and matches the line items', () => {
+// HubSpot resolves the effective date to the acceptance date -- quote 42608004129 came out
+// effective 2026-09-01 rather than the 2026-10-01 order start. Pinning the type to CUSTOM makes
+// the date the app sends survive.
+//
+// This test does NOT assert that line items share the effective date. A billing start after the
+// effective date is supported -- HubSpot files it under Future payments -- and an earlier version
+// of this test wrongly treated that as the defect. What it does assert is that both values read
+// the SAME source, so a change to one cannot silently move the other.
+test('the quote effective start date is pinned to the same source as the line items', () => {
   const source = require('node:fs').readFileSync(
     require('node:path').join(__dirname, 'QuoteOptionsFunction.js'),
     'utf8',
