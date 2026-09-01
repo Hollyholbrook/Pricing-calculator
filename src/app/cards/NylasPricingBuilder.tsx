@@ -263,13 +263,7 @@ interface ServerlessBody {
     ineligible?: boolean;
     reason?: string | null;
   };
-  latestQuoteSeller?: {
-    quoteId: string;
-    ownerId: string;
-    senderId: string;
-    storedFields: string[];
-    email: string;
-  } | null;
+  dealOwnerId?: string;
   contacts?: { id: string; label: string }[];
   contactSource?: "deal" | "company" | "none";
   // The company's contracts, sent only on a renewal-category Deal. contractsUnavailable says WHY
@@ -940,22 +934,14 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
     "deal" | "company" | "none"
   >("none");
   const [contactId, setContactId] = useState("");
-  const [latestQuoteSeller, setLatestQuoteSeller] = useState<{
-    quoteId: string;
-    ownerId: string;
-    senderId: string;
-    storedFields: string[];
-    email: string;
-  } | null>(null);
+  const [dealOwnerId, setDealOwnerId] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
   const [unsupportedDeal, setUnsupportedDeal] = useState(false);
 
   const updateFromBody = (body: ServerlessBody) => {
     if (body.dealName) setDealName(body.dealName);
     if (body.companyName !== undefined) setCompanyName(body.companyName);
-    if (body.latestQuoteSeller !== undefined) {
-      setLatestQuoteSeller(body.latestQuoteSeller);
-    }
+    if (body.dealOwnerId !== undefined) setDealOwnerId(body.dealOwnerId);
     if (body.contacts) {
       setContacts(body.contacts);
       setContactSource(body.contactSource || "none");
@@ -1239,7 +1225,7 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
         quoteTitleTooLong={quoteTitleTooLong}
         onQuoteTitleChange={setQuoteTitle}
         onInputChange={updateInput}
-        latestQuoteSeller={latestQuoteSeller}
+        dealOwnerId={dealOwnerId}
         contacts={contacts}
         contactSource={contactSource}
         contactId={contactId}
@@ -1274,7 +1260,7 @@ const OptionEditor = ({
   quoteTitleTooLong,
   onQuoteTitleChange,
   onInputChange,
-  latestQuoteSeller,
+  dealOwnerId,
   contacts,
   contactSource,
   contactId,
@@ -1309,13 +1295,7 @@ const OptionEditor = ({
     field: K,
     value: QuoteInput[K],
   ) => void;
-  latestQuoteSeller: {
-    quoteId: string;
-    ownerId: string;
-    senderId: string;
-    storedFields: string[];
-    email: string;
-  } | null;
+  dealOwnerId: string;
   contacts: { id: string; label: string }[];
   contactSource: "deal" | "company" | "none";
   contactId: string;
@@ -1678,16 +1658,35 @@ const OptionEditor = ({
   }, [bankTransferNotSelected, onPaymentMethodChange]);
   const lockBlocked =
     approvalBlocked || discountReasonMissing || contactMissing;
-  const approvalBannerVariant = lockBlocked
-    ? "error"
-    : previewResult?.approvalTierRequired === "none"
-      ? "success"
-      : "warning";
+  // A Deal with no owner produces a quote with no Seller. Warned, not blocked -- Holly's call:
+  // the rep can lock in and set the owner afterwards.
+  const ownerMissing = dealOwnerId === "";
+  const needsApproval =
+    Boolean(previewResult) && previewResult?.approvalTierRequired !== "none";
+  // EVERYTHING the rep has to know before clicking, in one list. Empty means nothing is wrong,
+  // and nothing is what gets rendered -- a green box announcing that the configuration is fine
+  // sat next to a real warning and made both easier to ignore.
+  const lockMessages = previewResult
+    ? [
+        ...previewResult.blockingReasons,
+        ...(discountReasonMissing
+          ? ["A discount reason is required before this can be locked in."]
+          : []),
+        ...(contactMissing ? ["A contact is required on the Quote."] : []),
+        ...previewResult.approvalReasons,
+        ...(ownerMissing
+          ? [
+              "This Deal has no owner, so the Quote will have no Seller. Set a Deal owner to fix it.",
+            ]
+          : []),
+      ]
+    : [];
+  const approvalBannerVariant = lockBlocked ? "error" : "warning";
   const approvalBannerTitle = lockBlocked
     ? "Blocked"
-    : previewResult?.approvalTierRequired === "none"
-      ? "No approval required"
-      : `${approvalLabel(previewResult?.approvalTierRequired || "none")} approval required`;
+    : needsApproval
+      ? `${approvalLabel(previewResult?.approvalTierRequired || "none")} approval required`
+      : "Before you lock in";
 
   return (
     <Flex direction="column" gap="flush">
@@ -2189,48 +2188,20 @@ const OptionEditor = ({
           )}
         </Flex>
       )}
-      {/* What the Seller block on the LIVE quote actually holds.
-          Read from the quote on every card load, not printed once at lock time -- the card reloads
-          straight after the confirmation alert, so a message there is gone before it can be read.
-          Three rounds of "the seller contact isn't coming through" produced no evidence for
-          exactly that reason. Remove this once the Seller block is confirmed working. */}
-      {latestQuoteSeller && (
-        <Alert
-          title="Seller on the latest Quote"
-          variant={
-            latestQuoteSeller.storedFields.length === 3 ? "success" : "warning"
-          }
-        >
-          {latestQuoteSeller.storedFields.length === 3
-            ? `Set: ${latestQuoteSeller.email}. If the Seller section still prints blank, the template is not rendering these fields.`
-            : latestQuoteSeller.ownerId === ""
-              ? "The Quote has no owner. Set a Deal owner, then lock in again."
-              : `Quote ${latestQuoteSeller.quoteId} — owner ${latestQuoteSeller.ownerId}, sender ${
-                  latestQuoteSeller.senderId || "NOT KEPT"
-                }, sender fields kept: ${
-                  latestQuoteSeller.storedFields.join(", ") || "none"
-                }.`}
-        </Alert>
-      )}
-
       {/* The approval state sits with the action it gates, not up in the header: a blocking
           reason is only actionable next to the button it stops. */}
-      {previewResult && (
+      {lockMessages.length > 0 && (
         <Alert title={approvalBannerTitle} variant={approvalBannerVariant}>
-          {[
-            ...previewResult.blockingReasons,
-            ...(discountReasonMissing
-              ? ["A discount reason is required before this can be locked in."]
-              : []),
-            ...(contactMissing ? ["A contact is required on the Quote."] : []),
-            ...previewResult.approvalReasons,
-          ].join(" · ") || "This configuration can be locked in as priced."}
+          {lockMessages.join(" · ")}
         </Alert>
       )}
 
       {/* Beside the button, not up in the form: it describes what THIS click is about to do to
           the Deal's existing quote, and it is only meaningful at the moment of clicking. */}
       <Flex justify="end" align="center" gap="md">
+        {previewResult && lockMessages.length === 0 && (
+          <Text variant="microcopy">Ready to lock in.</Text>
+        )}
         <Checkbox
           name="replace_existing_quote"
           checked={replaceExistingQuote}

@@ -407,6 +407,7 @@ const readDealState = async (client, dealId) => {
     const deal = await client.crm.deals.basicApi.getById(dealId, [
       'dealtype',
       'pipeline',
+      'hubspot_owner_id',
       OPTION_PROPERTY,
       SELECTED_OPTION_ID_PROPERTY,
       SELECTED_OPTION_NAME_PROPERTY,
@@ -425,6 +426,7 @@ const readDealState = async (client, dealId) => {
     return {
       dealType: deal.properties.dealtype || '',
       pipelineId: deal.properties.pipeline || '',
+      dealOwnerId: deal.properties.hubspot_owner_id || '',
       document: parseDocument(deal.properties[OPTION_PROPERTY]),
       selectedOptionId: deal.properties[SELECTED_OPTION_ID_PROPERTY] || null,
       selectedOptionName: deal.properties[SELECTED_OPTION_NAME_PROPERTY] || null,
@@ -2122,32 +2124,6 @@ const assertContractChosen = async (client, dealId, quoteKind, contractId) => {
 // straight after the confirmation alert, so a message printed there is gone before it can be read.
 // Three rounds of "the seller contact isn't coming through" produced no usable evidence for
 // exactly that reason. This survives the reload, because it re-reads the quote.
-const latestQuoteSeller = async (client, quoteId) => {
-  if (!quoteId) return null;
-  const fields = ['hs_sender_firstname', 'hs_sender_lastname', 'hs_sender_email'];
-  try {
-    const quote = await client.crm.quotes.basicApi.getById(String(quoteId), [
-      ...fields,
-      'hubspot_owner_id',
-      'hs_quote_owner_id',
-    ]);
-    const stored = fields.filter((name) => Boolean(quote?.properties?.[name]));
-    return {
-      quoteId: String(quoteId),
-      ownerId: quote?.properties?.hubspot_owner_id || '',
-      senderId: quote?.properties?.hs_quote_owner_id || '',
-      storedFields: stored,
-      email: quote?.properties?.hs_sender_email || '',
-    };
-  } catch (error) {
-    console.warn(
-      `Nylas pricing: could not read the seller block on quote ${quoteId}. ` +
-        `${String(error?.body?.message || error?.message || error)}`,
-    );
-    return null;
-  }
-};
-
 const quoteContactOptions = async (client, dealId) => {
   const readContacts = async (ids) => {
     if (ids.length === 0) return [];
@@ -3057,7 +3033,7 @@ exports.main = async (context) => {
         // Only where a contract can apply. A new-business Deal has no change or renewal kind, so
         // asking its company for contracts is a wasted round trip on every card load.
         ...(listCategory === 'renewal' ? await contractOptions(client, dealId) : {}),
-        latestQuoteSeller: await latestQuoteSeller(client, state.latestQuoteId),
+        dealOwnerId: state.dealOwnerId,
         // The card shows this as the Quote title placeholder, so a rep who leaves the field
         // blank can see the name the quote will actually get rather than being surprised by it.
         dealName: state.dealName,
