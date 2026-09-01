@@ -1402,7 +1402,10 @@ test('BOTH surfaces verify every line item they create', () => {
     'utf8',
   );
   const calls = source.match(/await repairLineItemsBatch\(/g) || [];
-  assert.equal(calls.length, 2, 'the Deal sync AND the quote line items must both verify');
+  // THREE surfaces now: the Deal sync, the quote this app creates, and the quote HubSpot created
+  // that this app prices. A dropped fee property is as invisible on a renewal as it was on the
+  // new-business quote where it understated an $8,800 bundle by $1,760.
+  assert.equal(calls.length, 3, 'every surface that creates line items must verify them');
 
   const dealLoop = source.slice(source.indexOf('const syncDealLineItems'));
   // 3000, not 2000: the rollback invariant now carries a comment explaining why it is a flag
@@ -1411,6 +1414,13 @@ test('BOTH surfaces verify every line item they create', () => {
 
   const quoteLoop = source.slice(source.indexOf('The quote owns its line items'));
   assert.match(quoteLoop.slice(0, 4000), /await repairLineItemsBatch\(/, 'quote loop verifies');
+
+  const adoptLoop = source.slice(source.indexOf('const priceExistingQuote'));
+  assert.match(
+    adoptLoop.slice(0, 4000),
+    /await repairLineItemsBatch\(/,
+    'the priced HubSpot quote verifies too',
+  );
 });
 
 test('the sync verifies every line item it creates', () => {
@@ -2265,7 +2275,14 @@ test('a template outside the configured list is substituted, not refused', () =>
   );
   assert.match(
     source,
-    /const allowedTemplateIds = new Set\(quoteTemplateSettings\(settings\)\.enabledIds\.map\(String\)\);/,
+    /const allowedTemplateIds = new Set\(\s*quoteTemplateSettings\(settings, templateCategory\)\.enabledIds\.map\(String\),\s*\);/,
+  );
+  // The category is resolved HERE, from the Deal, and never taken from the card. The card bundle
+  // caches in the browser independently of this function, so a stale card must not be able to
+  // widen its own permissions.
+  assert.match(
+    source,
+    /const templateCategory = dealCategory\(settings, state\.dealType, state\.pipelineId\);/,
   );
   assert.match(
     source,
@@ -2277,4 +2294,322 @@ test('a template outside the configured list is substituted, not refused', () =>
     /allowedTemplateIds[\s\S]{0,300}?throw new Error\('QUOTE_TEMPLATE/,
     'a wrong template is recoverable; a discarded configuration is not',
   );
+});
+
+// PRICING A QUOTE HUBSPOT MADE.
+//
+// The public API refuses to CREATE a change or renewal quote -- "'hs_type' must be set to
+// 'INITIAL'" -- and refuses nothing else. Verified 2026-09-01 against change quote 42608004129 in
+// portal 45023718: a line item created and associated to it succeeded, and so did a property
+// update. So HubSpot makes the record and this app prices it.
+const adoptClient = (quotes, calls = []) => ({
+  crm: {
+    associations: {
+      v4: {
+        basicApi: {
+          getPage: async (fromType, fromId, toType) => {
+            calls.push(`assoc:${fromType}->${toType}`);
+            if (toType === 'quotes') {
+              return { results: quotes.map(({ id }) => ({ toObjectId: id })) };
+            }
+            return { results: [] };
+          },
+        },
+      },
+    },
+    quotes: {
+      batchApi: {
+        read: async () => ({
+          results: quotes.map(({ id, ...properties }) => ({ id, properties })),
+        }),
+      },
+    },
+  },
+});
+
+test('only draft change and renewal quotes can be priced, newest first', async () => {
+  const client = adoptClient([
+    {
+      id: '1',
+      hs_title: 'Older change',
+      hs_type: 'CHANGE',
+      hs_status: 'DRAFT',
+      hs_createdate: '2026-09-01T10:00:00Z',
+    },
+    {
+      id: '2',
+      hs_title: 'Newer renewal',
+      hs_type: 'RENEWAL',
+      hs_status: 'DRAFT',
+      hs_createdate: '2026-09-01T20:00:00Z',
+    },
+    // An INITIAL quote is generateQuote's business. Reaching it from here would let the button
+    // rewrite a new-business quote the app itself made.
+    {
+      id: '3',
+      hs_title: 'New business',
+      hs_type: 'INITIAL',
+      hs_status: 'DRAFT',
+      hs_createdate: '2026-09-01T21:00:00Z',
+    },
+    // A published quote is a document that has been SENT. Replacing its line items underneath a
+    // customer is not something a button should be able to do.
+    {
+      id: '4',
+      hs_title: 'Published renewal',
+      hs_type: 'RENEWAL',
+      hs_status: 'APPROVAL_NOT_NEEDED',
+      hs_createdate: '2026-09-01T22:00:00Z',
+    },
+  ]);
+  const offered = await _test.adoptableQuotes(client, '999');
+  assert.deepEqual(
+    offered.map(({ id }) => id),
+    ['2', '1'],
+  );
+  assert.deepEqual(offered[0], {
+    id: '2',
+    title: 'Newer renewal',
+    type: 'RENEWAL',
+  });
+});
+
+test('a Deal with no change or renewal quote offers nothing to price', async () => {
+  const client = adoptClient([
+    {
+      id: '3',
+      hs_title: 'New business',
+      hs_type: 'INITIAL',
+      hs_status: 'DRAFT',
+      hs_createdate: '2026-09-01T21:00:00Z',
+    },
+  ]);
+  assert.deepEqual(await _test.adoptableQuotes(client, '999'), []);
+});
+
+// Never fatal. A card that cannot list these still prices new business perfectly well.
+test('a failed read of the Deal quotes does not take the card down', async () => {
+  const client = {
+    crm: {
+      associations: {
+        v4: {
+          basicApi: {
+            getPage: async () => {
+              throw new Error('boom');
+            },
+          },
+        },
+      },
+    },
+  };
+  assert.deepEqual(await _test.adoptableQuotes(client, '999'), []);
+});
+
+test('a quote that is not on the offered list is refused before anything is written', async () => {
+  const touched = [];
+  const client = adoptClient(
+    [
+      {
+        id: '3',
+        hs_title: 'New business',
+        hs_type: 'INITIAL',
+        hs_status: 'DRAFT',
+        hs_createdate: '2026-09-01T21:00:00Z',
+      },
+    ],
+    touched,
+  );
+  client.crm.lineItems = {
+    basicApi: {
+      create: async () => touched.push('CREATED A LINE ITEM'),
+      archive: async () => touched.push('ARCHIVED A LINE ITEM'),
+    },
+  };
+  client.crm.quotes.basicApi = {
+    update: async () => touched.push('UPDATED A QUOTE'),
+  };
+  const settings = normalizeSettings(defaultSettings());
+  await assert.rejects(
+    () =>
+      _test.priceExistingQuote(
+        client,
+        '999',
+        lineItemSyncFixture(),
+        { applyToQuoteId: '3' },
+        settings,
+      ),
+    /QUOTE_NOT_ADOPTABLE/,
+  );
+  assert.deepEqual(
+    touched.filter((entry) => entry.startsWith('CREATED') || entry.startsWith('UPDATED')),
+    [],
+    'nothing may be written for a quote the app will not price',
+  );
+});
+
+test('a malformed quote id is refused without a round trip', async () => {
+  const settings = normalizeSettings(defaultSettings());
+  for (const bad of ['', 'not-an-id', '12a']) {
+    await assert.rejects(
+      () =>
+        _test.priceExistingQuote(
+          {},
+          '999',
+          lineItemSyncFixture(),
+          { applyToQuoteId: bad },
+          settings,
+        ),
+      /QUOTE_NOT_ADOPTABLE/,
+    );
+  }
+});
+
+// HubSpot chose the template and the quote type when it created the record, and those are exactly
+// what the API is not allowed to decide for a change or renewal. Touching them turns this back
+// into the 400 that started all of it.
+test('pricing an existing quote never sets the type, template or template association', () => {
+  const source = require('node:fs').readFileSync(
+    require('node:path').join(__dirname, 'QuoteOptionsFunction.js'),
+    'utf8',
+  );
+  const fn = source.slice(
+    source.indexOf('const priceExistingQuote'),
+    source.indexOf('const stateResponse'),
+  );
+  for (const forbidden of [
+    'hs_type:',
+    'hs_template_type',
+    'quote_template',
+    'associationTypeId: 286',
+  ]) {
+    assert.equal(
+      fn.includes(forbidden),
+      false,
+      `priceExistingQuote must not touch ${forbidden}`,
+    );
+  }
+  // It DOES send the properties the app owns, for the same measured reasons the create does.
+  for (const owned of [
+    'hs_acceptance_method: QUOTE_ACCEPTANCE_METHOD',
+    "hs_contract_effective_start_date_type: 'CUSTOM'",
+    'hs_quote_owner_id: dealOwnerId',
+  ]) {
+    assert.equal(fn.includes(owned), true, `priceExistingQuote must send ${owned}`);
+  }
+});
+
+// CREATE BEFORE ARCHIVE, the ordering syncDealLineItems was rewritten to use on 2026-08-30 after a
+// Deal was emptied. Worst case here is a quote showing both sets -- visible and fixable by hand --
+// rather than an empty customer-facing quote, which is silent.
+test('the replacement line items are created before the old ones are archived', () => {
+  const source = require('node:fs').readFileSync(
+    require('node:path').join(__dirname, 'QuoteOptionsFunction.js'),
+    'utf8',
+  );
+  const fn = source.slice(
+    source.indexOf('const priceExistingQuote'),
+    source.indexOf('const stateResponse'),
+  );
+  assert.ok(
+    fn.indexOf('await createLineItemsBatch(client, sending, createdLineItemIds)') <
+      fn.indexOf('await archiveLineItemsBatch(client, existingLineItemIds)'),
+    'the calculator lines must exist before the previous ones are removed',
+  );
+});
+
+// Lock in does the SAME work either way up to the point the quote is chosen. That is the whole
+// design: the calculation, the option document, the Deal properties and the Deal's line items do
+// not care which quote ends up carrying them.
+test('Lock in prices the chosen quote instead of creating one', () => {
+  const source = require('node:fs').readFileSync(
+    require('node:path').join(__dirname, 'QuoteOptionsFunction.js'),
+    'utf8',
+  );
+  assert.match(
+    source,
+    /const synced = await syncDealLineItems\(client, dealId, liveState, settings\);[\s\S]{0,1200}?if \(parameters\.applyToQuoteId\) \{[\s\S]{0,400}?await priceExistingQuote\(/,
+    'the branch must come after the Deal-side work, not instead of it',
+  );
+  assert.ok(
+    source.indexOf('if (parameters.applyToQuoteId) {') <
+      source.indexOf('const quote = await generateQuote('),
+    'the adopt branch returns before a new quote is created',
+  );
+});
+
+// A CHANGE GOES OUT AS AN ORDINARY QUOTE. Holly's design, 2026-09-01.
+//
+// The public API will not create a CHANGE or RENEWAL quote at all, so a change is sent as a normal
+// INITIAL quote carrying the Change template, and a HubSpot workflow terminates the prior contract
+// when the customer accepts. That only needs one thing from this app: the rep on a renewal-pipeline
+// Deal has to be able to choose that template.
+test('a renewal Deal is offered the extra templates; new business is not', () => {
+  const all = [
+    { id: '567553820432', name: 'New Business Template' },
+    { id: '583243623796', name: 'Change Quote Template' },
+  ];
+  const settings = normalizeSettings({
+    ...defaultSettings(),
+    allowRenewals: true,
+    renewalPipelineIds: ['876727403'],
+    newBusinessPipelineIds: ['db8895ce-da7b-4843-8d7b-4be80a0b7d7b'],
+    enabledQuoteTemplateIds: ['567553820432'],
+    defaultQuoteTemplateId: '567553820432',
+    renewalQuoteTemplateIds: ['583243623796'],
+  });
+
+  // DON'T TOUCH ANYTHING WITH NEW BUSINESS -- Holly, 2026-09-01. This is the assertion that keeps
+  // that promise: a new-business Deal sees exactly the one template it sees today. Putting the
+  // Change template in the shared list instead of its own would have broken this.
+  assert.deepEqual(
+    _test.offeredQuoteTemplates(all, settings, 'new_business').map(({ id }) => id),
+    ['567553820432'],
+  );
+  assert.deepEqual(
+    _test.offeredQuoteTemplates(all, settings, undefined).map(({ id }) => id),
+    ['567553820432'],
+    'no category reads as new business, so a forgetful caller cannot widen the picker',
+  );
+
+  // A renewal Deal sees both, shared list first.
+  assert.deepEqual(
+    _test.offeredQuoteTemplates(all, settings, 'renewal').map(({ id }) => id),
+    ['567553820432', '583243623796'],
+  );
+
+  // The DEFAULT does not move. A renewal Deal still opens on the same template it opens on today;
+  // the Change template is a deliberate choice, never something that happens by itself.
+  assert.equal(_test.defaultQuoteTemplate(settings), '567553820432');
+});
+
+test('an unset renewal template list changes nothing anywhere', () => {
+  const all = [
+    { id: '567553820432', name: 'New Business Template' },
+    { id: '583243623796', name: 'Change Quote Template' },
+  ];
+  const settings = normalizeSettings({
+    ...defaultSettings(),
+    allowRenewals: true,
+    renewalPipelineIds: ['876727403'],
+    enabledQuoteTemplateIds: ['567553820432'],
+    defaultQuoteTemplateId: '567553820432',
+  });
+  assert.deepEqual(settings.renewalQuoteTemplateIds, []);
+  for (const category of ['new_business', 'renewal', undefined]) {
+    assert.deepEqual(
+      _test.offeredQuoteTemplates(all, settings, category).map(({ id }) => id),
+      ['567553820432'],
+    );
+  }
+});
+
+// A quote built this way is still an INITIAL quote made by this app -- the same create path new
+// business uses, which is the whole reason the design works. Nothing about hs_type changes.
+test('a change sent this way is still created as an INITIAL quote', () => {
+  const source = require('node:fs').readFileSync(
+    require('node:path').join(__dirname, 'QuoteOptionsFunction.js'),
+    'utf8',
+  );
+  assert.match(source, /hs_type: CPQ_QUOTE_TYPE_INITIAL,/);
+  assert.equal(source.includes('CPQ_QUOTE_TYPE_BY_KIND'), false);
 });

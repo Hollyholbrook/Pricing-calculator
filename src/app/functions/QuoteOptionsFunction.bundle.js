@@ -1916,6 +1916,22 @@ var require_appSettings = __commonJS({
       // default still falls back to the QUOTE_TEMPLATE_ID secret, exactly as before.
       enabledQuoteTemplateIds: [],
       defaultQuoteTemplateId: "",
+      // EXTRA templates a renewal-pipeline Deal may also choose from. Added 2026-09-01.
+      //
+      // A change is now sent as an ORDINARY quote -- hs_type INITIAL, created by this app like any
+      // other -- carrying the Change template so the document reads correctly. A HubSpot workflow
+      // terminates the prior contract when the customer accepts, and the accepted quote's own contract
+      // becomes the live one. Holly's design; it sidesteps the fact that the public API will not create
+      // a CHANGE or RENEWAL quote at all.
+      //
+      // A SECOND LIST rather than more entries in enabledQuoteTemplateIds, and that is the whole point:
+      // a new-business Deal must keep offering exactly what it offers today. Holly, 2026-09-01: "Don't
+      // touch ANYTHING with new business." Putting the Change template in the shared list would have
+      // put it in the new-business picker too.
+      //
+      // EMPTY IS THE DEFAULT and means "renewal Deals see the same list as everyone else", so a portal
+      // that never sets this behaves exactly as it did before the key existed.
+      renewalQuoteTemplateIds: [],
       // DERIVED MIRROR, the inverse of what this key used to be. Never edited, never read by this
       // code, written on every save.
       //
@@ -1962,12 +1978,16 @@ var require_appSettings = __commonJS({
       if (!/^\d{1,20}$/.test(id)) throw new Error(`INVALID_SETTINGS:${field}`);
       return id;
     };
-    var quoteTemplateSettings2 = (settings) => {
+    var quoteTemplateSettings2 = (settings, category) => {
       const flatEnabled = settings?.enabledQuoteTemplateIds;
       const flatDefault = settings?.defaultQuoteTemplateId;
       const legacy = settings?.quoteTemplatesByKind?.new_business;
+      const shared = (Array.isArray(flatEnabled) && flatEnabled.length > 0 ? flatEnabled : legacy?.enabledIds) || [];
+      const extra = category === "renewal" && Array.isArray(settings?.renewalQuoteTemplateIds) ? settings.renewalQuoteTemplateIds : [];
       return {
-        enabledIds: (Array.isArray(flatEnabled) && flatEnabled.length > 0 ? flatEnabled : legacy?.enabledIds) || [],
+        // De-duplicated, shared list first, so the order the picker renders is stable and the
+        // additions read as additions.
+        enabledIds: [...new Set([...shared, ...extra].map(String))],
         defaultId: flatDefault || legacy?.defaultId || ""
       };
     };
@@ -2184,6 +2204,10 @@ var require_appSettings = __commonJS({
         renewalPipelineIds: normalizePipelineIds(
           value.renewalPipelineIds || [],
           "renewalPipelineIds"
+        ),
+        renewalQuoteTemplateIds: normalizePipelineIds(
+          value.renewalQuoteTemplateIds || [],
+          "renewalQuoteTemplateIds"
         ),
         pricingPolicy: normalizePricingPolicy(value.pricingPolicy)
       };
@@ -2452,6 +2476,7 @@ var SAFE_ERRORS = Object.freeze({
   DISCOUNT_REASON_REQUIRED: "A discount reason is required when any discount is applied. Add one and try again.",
   QUOTE_CONTACT_REQUIRED: "A contact is required on the Quote. Choose one on the pricing card, or associate a contact with this Deal.",
   QUOTE_TEMPLATE_NOT_CPQ: "That quote template is a legacy template and cannot be used. Choose a CPQ template on the card, or change which templates are offered in Settings > Quote Templates.",
+  QUOTE_NOT_ADOPTABLE: "That quote can no longer be priced. It has to be a draft Change or Renewal quote on this Deal. Reload the card to see the current list.",
   OPTION_BLOCKED: "This option has blocking policy issues and cannot be selected.",
   PAYMENT_METHOD_REQUIRES_BANK_TRANSFER: "Credit card is not permitted on an invoice above the limit. Set Payment Method to Bank transfer / ACH before locking in.",
   OPTION_NOT_FOUND: "The selected quote option could not be found.",
@@ -3076,6 +3101,19 @@ var lockLiveCalculation = async (client, dealId, state, parameters, portalId, se
     selectedStateHash: result.stateHash
   };
   const synced = await syncDealLineItems(client, dealId, liveState, settings);
+  if (parameters.applyToQuoteId) {
+    const priced = await priceExistingQuote(
+      client,
+      dealId,
+      liveState,
+      {
+        quoteContent: parameters.quoteContent || {},
+        applyToQuoteId: parameters.applyToQuoteId
+      },
+      settings
+    );
+    return { result, lineItemCount: synced.count, ...priced };
+  }
   const quote = await generateQuote(
     client,
     dealId,
@@ -3450,8 +3488,8 @@ var readQuoteTemplatePage = async (client, after) => {
   }
   throw lastError;
 };
-var offeredQuoteTemplates = (templates, settings) => {
-  const { enabledIds } = quoteTemplateSettings(settings);
+var offeredQuoteTemplates = (templates, settings, category) => {
+  const { enabledIds } = quoteTemplateSettings(settings, category);
   if (enabledIds.length === 0) return templates;
   const allowed = new Set(enabledIds.map(String));
   const narrowed = templates.filter(({ id }) => allowed.has(String(id)));
@@ -3764,7 +3802,10 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
   const desiredQuoteStatus = needsApproval ? QUOTE_STATUS_PENDING_APPROVAL : QUOTE_STATUS_DRAFT;
   const requestedTemplateId = content.templateId || defaultQuoteTemplate(settings);
   if (!/^\d+$/.test(requestedTemplateId)) throw new Error("QUOTE_CONFIGURATION_REQUIRED");
-  const allowedTemplateIds = new Set(quoteTemplateSettings(settings).enabledIds.map(String));
+  const templateCategory = dealCategory(settings, state.dealType, state.pipelineId);
+  const allowedTemplateIds = new Set(
+    quoteTemplateSettings(settings, templateCategory).enabledIds.map(String)
+  );
   let templateId = requestedTemplateId;
   if (allowedTemplateIds.size > 0 && !allowedTemplateIds.has(String(requestedTemplateId))) {
     const configuredDefault = defaultQuoteTemplate(settings);
@@ -4145,6 +4186,146 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
     throw failure;
   }
 };
+var ADOPTABLE_QUOTE_TYPES = Object.freeze(["CHANGE", "RENEWAL"]);
+var adoptableQuotes = async (client, dealId) => {
+  try {
+    const ids = await associatedIds(client, "deals", String(dealId), "quotes", 50);
+    if (ids.length === 0) return [];
+    const read = await client.crm.quotes.batchApi.read({
+      inputs: ids.map((id) => ({ id: String(id) })),
+      properties: ["hs_title", "hs_type", "hs_status", "hs_createdate"]
+    });
+    return (read.results || []).filter(
+      ({ properties }) => ADOPTABLE_QUOTE_TYPES.includes(String(properties?.hs_type || "")) && String(properties?.hs_status || "") === QUOTE_STATUS_DRAFT
+    ).sort(
+      (a, b) => String(b.properties?.hs_createdate || "").localeCompare(
+        String(a.properties?.hs_createdate || "")
+      )
+    ).map(({ id, properties }) => ({
+      id: String(id),
+      title: properties?.hs_title || `Quote ${id}`,
+      type: String(properties?.hs_type || "")
+    }));
+  } catch (error) {
+    console.warn(
+      `Nylas pricing: could not list the change and renewal quotes on deal ${dealId}.`,
+      safeProviderDiagnostics(error, "list_adoptable_quotes")
+    );
+    return [];
+  }
+};
+var priceExistingQuote = async (client, dealId, state, parameters, settings) => {
+  const option = selectedOptionForDraft(state);
+  assertCurrentSettings(option, settings);
+  const quoteId = String(parameters.applyToQuoteId || "");
+  if (!/^\d+$/.test(quoteId)) throw new Error("QUOTE_NOT_ADOPTABLE");
+  const eligible = await adoptableQuotes(client, dealId);
+  if (!eligible.some(({ id }) => id === quoteId)) throw new Error("QUOTE_NOT_ADOPTABLE");
+  const lineItems = buildQuoteLineItems(
+    option,
+    normalizeQuoteContent(parameters.quoteContent, "")
+  );
+  let dealOwnerId = "";
+  try {
+    const ownerRead = await client.crm.deals.basicApi.getById(String(dealId), [
+      "hubspot_owner_id"
+    ]);
+    dealOwnerId = ownerRead?.properties?.hubspot_owner_id || "";
+  } catch (error) {
+    console.warn(
+      `Nylas pricing: could not read hubspot_owner_id on deal ${dealId}. ${String(error?.body?.message || error?.message || error)}`
+    );
+  }
+  const sender = await senderProperties(client, dealOwnerId);
+  const existingLineItemIds = await associatedIds(client, "quotes", quoteId, "line_items", 200);
+  const createdLineItemIds = [];
+  try {
+    const sending = lineItems.map((item) => ({
+      properties: hubSpotLineItemProperties(item.properties),
+      // 68, the line-item-to-quote direction, because the association is declared on the line
+      // item's own create. See generateQuote.
+      associations: [createAssociation(quoteId, 68)]
+    }));
+    const created = await createLineItemsBatch(client, sending, createdLineItemIds);
+    await repairLineItemsBatch(client, joinCreatedLineItems(sending, created) || []);
+  } catch (error) {
+    await archiveLineItemsBatch(client, createdLineItemIds).catch(() => void 0);
+    throw error;
+  }
+  if (existingLineItemIds.length > 0) {
+    console.info(
+      `Nylas pricing: replacing ${existingLineItemIds.length} line item(s) on quote ${quoteId} with the calculator's.`
+    );
+    await archiveLineItemsBatch(client, existingLineItemIds).catch((error) => {
+      console.warn(
+        `Nylas pricing: could not archive the previous line items on quote ${quoteId}. It may now show both sets. ${String(error?.body?.message || error?.message || error)}`
+      );
+    });
+  }
+  const properties = {
+    hs_expiration_date: quoteExpirationDate(option.result.dates.contractStartDate),
+    ...option.result.dates.contractStartDate ? {
+      hs_contract_effective_start_date: option.result.dates.contractStartDate,
+      hs_contract_effective_start_date_type: "CUSTOM"
+    } : {},
+    hs_acceptance_method: QUOTE_ACCEPTANCE_METHOD,
+    ...dealOwnerId ? { hubspot_owner_id: dealOwnerId, hs_quote_owner_id: dealOwnerId } : {},
+    ...sender
+  };
+  try {
+    await client.crm.quotes.basicApi.update(quoteId, { properties });
+  } catch (error) {
+    console.error(
+      `Nylas pricing: the line items were applied to quote ${quoteId} but its properties were not. ${String(error?.body?.message || error?.message || error)}`,
+      safeProviderDiagnostics(error, "price_existing_quote_properties")
+    );
+  }
+  const needsApproval = String(option.result?.approvalTierRequired || "none") !== "none";
+  let quoteStatus = QUOTE_STATUS_DRAFT;
+  let quoteStatusError = "";
+  if (needsApproval) {
+    try {
+      await client.crm.quotes.basicApi.update(quoteId, {
+        properties: { hs_status: QUOTE_STATUS_PENDING_APPROVAL }
+      });
+      const after = await client.crm.quotes.basicApi.getById(quoteId, ["hs_status"]);
+      quoteStatus = after?.properties?.hs_status || quoteStatus;
+    } catch (error) {
+      quoteStatusError = String(error?.body?.message || error?.message || error).slice(0, 600);
+      console.error(
+        `Nylas pricing: could not move quote ${quoteId} to PENDING_APPROVAL. The approval workflow will not enrol it. ${quoteStatusError}`,
+        safeProviderDiagnostics(error, "price_existing_quote_status")
+      );
+    }
+  }
+  const finalized = await client.crm.quotes.basicApi.getById(quoteId, ["hs_quote_link", "hs_title", "hs_type"]).catch(() => null);
+  const quoteUrl = finalized?.properties?.hs_quote_link || "";
+  const generatedAt = (/* @__PURE__ */ new Date()).toISOString();
+  await updateDealProperties(client, dealId, {
+    pricing_latest_quote_id: quoteId,
+    pricing_quote_id: quoteId,
+    pricing_latest_quote_url: quoteUrl,
+    pricing_quote_generation_status: "draft_created",
+    pricing_quote_generated_at: generatedAt
+  });
+  console.info(
+    `Nylas pricing: priced HubSpot-created quote ${quoteId} (hs_type=${finalized?.properties?.hs_type || "unknown"}) with ${lineItems.length} line item(s) from deal ${dealId}.`
+  );
+  return {
+    quoteId,
+    quoteUrl,
+    generatedAt,
+    adopted: true,
+    quoteTitle: finalized?.properties?.hs_title || "",
+    quoteType: finalized?.properties?.hs_type || "",
+    lineItemCount: lineItems.length,
+    quoteStatus,
+    quoteStatusExpected: needsApproval ? QUOTE_STATUS_PENDING_APPROVAL : QUOTE_STATUS_DRAFT,
+    quoteStatusError,
+    needsApproval,
+    seller: { ownerId: dealOwnerId || "", sent: Object.keys(sender) }
+  };
+};
 var stateResponse = (state) => ({
   optionSet: state.document,
   selectedOptionId: state.selectedOptionId,
@@ -4204,13 +4385,20 @@ exports.main = async (context) => {
     if (!isDealAllowed(settings, state.dealType, state.pipelineId)) throw new Error("INVALID_DEAL");
     if (action === "list") {
       const allTemplates = await usableQuoteTemplates(client);
-      const listTemplates = offeredQuoteTemplates(allTemplates, settings);
+      const listTemplates = offeredQuoteTemplates(
+        allTemplates,
+        settings,
+        dealCategory(settings, state.dealType, state.pipelineId)
+      );
       return response(200, {
         success: true,
         ...stateResponse(state),
         quoteTemplates: listTemplates,
         defaultQuoteTemplateId: defaultQuoteTemplate(settings),
         ...await quoteContactOptions(client, dealId),
+        // The Deal's draft Change and Renewal quotes. HubSpot has to create those; the card offers
+        // them so the rep can send this Deal's pricing to one instead of making a new quote.
+        adoptableQuotes: await adoptableQuotes(client, dealId),
         dealOwnerId: state.dealOwnerId,
         // TEMP DIAGNOSTIC -- see latestQuoteTemplate. Remove with it.
         latestQuoteTemplate: await latestQuoteTemplate(client, state.latestQuoteId, allTemplates),
@@ -4335,6 +4523,8 @@ exports._test = Object.freeze({
   offeredQuoteTemplates,
   usableQuoteTemplates,
   defaultQuoteTemplate,
+  adoptableQuotes,
+  priceExistingQuote,
   repairLineItemsBatch,
   createLineItemsBatch,
   archiveLineItemsBatch,

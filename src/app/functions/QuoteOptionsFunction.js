@@ -251,6 +251,9 @@ const SAFE_ERRORS = Object.freeze({
   QUOTE_TEMPLATE_NOT_CPQ:
     'That quote template is a legacy template and cannot be used. Choose a CPQ template on the ' +
     'card, or change which templates are offered in Settings > Quote Templates.',
+  QUOTE_NOT_ADOPTABLE:
+    'That quote can no longer be priced. It has to be a draft Change or Renewal quote on this ' +
+    'Deal. Reload the card to see the current list.',
   OPTION_BLOCKED: 'This option has blocking policy issues and cannot be selected.',
   PAYMENT_METHOD_REQUIRES_BANK_TRANSFER:
     'Credit card is not permitted on an invoice above the limit. Set Payment Method to ' +
@@ -1140,6 +1143,30 @@ const lockLiveCalculation = async (
     selectedStateHash: result.stateHash,
   };
   const synced = await syncDealLineItems(client, dealId, liveState, settings);
+
+  // APPLY TO A QUOTE HUBSPOT ALREADY MADE, instead of creating one.
+  //
+  // The rep picks it on the card, from the Deal's draft Change and Renewal quotes. This is the
+  // only route to those two documents: the public API will not create either -- "'hs_type' must be
+  // set to 'INITIAL'" -- so HubSpot makes the record from the Deal and the pricing arrives here.
+  //
+  // Everything ABOVE this point is identical either way, and that is deliberate: the calculation,
+  // the option document, the Deal's own properties and its line items are the same work whichever
+  // quote ends up carrying them.
+  if (parameters.applyToQuoteId) {
+    const priced = await priceExistingQuote(
+      client,
+      dealId,
+      liveState,
+      {
+        quoteContent: parameters.quoteContent || {},
+        applyToQuoteId: parameters.applyToQuoteId,
+      },
+      settings,
+    );
+    return { result, lineItemCount: synced.count, ...priced };
+  }
+
   const quote = await generateQuote(
     client,
     dealId,
@@ -1730,8 +1757,8 @@ const readQuoteTemplatePage = async (client, after) => {
 // prints one document and needs one list. A renewal-pipeline Deal and a new-business Deal are
 // offered the same templates; what still differs between them is APPROVAL ROUTING, which is
 // decided by dealCategory in the calculator and has nothing to do with this.
-const offeredQuoteTemplates = (templates, settings) => {
-  const { enabledIds } = quoteTemplateSettings(settings);
+const offeredQuoteTemplates = (templates, settings, category) => {
+  const { enabledIds } = quoteTemplateSettings(settings, category);
   if (enabledIds.length === 0) return templates;
   const allowed = new Set(enabledIds.map(String));
   const narrowed = templates.filter(({ id }) => allowed.has(String(id)));
@@ -2295,7 +2322,14 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
   const requestedTemplateId = content.templateId || defaultQuoteTemplate(settings);
   if (!/^\d+$/.test(requestedTemplateId)) throw new Error('QUOTE_CONFIGURATION_REQUIRED');
 
-  const allowedTemplateIds = new Set(quoteTemplateSettings(settings).enabledIds.map(String));
+  // The category widens the ALLOWED LIST and nothing else -- see quoteTemplateSettings. It is
+  // resolved here rather than passed from the card for the reason the old category guard existed:
+  // the card bundle caches in the browser independently of this function, so a stale card must not
+  // be able to widen its own permissions.
+  const templateCategory = dealCategory(settings, state.dealType, state.pipelineId);
+  const allowedTemplateIds = new Set(
+    quoteTemplateSettings(settings, templateCategory).enabledIds.map(String),
+  );
   let templateId = requestedTemplateId;
   if (allowedTemplateIds.size > 0 && !allowedTemplateIds.has(String(requestedTemplateId))) {
     const configuredDefault = defaultQuoteTemplate(settings);
@@ -2906,6 +2940,217 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
   }
 };
 
+// THE QUOTES THIS APP CAN PRICE BUT CANNOT CREATE.
+//
+// HubSpot refuses to create a change or renewal quote through the public API -- "'hs_type' must be
+// set to 'INITIAL'" -- and that refusal is at the CREATE and nowhere else. Verified against portal
+// 45023718 on 2026-09-01 against change quote 42608004129, made from the contract UI: creating a
+// line item and associating it to that quote succeeded, and a property update on it succeeded.
+//
+// So the work splits. HubSpot makes the record; this app does what it is for -- the calculator's
+// line items, the pricing, the approval tier, the properties it owns. The rep makes the quote from
+// the Deal (Add quote, then Change or Renewal) and the card prices it.
+//
+// DRAFT ONLY, and CHANGE or RENEWAL only. An INITIAL quote is generateQuote's business and must not
+// be reachable from here; a published or accepted quote is a document that has been sent, and
+// replacing its line items underneath a customer is not something a button should be able to do.
+const ADOPTABLE_QUOTE_TYPES = Object.freeze(['CHANGE', 'RENEWAL']);
+
+const adoptableQuotes = async (client, dealId) => {
+  try {
+    const ids = await associatedIds(client, 'deals', String(dealId), 'quotes', 50);
+    if (ids.length === 0) return [];
+    const read = await client.crm.quotes.batchApi.read({
+      inputs: ids.map((id) => ({ id: String(id) })),
+      properties: ['hs_title', 'hs_type', 'hs_status', 'hs_createdate'],
+    });
+    return (read.results || [])
+      .filter(
+        ({ properties }) =>
+          ADOPTABLE_QUOTE_TYPES.includes(String(properties?.hs_type || '')) &&
+          String(properties?.hs_status || '') === QUOTE_STATUS_DRAFT,
+      )
+      // Newest first: a rep who has just made one wants it at the top.
+      .sort((a, b) =>
+        String(b.properties?.hs_createdate || '').localeCompare(
+          String(a.properties?.hs_createdate || ''),
+        ),
+      )
+      .map(({ id, properties }) => ({
+        id: String(id),
+        title: properties?.hs_title || `Quote ${id}`,
+        type: String(properties?.hs_type || ''),
+      }));
+  } catch (error) {
+    // Never fatal. A card that cannot list these still prices new business perfectly well, and a
+    // failed read here must not take the whole card down.
+    console.warn(
+      `Nylas pricing: could not list the change and renewal quotes on deal ${dealId}.`,
+      safeProviderDiagnostics(error, 'list_adoptable_quotes'),
+    );
+    return [];
+  }
+};
+
+// Put this Deal's pricing onto a quote HubSpot already made.
+//
+// Deliberately NOT setting hs_type, hs_template_type, or the quote template association. HubSpot
+// owns those -- it chose them when it created the record, and they are exactly what the API is not
+// allowed to decide for a change or renewal. Touching them is how this turns back into the 400 that
+// started all of it.
+//
+// The title is left alone too. HubSpot names a change quote after the contract it amends, which is
+// more use to the rep than anything this app would generate.
+const priceExistingQuote = async (client, dealId, state, parameters, settings) => {
+  const option = selectedOptionForDraft(state);
+  assertCurrentSettings(option, settings);
+  const quoteId = String(parameters.applyToQuoteId || '');
+  if (!/^\d+$/.test(quoteId)) throw new Error('QUOTE_NOT_ADOPTABLE');
+
+  // EVERY GUARD BEFORE ANY WRITE, the rule this file has followed since the Deal was emptied on
+  // 2026-08-28. Re-read rather than trusting the list the card was holding: the card may have sat
+  // open while somebody published the quote.
+  const eligible = await adoptableQuotes(client, dealId);
+  if (!eligible.some(({ id }) => id === quoteId)) throw new Error('QUOTE_NOT_ADOPTABLE');
+
+  const lineItems = buildQuoteLineItems(
+    option,
+    normalizeQuoteContent(parameters.quoteContent, ''),
+  );
+
+  let dealOwnerId = '';
+  try {
+    const ownerRead = await client.crm.deals.basicApi.getById(String(dealId), [
+      'hubspot_owner_id',
+    ]);
+    dealOwnerId = ownerRead?.properties?.hubspot_owner_id || '';
+  } catch (error) {
+    console.warn(
+      `Nylas pricing: could not read hubspot_owner_id on deal ${dealId}. ` +
+        `${String(error?.body?.message || error?.message || error)}`,
+    );
+  }
+  const sender = await senderProperties(client, dealOwnerId);
+
+  // HubSpot pre-populates a renewal quote from the CONTRACT's line items. That is not this app's
+  // pricing, and REQUIREMENTS is explicit that the contract is an association only -- "pricing is
+  // unchanged, the rep builds the numbers as they do today". So the quote's existing lines are
+  // replaced, exactly as generateQuote clears the lines HubSpot clones from the Deal.
+  //
+  // CREATE BEFORE ARCHIVE, the ordering syncDealLineItems was rewritten to use on 2026-08-30. A
+  // failure part way through leaves the quote holding BOTH sets -- visible and fixable by hand --
+  // rather than an empty customer-facing quote, which is silent.
+  const existingLineItemIds = await associatedIds(client, 'quotes', quoteId, 'line_items', 200);
+  const createdLineItemIds = [];
+  try {
+    const sending = lineItems.map((item) => ({
+      properties: hubSpotLineItemProperties(item.properties),
+      // 68, the line-item-to-quote direction, because the association is declared on the line
+      // item's own create. See generateQuote.
+      associations: [createAssociation(quoteId, 68)],
+    }));
+    const created = await createLineItemsBatch(client, sending, createdLineItemIds);
+    await repairLineItemsBatch(client, joinCreatedLineItems(sending, created) || []);
+  } catch (error) {
+    await archiveLineItemsBatch(client, createdLineItemIds).catch(() => undefined);
+    throw error;
+  }
+  if (existingLineItemIds.length > 0) {
+    console.info(
+      `Nylas pricing: replacing ${existingLineItemIds.length} line item(s) on quote ${quoteId} ` +
+        "with the calculator's.",
+    );
+    await archiveLineItemsBatch(client, existingLineItemIds).catch((error) => {
+      console.warn(
+        `Nylas pricing: could not archive the previous line items on quote ${quoteId}. It may ` +
+          `now show both sets. ${String(error?.body?.message || error?.message || error)}`,
+      );
+    });
+  }
+
+  // The properties this app owns, and only those. The acceptance method has to be sent for the
+  // same measured reason it does on a create -- see the block in generateQuote -- and the effective
+  // start date needs its type alongside it or HubSpot resolves it to the acceptance date.
+  const properties = {
+    hs_expiration_date: quoteExpirationDate(option.result.dates.contractStartDate),
+    ...(option.result.dates.contractStartDate
+      ? {
+          hs_contract_effective_start_date: option.result.dates.contractStartDate,
+          hs_contract_effective_start_date_type: 'CUSTOM',
+        }
+      : {}),
+    hs_acceptance_method: QUOTE_ACCEPTANCE_METHOD,
+    ...(dealOwnerId ? { hubspot_owner_id: dealOwnerId, hs_quote_owner_id: dealOwnerId } : {}),
+    ...sender,
+  };
+  try {
+    await client.crm.quotes.basicApi.update(quoteId, { properties });
+  } catch (error) {
+    // Not fatal: the pricing is on the quote, which is the point. Say which half failed.
+    console.error(
+      `Nylas pricing: the line items were applied to quote ${quoteId} but its properties were ` +
+        `not. ${String(error?.body?.message || error?.message || error)}`,
+      safeProviderDiagnostics(error, 'price_existing_quote_properties'),
+    );
+  }
+
+  // The approval tier still applies. A renewal that needs sign-off is exactly as much of a problem
+  // as a new-business one that does, and the workflow that watches hs_status does not care which
+  // kind of quote it is.
+  const needsApproval = String(option.result?.approvalTierRequired || 'none') !== 'none';
+  let quoteStatus = QUOTE_STATUS_DRAFT;
+  let quoteStatusError = '';
+  if (needsApproval) {
+    try {
+      await client.crm.quotes.basicApi.update(quoteId, {
+        properties: { hs_status: QUOTE_STATUS_PENDING_APPROVAL },
+      });
+      const after = await client.crm.quotes.basicApi.getById(quoteId, ['hs_status']);
+      quoteStatus = after?.properties?.hs_status || quoteStatus;
+    } catch (error) {
+      quoteStatusError = String(error?.body?.message || error?.message || error).slice(0, 600);
+      console.error(
+        `Nylas pricing: could not move quote ${quoteId} to PENDING_APPROVAL. The approval ` +
+          `workflow will not enrol it. ${quoteStatusError}`,
+        safeProviderDiagnostics(error, 'price_existing_quote_status'),
+      );
+    }
+  }
+
+  const finalized = await client.crm.quotes.basicApi
+    .getById(quoteId, ['hs_quote_link', 'hs_title', 'hs_type'])
+    .catch(() => null);
+  const quoteUrl = finalized?.properties?.hs_quote_link || '';
+  const generatedAt = new Date().toISOString();
+  await updateDealProperties(client, dealId, {
+    pricing_latest_quote_id: quoteId,
+    pricing_quote_id: quoteId,
+    pricing_latest_quote_url: quoteUrl,
+    pricing_quote_generation_status: 'draft_created',
+    pricing_quote_generated_at: generatedAt,
+  });
+  console.info(
+    `Nylas pricing: priced HubSpot-created quote ${quoteId} ` +
+      `(hs_type=${finalized?.properties?.hs_type || 'unknown'}) with ${lineItems.length} line ` +
+      `item(s) from deal ${dealId}.`,
+  );
+
+  return {
+    quoteId,
+    quoteUrl,
+    generatedAt,
+    adopted: true,
+    quoteTitle: finalized?.properties?.hs_title || '',
+    quoteType: finalized?.properties?.hs_type || '',
+    lineItemCount: lineItems.length,
+    quoteStatus,
+    quoteStatusExpected: needsApproval ? QUOTE_STATUS_PENDING_APPROVAL : QUOTE_STATUS_DRAFT,
+    quoteStatusError,
+    needsApproval,
+    seller: { ownerId: dealOwnerId || '', sent: Object.keys(sender) },
+  };
+};
+
 const stateResponse = (state) => ({
   optionSet: state.document,
   selectedOptionId: state.selectedOptionId,
@@ -2969,13 +3214,20 @@ exports.main = async (context) => {
 
     if (action === 'list') {
       const allTemplates = await usableQuoteTemplates(client);
-      const listTemplates = offeredQuoteTemplates(allTemplates, settings);
+      const listTemplates = offeredQuoteTemplates(
+        allTemplates,
+        settings,
+        dealCategory(settings, state.dealType, state.pipelineId),
+      );
       return response(200, {
         success: true,
         ...stateResponse(state),
         quoteTemplates: listTemplates,
         defaultQuoteTemplateId: defaultQuoteTemplate(settings),
         ...(await quoteContactOptions(client, dealId)),
+        // The Deal's draft Change and Renewal quotes. HubSpot has to create those; the card offers
+        // them so the rep can send this Deal's pricing to one instead of making a new quote.
+        adoptableQuotes: await adoptableQuotes(client, dealId),
         dealOwnerId: state.dealOwnerId,
         // TEMP DIAGNOSTIC -- see latestQuoteTemplate. Remove with it.
         latestQuoteTemplate: await latestQuoteTemplate(client, state.latestQuoteId, allTemplates),
@@ -3106,6 +3358,8 @@ exports._test = Object.freeze({
   offeredQuoteTemplates,
   usableQuoteTemplates,
   defaultQuoteTemplate,
+  adoptableQuotes,
+  priceExistingQuote,
   repairLineItemsBatch,
   createLineItemsBatch,
   archiveLineItemsBatch,

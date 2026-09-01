@@ -121,6 +121,22 @@ const defaultSettings = () => ({
   // default still falls back to the QUOTE_TEMPLATE_ID secret, exactly as before.
   enabledQuoteTemplateIds: [],
   defaultQuoteTemplateId: '',
+  // EXTRA templates a renewal-pipeline Deal may also choose from. Added 2026-09-01.
+  //
+  // A change is now sent as an ORDINARY quote -- hs_type INITIAL, created by this app like any
+  // other -- carrying the Change template so the document reads correctly. A HubSpot workflow
+  // terminates the prior contract when the customer accepts, and the accepted quote's own contract
+  // becomes the live one. Holly's design; it sidesteps the fact that the public API will not create
+  // a CHANGE or RENEWAL quote at all.
+  //
+  // A SECOND LIST rather than more entries in enabledQuoteTemplateIds, and that is the whole point:
+  // a new-business Deal must keep offering exactly what it offers today. Holly, 2026-09-01: "Don't
+  // touch ANYTHING with new business." Putting the Change template in the shared list would have
+  // put it in the new-business picker too.
+  //
+  // EMPTY IS THE DEFAULT and means "renewal Deals see the same list as everyone else", so a portal
+  // that never sets this behaves exactly as it did before the key existed.
+  renewalQuoteTemplateIds: [],
   // DERIVED MIRROR, the inverse of what this key used to be. Never edited, never read by this
   // code, written on every save.
   //
@@ -195,14 +211,31 @@ const normalizeTemplateId = (value, field) => {
 // so a settings record written before the kinds were removed -- which is every record in the
 // portal today -- still resolves to the right list on the first read, before anyone opens
 // Settings and saves.
-const quoteTemplateSettings = (settings) => {
+// The templates a Deal may quote from, and its default.
+//
+// `category` widens the list and NOTHING else. A renewal-pipeline Deal is offered the shared list
+// plus renewalQuoteTemplateIds; every other Deal is offered the shared list, unchanged. The DEFAULT
+// is the same either way, so a renewal Deal still opens on the same template it opens on today and
+// the extra ones are a deliberate choice by the rep.
+//
+// Passing no category is the new-business reading. That is deliberate: a caller that forgets to
+// pass one cannot accidentally widen the picker.
+const quoteTemplateSettings = (settings, category) => {
   const flatEnabled = settings?.enabledQuoteTemplateIds;
   const flatDefault = settings?.defaultQuoteTemplateId;
   const legacy = settings?.quoteTemplatesByKind?.new_business;
-  return {
-    enabledIds: (Array.isArray(flatEnabled) && flatEnabled.length > 0
+  const shared =
+    (Array.isArray(flatEnabled) && flatEnabled.length > 0
       ? flatEnabled
-      : legacy?.enabledIds) || [],
+      : legacy?.enabledIds) || [];
+  const extra =
+    category === 'renewal' && Array.isArray(settings?.renewalQuoteTemplateIds)
+      ? settings.renewalQuoteTemplateIds
+      : [];
+  return {
+    // De-duplicated, shared list first, so the order the picker renders is stable and the
+    // additions read as additions.
+    enabledIds: [...new Set([...shared, ...extra].map(String))],
     defaultId: (flatDefault || legacy?.defaultId) || '',
   };
 };
@@ -465,6 +498,10 @@ const normalizeSettings = (value, currentVersion = 0) => {
     renewalPipelineIds: normalizePipelineIds(
       value.renewalPipelineIds || [],
       'renewalPipelineIds',
+    ),
+    renewalQuoteTemplateIds: normalizePipelineIds(
+      value.renewalQuoteTemplateIds || [],
+      'renewalQuoteTemplateIds',
     ),
     pricingPolicy: normalizePricingPolicy(value.pricingPolicy),
   };

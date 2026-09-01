@@ -45,6 +45,7 @@ interface AppSettings {
   renewalPipelineIds: string[];
   enabledQuoteTemplateIds: string[];
   defaultQuoteTemplateId: string;
+  renewalQuoteTemplateIds: string[];
   // Derived server-side from the two keys above and never edited here. It exists so code
   // predating this change still finds the per-kind shape it expects after a rollback.
   quoteTemplatesByKind: Record<
@@ -385,6 +386,27 @@ const SettingsPage = () => {
               list above, or pick a different default.
             </Text>
           )}
+          <MultiSelect
+            label="Extra Templates On Renewal Pipelines"
+            name="renewal_quote_templates"
+            value={settings.renewalQuoteTemplateIds}
+            options={templateOptions}
+            readOnly={!canEdit}
+            onChange={(value) =>
+              setSettings({
+                ...settings,
+                renewalQuoteTemplateIds: value.map(String),
+              })
+            }
+          />
+          <Text variant="microcopy">
+            Offered in addition to the list above, and only on Deals in a
+            renewal pipeline. This is where the Change template goes: a change
+            is sent as an ordinary quote carrying that template, and a HubSpot
+            workflow ends the previous contract once the customer accepts. Leave
+            empty and renewal Deals see the same templates as everyone else. The
+            default above does not change either way.
+          </Text>
           {quoteTemplates.length === 0 && (
             <Text variant="microcopy">
               No quote templates could be listed for this portal. The card will

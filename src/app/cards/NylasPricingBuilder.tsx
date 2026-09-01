@@ -239,6 +239,9 @@ interface ServerlessBody {
   productLibrary?: ProductLibraryReport;
   discountReason?: string;
   quoteTemplates?: { id: string; name: string }[];
+  // The Deal's draft Change and Renewal quotes. HubSpot has to create those -- the public API
+  // refuses -- so the card offers them as somewhere to send this Deal's pricing.
+  adoptableQuotes?: { id: string; title: string; type: string }[];
   seller?: {
     ownerId?: string;
     sent?: string[];
@@ -904,6 +907,12 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
   // Whether this Lock in replaces the quote it supersedes, or leaves it and adds a new one.
   // Defaults to FALSE: every lock creates a new quote, and throwing the previous one away is a
   // deliberate choice the rep makes, not a side effect of clicking the button.
+  // Which HubSpot-made quote this Deal's pricing goes onto. Empty means "create a new quote",
+  // which is what a new business Deal always does.
+  const [adoptableQuotes, setAdoptableQuotes] = useState<
+    { id: string; title: string; type: string }[]
+  >([]);
+  const [applyToQuoteId, setApplyToQuoteId] = useState("");
   const [replaceExistingQuote, setReplaceExistingQuote] = useState(false);
   // The contact that goes on the Quote. HubSpot requires one on a CPQ quote, and a Deal without
   // one produced a quote HubSpot rejected with a message that blamed the template.
@@ -987,6 +996,17 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
     }
     // The resolved flow. Read before the templates below, because which template list applies
     // depends on it.
+    if (body.adoptableQuotes) {
+      setAdoptableQuotes(body.adoptableQuotes);
+      // A selection that is no longer on offer must not survive -- the quote may have been
+      // published or deleted while the card sat open, and Lock in would then send an id the
+      // server refuses. Same rule as the template picker below, for the same reason.
+      setApplyToQuoteId((current) =>
+        current && body.adoptableQuotes?.some(({ id }) => id === current)
+          ? current
+          : "",
+      );
+    }
     if (body.quoteTemplates) {
       setQuoteTemplates(body.quoteTemplates);
       // Preselect the configured default when it is one of the usable templates, so the picker
@@ -1138,6 +1158,9 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
         discountReason,
         replaceExistingQuote,
         contactId,
+        // Empty means create a new quote. Set means put this pricing on the HubSpot-made Change
+        // or Renewal quote the rep chose.
+        applyToQuoteId,
       });
       // Every lock creates a NEW quote -- generation is unconditional, because the hash-based
       // reuse it replaced is what let a stale quote come back rendered with the old template.
@@ -1232,6 +1255,9 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
         discountReason={discountReason}
         onDiscountReasonChange={setDiscountReason}
         quoteTemplates={quoteTemplates}
+        adoptableQuotes={adoptableQuotes}
+        applyToQuoteId={applyToQuoteId}
+        onApplyToQuoteChange={setApplyToQuoteId}
         templateId={templateId}
         onTemplateChange={setTemplateId}
         paymentMethod={paymentMethod}
@@ -1262,6 +1288,9 @@ const OptionEditor = ({
   discountReason,
   onDiscountReasonChange,
   quoteTemplates,
+  adoptableQuotes,
+  applyToQuoteId,
+  onApplyToQuoteChange,
   templateId,
   onTemplateChange,
   paymentMethod,
@@ -1287,6 +1316,9 @@ const OptionEditor = ({
   discountReason: string;
   onDiscountReasonChange: (value: string) => void;
   quoteTemplates: { id: string; name: string }[];
+  adoptableQuotes: { id: string; title: string; type: string }[];
+  applyToQuoteId: string;
+  onApplyToQuoteChange: (value: string) => void;
   templateId: string;
   onTemplateChange: (value: string) => void;
   paymentMethod: string;
@@ -1795,7 +1827,37 @@ const OptionEditor = ({
                   onInputChange("paymentFrequency", String(value))
                 }
               />
-              {quoteTemplates.length > 0 && (
+              {/* WHERE THIS PRICING GOES. Only shown when the Deal actually has a draft Change or
+                  Renewal quote on it, so a new business Deal never sees a control it cannot use.
+
+                  HubSpot will not create either of those documents through the public API -- the
+                  create is refused outright with "'hs_type' must be set to 'INITIAL'" -- so the rep
+                  makes the quote from the Deal (Add quote, then Change or Renewal) and this sends
+                  the calculator's line items and pricing onto it. Everything else about Lock in is
+                  unchanged either way. */}
+              {adoptableQuotes.length > 0 && (
+                <Flex direction="column" gap="flush">
+                  <Select
+                    label="Apply This Pricing To"
+                    name="apply_to_quote"
+                    value={applyToQuoteId}
+                    options={[
+                      { value: "", label: "Create a new quote" },
+                      ...adoptableQuotes.map(({ id, title, type }) => ({
+                        value: id,
+                        label: `${type === "CHANGE" ? "Change" : "Renewal"} — ${title}`,
+                      })),
+                    ]}
+                    onChange={(value) => onApplyToQuoteChange(String(value))}
+                  />
+                  <Text variant="microcopy">
+                    {applyToQuoteId
+                      ? "Lock in will put this Deal's line items and pricing onto that quote, replacing what is on it now. HubSpot keeps the template and the quote type."
+                      : "Change and renewal quotes have to be made in HubSpot — use Add quote on this Deal, then reload the card to send this pricing to one."}
+                  </Text>
+                </Flex>
+              )}
+              {applyToQuoteId === "" && quoteTemplates.length > 0 && (
                 <Select
                   label="Quote Template"
                   name="quote_template"
