@@ -3851,15 +3851,44 @@ var describeQuoteTemplate = async (client, templateId) => {
     return { type: "unknown", name: "" };
   }
 };
+var readOwnerDirectly = async (ownerId) => {
+  try {
+    const response2 = await fetch(`https://api.hubapi.com/crm/v3/owners/${encodeURIComponent(ownerId)}`, {
+      headers: { Authorization: `Bearer ${getAccessToken()}`, "Content-Type": "application/json" }
+    });
+    if (!response2.ok) {
+      console.warn(
+        `Nylas pricing: owners REST read for ${ownerId} answered ${response2.status}. If this is 403, the app is missing the owners read scope.`
+      );
+      return null;
+    }
+    return await response2.json();
+  } catch (error) {
+    console.warn(
+      `Nylas pricing: owners REST read for ${ownerId} failed. ${String(error?.message || error)}`
+    );
+    return null;
+  }
+};
 var senderProperties = async (client, ownerId) => {
   if (!ownerId) return {};
   try {
-    const owner = await client.crm.owners.ownersApi.getById(Number(ownerId));
+    let owner = await client.crm.owners.ownersApi.getById(Number(ownerId));
+    if (!owner?.firstName && !owner?.lastName && !owner?.email) {
+      console.warn(
+        `Nylas pricing: the SDK returned owner ${ownerId} with no name or email. Reading the owners endpoint directly before giving up.`
+      );
+      owner = await readOwnerDirectly(ownerId) || owner;
+    }
     const firstName = owner?.firstName || "";
     const lastName = owner?.lastName || "";
     const email = owner?.email || "";
+    if (!email) {
+      console.error(
+        `Nylas pricing: owner ${ownerId} has NO EMAIL. hs_sender_email is required before a CPQ quote can be moved to PENDING_APPROVAL, so this quote will stay at DRAFT. Check the owner's email in HubSpot, and that the app has the owners read scope.`
+      );
+    }
     if (!firstName && !lastName && !email) {
-      console.warn(`Nylas pricing: owner ${ownerId} has no name or email; Seller left to HubSpot.`);
       return {};
     }
     return {
@@ -4087,12 +4116,10 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
         //
         // clickwrap is "accept without signature": it renders an accept button and, unlike the
         // other two, does not require a signer contact associated to the quote.
-        hs_acceptance_method: QUOTE_ACCEPTANCE_METHOD,
-        // On the CREATE. PENDING_APPROVAL is a legal creation state on an approvals-enabled
-        // portal -- it is a PUBLISHED status, not this one, that the portal refuses. Setting it
-        // here rather than by a later update matters: the update after creation was being
-        // rejected, leaving every quote at DRAFT, unrendered and unapproved.
-        hs_status: desiredQuoteStatus
+        hs_acceptance_method: QUOTE_ACCEPTANCE_METHOD
+        // hs_status is NOT sent here. "CPQ Quotes cannot be published on create. Create as
+        // draft and then update to be published." -- HubSpot, verbatim. The quote is created at
+        // DRAFT and moved after its line items exist; see the transition below.
       },
       associations: []
     });

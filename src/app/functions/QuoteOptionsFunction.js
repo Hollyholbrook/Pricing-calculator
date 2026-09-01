@@ -2342,15 +2342,60 @@ const describeQuoteTemplate = async (client, templateId) => {
 //
 // Never fails the quote. A missing or unreadable owner just leaves the Seller block to whatever
 // HubSpot would have done anyway -- which is the behaviour before this change, not something worse.
+// The owner record, read twice if it has to be.
+//
+// hs_sender_email is not decoration: HubSpot REFUSES to move a CPQ quote to PENDING_APPROVAL
+// without it ("Required property 'hs_sender_email' is empty or missing"). So a Seller block that
+// silently comes back blank does not just print an empty line on the quote -- it stops the quote
+// ever being published or routed for approval.
+//
+// The SDK read has been returning an owner object with no firstName, lastName or email for an
+// owner that plainly has them, so a failure there falls through to the REST endpoint directly.
+// Same token, same scopes -- if that also answers empty, the answer is a missing owners scope and
+// the log says so in those words rather than leaving it as "no name or email could be read".
+const readOwnerDirectly = async (ownerId) => {
+  try {
+    const response = await fetch(`https://api.hubapi.com/crm/v3/owners/${encodeURIComponent(ownerId)}`, {
+      headers: { Authorization: `Bearer ${getAccessToken()}`, 'Content-Type': 'application/json' },
+    });
+    if (!response.ok) {
+      console.warn(
+        `Nylas pricing: owners REST read for ${ownerId} answered ${response.status}. ` +
+          'If this is 403, the app is missing the owners read scope.',
+      );
+      return null;
+    }
+    return await response.json();
+  } catch (error) {
+    console.warn(
+      `Nylas pricing: owners REST read for ${ownerId} failed. ${String(error?.message || error)}`,
+    );
+    return null;
+  }
+};
+
 const senderProperties = async (client, ownerId) => {
   if (!ownerId) return {};
   try {
-    const owner = await client.crm.owners.ownersApi.getById(Number(ownerId));
+    let owner = await client.crm.owners.ownersApi.getById(Number(ownerId));
+    if (!owner?.firstName && !owner?.lastName && !owner?.email) {
+      console.warn(
+        `Nylas pricing: the SDK returned owner ${ownerId} with no name or email. Reading the ` +
+          'owners endpoint directly before giving up.',
+      );
+      owner = (await readOwnerDirectly(ownerId)) || owner;
+    }
     const firstName = owner?.firstName || '';
     const lastName = owner?.lastName || '';
     const email = owner?.email || '';
+    if (!email) {
+      console.error(
+        `Nylas pricing: owner ${ownerId} has NO EMAIL. hs_sender_email is required before a CPQ ` +
+          'quote can be moved to PENDING_APPROVAL, so this quote will stay at DRAFT. Check the ' +
+          "owner's email in HubSpot, and that the app has the owners read scope.",
+      );
+    }
     if (!firstName && !lastName && !email) {
-      console.warn(`Nylas pricing: owner ${ownerId} has no name or email; Seller left to HubSpot.`);
       return {};
     }
     return {
@@ -2511,26 +2556,18 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
   // approvalTierRequired is the single source: 'none' means nobody has to sign off. The tier itself
   // is already on the Deal as pricing_approval_tier_required, so this adds no judgement of its own.
   const needsApproval = String(option.result?.approvalTierRequired || 'none') !== 'none';
-  // THIS PORTAL HAS QUOTE APPROVALS ENABLED. Read the rejection it gave carefully, because the
-  // first reading of it was wrong and cost a night:
+  // CREATE AS DRAFT, THEN UPDATE. HubSpot finally said it in words:
   //
-  //   "Quote cannot be published without going through the pending approval state on an
-  //    approvals enabled portal. Current status: <EMPTY>"
+  //   "CPQ Quotes cannot be published on create. Create as draft and then update to be published."
+  //   "Required property 'hs_sender_email' is empty or missing quote with 'hs_status' of
+  //    'PENDING_APPROVAL' and 'hs_template_type' of 'CPQ_QUOTE'."
+  //   "Quotes with status 'PENDING_APPROVAL' and templateType 'CPQ_QUOTE' must have an
+  //    associated 'QUOTE_TO_LINE_ITEM' object."
   //
-  // It refuses PUBLISHING. APPROVAL_NOT_NEEDED is a published state, so creating with it is
-  // refused. PENDING_APPROVAL is the state the message is telling you to go through, and it was
-  // never the thing being refused.
-  //
-  // The first fix dropped hs_status from the create entirely and moved it to an update afterwards.
-  // The create then succeeded and the update failed, so every quote sat at DRAFT: the approval
-  // workflow never fired, and a DRAFT quote does not render as a finished CPQ document -- which is
-  // what "the quote created is not the right view" was.
-  //
-  // So the status goes back ON THE CREATE, and it is always PENDING_APPROVAL. On a portal with
-  // approvals enabled that is the ONLY route out of DRAFT, for every quote, whether or not the
-  // calculator says a discount needs signing off. A quote that needs no approval still has to be
-  // approved to be published; that is the account's own policy and this app does not get to route
-  // around it. needsApproval still decides what the CARD says and what the Deal records.
+  // So the status CANNOT go on the create -- not PENDING_APPROVAL either -- and the update that
+  // follows has preconditions: a sender email, and line items already associated. The line items
+  // are created before the read-back below, so that one is satisfied. The sender email is not
+  // always available, which is exactly why the transition was failing silently.
   const desiredQuoteStatus = QUOTE_STATUS_PENDING_APPROVAL;
 
   const category = dealCategory(settings, state.dealType, state.pipelineId);
@@ -2722,11 +2759,9 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
         // clickwrap is "accept without signature": it renders an accept button and, unlike the
         // other two, does not require a signer contact associated to the quote.
         hs_acceptance_method: QUOTE_ACCEPTANCE_METHOD,
-        // On the CREATE. PENDING_APPROVAL is a legal creation state on an approvals-enabled
-        // portal -- it is a PUBLISHED status, not this one, that the portal refuses. Setting it
-        // here rather than by a later update matters: the update after creation was being
-        // rejected, leaving every quote at DRAFT, unrendered and unapproved.
-        hs_status: desiredQuoteStatus,
+        // hs_status is NOT sent here. "CPQ Quotes cannot be published on create. Create as
+        // draft and then update to be published." -- HubSpot, verbatim. The quote is created at
+        // DRAFT and moved after its line items exist; see the transition below.
       },
       associations: [],
     });

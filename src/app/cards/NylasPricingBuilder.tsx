@@ -1192,17 +1192,13 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
           `The Quote is on the Deal's Quotes card.`,
         type: "success",
       });
-      // NO reloadPage(). It was here so the Line items and Quotes cards beside this one would
-      // refresh, and it cost far more than it bought: reloading remounts THIS card, which threw
-      // away the confirmation alert a fraction of a second after showing it and reset the
-      // template picker to the category default. A rep who chose the Change template, locked in,
-      // and locked in again got a New Business quote the second time without ever being told the
-      // selection had moved. Holly, 2026-09-01: "I literally only need this to use the quote
-      // that's chosen."
+      // Reload, so the Line items and Quotes cards beside this one show what just happened.
+      // Requested back by Holly, 2026-09-01, after it was removed.
       //
-      // refreshObjectProperties above still updates the Deal's own fields. The neighbouring cards
-      // catch up on the next manual refresh, which is a far smaller price than silently changing
-      // what the rep selected.
+      // It remounts THIS card, which is why the confirmation above is not the only record of the
+      // outcome: the template the latest quote was built from is re-read from HubSpot on load and
+      // shown under the picker, so the one fact that matters survives the reload.
+      actions.reloadPage();
     } catch (lockError) {
       setError(
         lockError instanceof Error

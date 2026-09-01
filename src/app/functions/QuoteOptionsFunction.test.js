@@ -778,22 +778,30 @@ test('the quote status reports whether approval is required', () => {
   // Never APPROVAL_NOT_NEEDED: on this portal that is the value that loses the whole quote.
   assert.match(source, /const desiredQuoteStatus = QUOTE_STATUS_PENDING_APPROVAL;/);
 
-  // On the CREATE, not by a later update. The update after creation was being rejected, which
-  // left every quote at DRAFT -- no approval workflow, and a DRAFT quote does not render as a
-  // finished CPQ document.
+  // NEVER ON THE CREATE. HubSpot, verbatim, after this was tried both ways:
+  //
+  //   "CPQ Quotes cannot be published on create. Create as draft and then update to be published."
+  //
+  // This assertion exists because the status was moved onto the create, off it, and onto it again
+  // over one night. It does not go on the create. Not PENDING_APPROVAL either.
   const create = source.match(
     /quote = await client\.crm\.quotes\.basicApi\.create\(\{([\s\S]*?)\n      \},/,
   );
   assert.ok(create, 'the quote create call must be findable');
-  assert.match(
-    create[1],
-    /hs_status: desiredQuoteStatus,/,
-    'hs_status must be set ON the create',
-  );
   assert.doesNotMatch(
     create[1],
-    /APPROVAL_NOT_NEEDED/,
-    'a published status must never be sent on the create',
+    /hs_status:/,
+    'CPQ quotes cannot be published on create -- create as draft, then update',
+  );
+
+  // ...and the transition must come AFTER the line items, because HubSpot requires an associated
+  // QUOTE_TO_LINE_ITEM before it will accept PENDING_APPROVAL.
+  const lineItemsAt = source.indexOf('const createdQuoteLines = await createLineItemsBatch(');
+  const transitionAt = source.indexOf('if (quoteStatus !== desiredQuoteStatus)');
+  assert.ok(lineItemsAt > 0 && transitionAt > 0);
+  assert.ok(
+    lineItemsAt < transitionAt,
+    'the quote line items must exist before the status transition is attempted',
   );
 
   // Read back and repaired if HubSpot drops it -- the same pattern as the Seller block, and for
