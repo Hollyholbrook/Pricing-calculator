@@ -2530,9 +2530,11 @@ var normalizeOptionName = (value, fallback) => {
   if (!trimmed) return fallback;
   return trimmed.slice(0, 80);
 };
-var providerMessage = (error) => String(
-  error?.body?.message || error?.response?.body?.message || error?.message || error || ""
-);
+var providerMessage = (error) => {
+  const text = error?.body?.message || error?.response?.body?.message || error?.message;
+  if (text) return String(text);
+  return typeof error === "object" && error !== null ? "" : String(error ?? "");
+};
 var safeProviderDiagnostics = (error, operation) => {
   const rawStatus = error?.statusCode || error?.status || error?.code || error?.response?.statusCode;
   const rawCategory = error?.body?.category || error?.response?.body?.category;
@@ -3769,82 +3771,44 @@ var archiveSupersededQuote = async (client, supersededQuoteId, newQuoteId) => {
     return null;
   }
 };
-var primaryQuoteLabelCache;
-var primaryQuoteAssociationType = async (client) => {
-  if (primaryQuoteLabelCache !== void 0) return primaryQuoteLabelCache;
-  try {
-    const schema = await client.crm.associations.v4.schema.definitionsApi.getAll("quotes", "deals");
-    const definitions = schema?.results || [];
-    const match = definitions.find((entry) => /primary/i.test(String(entry?.label || "")));
-    if (!match) {
-      console.warn(
-        `Nylas pricing: no primary-quote association label exists on quotes -> deals. Labels available: [${definitions.map((e) => e?.label || e?.typeId).join(", ")}]. Create one in HubSpot association settings and the next Lock in will apply it.`
-      );
-      primaryQuoteLabelCache = null;
-      return primaryQuoteLabelCache;
-    }
-    primaryQuoteLabelCache = {
-      typeId: match.typeId,
-      label: match.label,
-      category: match.category || "USER_DEFINED"
-    };
+var CPQ_QUOTE_TYPE_INITIAL = "INITIAL";
+var reportTemplateApplied = (quoteId, templateId, templateName, finalized) => {
+  const applied = Boolean(
+    finalized?.properties?.hs_terms || finalized?.properties?.hs_net_payment_terms
+  );
+  if (applied) {
     console.info(
-      `Nylas pricing: primary-quote label resolved -- "${match.label}" typeId=${match.typeId} category=${primaryQuoteLabelCache.category}`
+      `Nylas pricing: quote ${quoteId} initialized from template ${templateId} ("${templateName}") -- hs_type=${finalized?.properties?.hs_type || "unset"}, net terms ${finalized?.properties?.hs_net_payment_terms || "0"}, terms block ${finalized?.properties?.hs_terms ? "present" : "absent"}.`
     );
-    return primaryQuoteLabelCache;
+    return applied;
+  }
+  console.error(
+    `Nylas pricing: quote ${quoteId} carries template ${templateId} ("${templateName}") but was NOT initialized from it -- no terms block and no net payment terms came across. The document will render from HubSpot's default, not this template. The template association is on the create request, so if this fires the create was rejected or reordered; read the create response before changing anything else.`
+  );
+  return applied;
+};
+var clearClonedLineItems = async (client, quoteId, dealId) => {
+  try {
+    const clonedLineItemIds = await associatedIds(client, "quotes", String(quoteId), "line_items", 200);
+    if (clonedLineItemIds.length === 0) return;
+    console.info(
+      `Nylas pricing: clearing ${clonedLineItemIds.length} line item(s) HubSpot cloned from deal ${dealId} onto quote ${quoteId}; the calculator's own lines follow.`
+    );
+    await inBatches(
+      clonedLineItemIds,
+      (id) => client.crm.lineItems.basicApi.archive(String(id)).catch((error) => {
+        console.warn(
+          `Nylas pricing: could not archive cloned line item ${id} on quote ${quoteId}. ${providerMessage(error)}`
+        );
+      })
+    );
   } catch (error) {
     console.warn(
-      `Nylas pricing: could not read the quotes -> deals association labels. ${providerMessage(error)}`
+      `Nylas pricing: could not read the line items HubSpot cloned onto quote ${quoteId}. Duplicate lines may appear. ${providerMessage(error)}`
     );
-    primaryQuoteLabelCache = null;
-    return primaryQuoteLabelCache;
   }
 };
-var markAsPrimaryQuote = async (client, quoteId, dealId) => {
-  const labelType = await primaryQuoteAssociationType(client);
-  if (!labelType) return { applied: false, label: null, reason: "no primary-quote label" };
-  try {
-    await client.crm.associations.v4.basicApi.create("quotes", String(quoteId), "deals", String(dealId), [
-      { associationCategory: labelType.category, associationTypeId: labelType.typeId }
-    ]);
-    console.info(
-      `Nylas pricing: quote ${quoteId} marked as the primary quote on deal ${dealId}.`
-    );
-    return { applied: true, label: labelType.label, reason: null };
-  } catch (error) {
-    const detail = providerMessage(error);
-    const ineligible = /not eligible to become primary/i.test(detail);
-    if (ineligible) {
-      console.info(
-        `Nylas pricing: quote ${quoteId} is a draft, so HubSpot will not make it the primary quote on deal ${dealId} yet. It becomes eligible when the quote is published.`
-      );
-    } else {
-      console.warn(
-        `Nylas pricing: could not mark quote ${quoteId} primary on deal ${dealId}. ${detail}`
-      );
-    }
-    return {
-      applied: false,
-      label: labelType.label,
-      ineligible,
-      reason: detail
-    };
-  }
-};
-var CPQ_QUOTE_TYPE_INITIAL = "INITIAL";
-var generateQuote = async (client, dealId, state, parameters, portalId, settings) => {
-  const option = selectedOptionForDraft(state);
-  assertCurrentSettings(option, settings);
-  const content = normalizeQuoteContent(
-    parameters.quoteContent,
-    defaultQuoteTitle(
-      await dealCompanyName(client, dealId),
-      option.input?.startDate,
-      state.dealName
-    ) || `${state.dealName} \u2013 ${option.name}`
-  );
-  const needsApproval = String(option.result?.approvalTierRequired || "none") !== "none";
-  const desiredQuoteStatus = needsApproval ? QUOTE_STATUS_PENDING_APPROVAL : QUOTE_STATUS_DRAFT;
+var resolveQuoteTemplate = async (client, content, state, settings) => {
   const requestedTemplateId = content.templateId || defaultQuoteTemplate(settings);
   if (!/^\d+$/.test(requestedTemplateId)) throw new Error("QUOTE_CONFIGURATION_REQUIRED");
   const templateCategory = dealCategory(settings, state.dealType, state.pipelineId);
@@ -3871,6 +3835,27 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
     failure.diagnostics = { quoteTemplateId: templateId, quoteTemplateType: templateType };
     throw failure;
   }
+  return { templateId, templateName, templateType };
+};
+var generateQuote = async (client, dealId, state, parameters, portalId, settings) => {
+  const option = selectedOptionForDraft(state);
+  assertCurrentSettings(option, settings);
+  const content = normalizeQuoteContent(
+    parameters.quoteContent,
+    defaultQuoteTitle(
+      await dealCompanyName(client, dealId),
+      option.input?.startDate,
+      state.dealName
+    ) || `${state.dealName} \u2013 ${option.name}`
+  );
+  const needsApproval = String(option.result?.approvalTierRequired || "none") !== "none";
+  const desiredQuoteStatus = needsApproval ? QUOTE_STATUS_PENDING_APPROVAL : QUOTE_STATUS_DRAFT;
+  const { templateId, templateName, templateType } = await resolveQuoteTemplate(
+    client,
+    content,
+    state,
+    settings
+  );
   const hash = contentHash(option, { ...content, templateId });
   let supersededQuoteId = "";
   try {
@@ -4008,33 +3993,7 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
       // because HubSpot reads a quote's associations while it initializes it and never again.
       associations: quoteCreateAssociations
     });
-    try {
-      const clonedLineItemIds = await associatedIds(
-        client,
-        "quotes",
-        String(quote.id),
-        "line_items",
-        200
-      );
-      if (clonedLineItemIds.length > 0) {
-        console.info(
-          `Nylas pricing: clearing ${clonedLineItemIds.length} line item(s) HubSpot cloned from deal ${dealId} onto quote ${quote.id}; the calculator's own lines follow.`
-        );
-        await inBatches(
-          clonedLineItemIds,
-          (id) => client.crm.lineItems.basicApi.archive(String(id)).catch((error) => {
-            console.warn(
-              `Nylas pricing: could not archive cloned line item ${id} on quote ${quote.id}. ${providerMessage(error)}`
-            );
-          })
-        );
-      }
-    } catch (error) {
-      console.warn(
-        `Nylas pricing: could not read the line items HubSpot cloned onto quote ${quote.id}. Duplicate lines may appear. ${providerMessage(error)}`
-      );
-    }
-    const primaryQuote = await markAsPrimaryQuote(client, quote.id, dealId);
+    await clearClonedLineItems(client, quote.id, dealId);
     const sendingQuoteLines = lineItems.map((item) => ({
       properties: hubSpotLineItemProperties(item.properties),
       // 68, not 67. Association type ids are directional: 67 is defined FROM the quote (0-14) TO
@@ -4105,18 +4064,7 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
       ...Object.keys(sender)
     ]);
     const quoteUrl = finalized?.properties?.hs_quote_link || "";
-    const templateApplied = Boolean(
-      finalized?.properties?.hs_terms || finalized?.properties?.hs_net_payment_terms
-    );
-    if (templateApplied) {
-      console.info(
-        `Nylas pricing: quote ${quote.id} initialized from template ${templateId} ("${templateName}") -- hs_type=${finalized?.properties?.hs_type || "unset"}, net terms ${finalized?.properties?.hs_net_payment_terms || "0"}, terms block ${finalized?.properties?.hs_terms ? "present" : "absent"}.`
-      );
-    } else {
-      console.error(
-        `Nylas pricing: quote ${quote.id} carries template ${templateId} ("${templateName}") but was NOT initialized from it -- no terms block and no net payment terms came across. The document will render from HubSpot's default, not this template. The template association is on the create request, so if this fires the create was rejected or reordered; read the create response before changing anything else.`
-      );
-    }
+    reportTemplateApplied(quote.id, templateId, templateName, finalized);
     let quoteStatus = finalized?.properties?.hs_status || "";
     let quoteStatusRepaired = false;
     let quoteStatusError = "";
@@ -4546,6 +4494,7 @@ exports._test = Object.freeze({
   offeredQuoteTemplates,
   usableQuoteTemplates,
   defaultQuoteTemplate,
+  providerMessage,
   adoptableQuotes,
   priceExistingQuote,
   repairLineItemsBatch,

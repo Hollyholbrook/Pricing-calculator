@@ -327,10 +327,15 @@ const normalizeOptionName = (value, fallback) => {
 //
 // safeProviderDiagnostics (above) always checked all three. This is the same rule for the plain
 // string form, so the two cannot drift again.
-const providerMessage = (error) =>
-  String(
-    error?.body?.message || error?.response?.body?.message || error?.message || error || '',
-  );
+const providerMessage = (error) => {
+  const text = error?.body?.message || error?.response?.body?.message || error?.message;
+  if (text) return String(text);
+  // A thrown string or number is still worth printing. An object carrying none of the three fields
+  // is not: it stringifies to "[object Object]", which fills the log line while saying less than
+  // nothing. The old inline form printed that; this returns empty and lets the caller's own
+  // sentence carry the message.
+  return typeof error === 'object' && error !== null ? '' : String(error ?? '');
+};
 
 const safeProviderDiagnostics = (error, operation) => {
   const rawStatus =
@@ -2338,59 +2343,82 @@ const markAsPrimaryQuote = async (client, quoteId, dealId) => {
 // quotes. What a change or renewal Deal should do instead is a product decision, not a default.
 const CPQ_QUOTE_TYPE_INITIAL = 'INITIAL';
 
-const generateQuote = async (client, dealId, state, parameters, portalId, settings) => {
-  const option = selectedOptionForDraft(state);
-  assertCurrentSettings(option, settings);
-  const content = normalizeQuoteContent(
-    parameters.quoteContent,
-    defaultQuoteTitle(
-      await dealCompanyName(client, dealId),
-      option.input?.startDate,
-      state.dealName,
-    ) || `${state.dealName} – ${option.name}`,
+// DID THE TEMPLATE ACTUALLY TAKE? One line in the log, every Lock in.
+//
+// A quote initialized from its template carries the template's own content: net payment terms and
+// the terms block. A quote that was not carries neither, no matter what its quote_template
+// association says -- that is the whole failure the create was restructured to fix on 2026-09-01,
+// and it is invisible in the association. So it is measured rather than assumed.
+//
+// Logging only, deliberately not a throw: the quote exists and its pricing is right. What this buys
+// is that "the document came out wrong" stops being a day of bisecting properties and becomes a
+// line that says which half of the create failed.
+const reportTemplateApplied = (quoteId, templateId, templateName, finalized) => {
+  const applied = Boolean(
+    finalized?.properties?.hs_terms || finalized?.properties?.hs_net_payment_terms,
   );
-  // Does this quote need approval? The calculator already decided; this only reports the decision
-  // onto the quote so HubSpot's approval workflow -- which enrols on hs_status becoming
-  // PENDING_APPROVAL, filtered to CPQ_QUOTE templates -- has something to fire on. Deciding it and
-  // leaving the quote at DRAFT is why that workflow never ran.
-  //
-  // approvalTierRequired is the single source: 'none' means nobody has to sign off. The tier itself
-  // is already on the Deal as pricing_approval_tier_required, so this adds no judgement of its own.
-  const needsApproval = String(option.result?.approvalTierRequired || 'none') !== 'none';
-  // CREATE AS DRAFT, THEN UPDATE. HubSpot finally said it in words:
-  //
-  //   "CPQ Quotes cannot be published on create. Create as draft and then update to be published."
-  //   "Required property 'hs_sender_email' is empty or missing quote with 'hs_status' of
-  //    'PENDING_APPROVAL' and 'hs_template_type' of 'CPQ_QUOTE'."
-  //   "Quotes with status 'PENDING_APPROVAL' and templateType 'CPQ_QUOTE' must have an
-  //    associated 'QUOTE_TO_LINE_ITEM' object."
-  //
-  // So the status CANNOT go on the create -- not PENDING_APPROVAL either -- and the update that
-  // follows has preconditions: a sender email, and line items already associated. The line items
-  // are created before the read-back below, so that one is satisfied. The sender email is not
-  // always available, which is exactly why the transition was failing silently.
-  //
-  // GATED ON needsApproval. Reverted to the unconditional form earlier on 2026-09-01 when the
-  // instruction was to match the night of 2026-08-31 exactly; restored the same evening on live
-  // evidence.
-  //
-  // Deal 60785797504: pricing_approval_tier_required = "none", largest discretionary discount 0%,
-  // and quote 42608430360 (20:26) still went to PENDING_APPROVAL. Holly: "it was marked as pending
-  // approval but it shouldn't have been."
-  //
-  // needsApproval is computed a few lines above from approvalTierRequired -- the calculator's own
-  // answer -- and was previously discarded, so every Lock in asked for a status the deal had not
-  // earned. The transition below is non-fatal, so when HubSpot refused it the quote silently kept
-  // DRAFT; that is why the same deal produced PENDING_APPROVAL and then DRAFT three minutes apart
-  // from identical inputs.
-  //
-  // A 'none' deal now never attempts the transition: the create leaves the quote at DRAFT,
-  // desiredQuoteStatus already matches, and the block below is skipped. A deal that does need
-  // approval is unchanged -- it flips, and the approval workflow still enrols it.
-  const desiredQuoteStatus = needsApproval
-    ? QUOTE_STATUS_PENDING_APPROVAL
-    : QUOTE_STATUS_DRAFT;
+  if (applied) {
+    console.info(
+      `Nylas pricing: quote ${quoteId} initialized from template ${templateId} ` +
+        `("${templateName}") -- hs_type=${finalized?.properties?.hs_type || 'unset'}, ` +
+        `net terms ${finalized?.properties?.hs_net_payment_terms || '0'}, terms block ` +
+        `${finalized?.properties?.hs_terms ? 'present' : 'absent'}.`,
+    );
+    return applied;
+  }
+  console.error(
+    `Nylas pricing: quote ${quoteId} carries template ${templateId} ("${templateName}") but ` +
+      'was NOT initialized from it -- no terms block and no net payment terms came across. ' +
+      "The document will render from HubSpot's default, not this template. The template " +
+      'association is on the create request, so if this fires the create was rejected or ' +
+      'reordered; read the create response before changing anything else.',
+  );
+  return applied;
+};
 
+// Remove the line items HubSpot cloned onto a new quote from its Deal.
+//
+// Associating the Deal on the create makes HubSpot copy the Deal's line items onto the quote --
+// verified 2026-09-01: quote 42620168501 came out of the create carrying ten line items with fresh
+// ids (585154794xx) cloned from the Deal's (585112051xx). The app then creates its own, so leaving
+// these would print every product twice.
+//
+// Anything associated to the quote at this instant is HubSpot's clone, because the app has not
+// created a line item yet. NOT a return to "the quote has no line items of its own" -- the app's
+// own lines are what the calculator computed and what the Order Form renders.
+//
+// Never fatal, on either half. A quote with duplicate lines is visible and fixable by hand; losing
+// the lock over it is not.
+const clearClonedLineItems = async (client, quoteId, dealId) => {
+  try {
+    const clonedLineItemIds = await associatedIds(client, 'quotes', String(quoteId), 'line_items', 200);
+    if (clonedLineItemIds.length === 0) return;
+    console.info(
+      `Nylas pricing: clearing ${clonedLineItemIds.length} line item(s) HubSpot cloned from ` +
+        `deal ${dealId} onto quote ${quoteId}; the calculator's own lines follow.`,
+    );
+    await inBatches(clonedLineItemIds, (id) =>
+      client.crm.lineItems.basicApi.archive(String(id)).catch((error) => {
+        console.warn(
+          `Nylas pricing: could not archive cloned line item ${id} on quote ${quoteId}. ` +
+            `${providerMessage(error)}`,
+        );
+      }),
+    );
+  } catch (error) {
+    console.warn(
+      `Nylas pricing: could not read the line items HubSpot cloned onto quote ${quoteId}. ` +
+        `Duplicate lines may appear. ${providerMessage(error)}`,
+    );
+  }
+};
+
+// Which template this quote is built from, and a refusal if it is not one this portal can use.
+//
+// Split out of generateQuote 2026-09-02. Everything here runs BEFORE anything is created, which
+// is the property that makes it safe to extract: both exits are throws, and neither leaves a
+// record behind. Same rule as every other precondition in that function.
+const resolveQuoteTemplate = async (client, content, state, settings) => {
   // ONE TEMPLATE LIST, and the card's choice is checked against it.
   //
   // The per-category guard this replaces existed because a Deal that changed pipeline while the
@@ -2450,6 +2478,69 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
     failure.diagnostics = { quoteTemplateId: templateId, quoteTemplateType: templateType };
     throw failure;
   }
+  return { templateId, templateName, templateType };
+};
+
+const generateQuote = async (client, dealId, state, parameters, portalId, settings) => {
+  const option = selectedOptionForDraft(state);
+  assertCurrentSettings(option, settings);
+  const content = normalizeQuoteContent(
+    parameters.quoteContent,
+    defaultQuoteTitle(
+      await dealCompanyName(client, dealId),
+      option.input?.startDate,
+      state.dealName,
+    ) || `${state.dealName} – ${option.name}`,
+  );
+  // Does this quote need approval? The calculator already decided; this only reports the decision
+  // onto the quote so HubSpot's approval workflow -- which enrols on hs_status becoming
+  // PENDING_APPROVAL, filtered to CPQ_QUOTE templates -- has something to fire on. Deciding it and
+  // leaving the quote at DRAFT is why that workflow never ran.
+  //
+  // approvalTierRequired is the single source: 'none' means nobody has to sign off. The tier itself
+  // is already on the Deal as pricing_approval_tier_required, so this adds no judgement of its own.
+  const needsApproval = String(option.result?.approvalTierRequired || 'none') !== 'none';
+  // CREATE AS DRAFT, THEN UPDATE. HubSpot finally said it in words:
+  //
+  //   "CPQ Quotes cannot be published on create. Create as draft and then update to be published."
+  //   "Required property 'hs_sender_email' is empty or missing quote with 'hs_status' of
+  //    'PENDING_APPROVAL' and 'hs_template_type' of 'CPQ_QUOTE'."
+  //   "Quotes with status 'PENDING_APPROVAL' and templateType 'CPQ_QUOTE' must have an
+  //    associated 'QUOTE_TO_LINE_ITEM' object."
+  //
+  // So the status CANNOT go on the create -- not PENDING_APPROVAL either -- and the update that
+  // follows has preconditions: a sender email, and line items already associated. The line items
+  // are created before the read-back below, so that one is satisfied. The sender email is not
+  // always available, which is exactly why the transition was failing silently.
+  //
+  // GATED ON needsApproval. Reverted to the unconditional form earlier on 2026-09-01 when the
+  // instruction was to match the night of 2026-08-31 exactly; restored the same evening on live
+  // evidence.
+  //
+  // Deal 60785797504: pricing_approval_tier_required = "none", largest discretionary discount 0%,
+  // and quote 42608430360 (20:26) still went to PENDING_APPROVAL. Holly: "it was marked as pending
+  // approval but it shouldn't have been."
+  //
+  // needsApproval is computed a few lines above from approvalTierRequired -- the calculator's own
+  // answer -- and was previously discarded, so every Lock in asked for a status the deal had not
+  // earned. The transition below is non-fatal, so when HubSpot refused it the quote silently kept
+  // DRAFT; that is why the same deal produced PENDING_APPROVAL and then DRAFT three minutes apart
+  // from identical inputs.
+  //
+  // A 'none' deal now never attempts the transition: the create leaves the quote at DRAFT,
+  // desiredQuoteStatus already matches, and the block below is skipped. A deal that does need
+  // approval is unchanged -- it flips, and the approval workflow still enrols it.
+  const desiredQuoteStatus = needsApproval
+    ? QUOTE_STATUS_PENDING_APPROVAL
+    : QUOTE_STATUS_DRAFT;
+
+  const { templateId, templateName, templateType } = await resolveQuoteTemplate(
+    client,
+    content,
+    state,
+    settings,
+  );
+
   // A new Quote every time. There is deliberately no reuse branch.
   //
   // There used to be: an unchanged content hash returned the stored quote instead of creating one.
@@ -2670,49 +2761,7 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
     // request above. Contact 69 and company 71 still are: neither is read during CPQ
     // initialization, and the contact is chosen from a picker that may add it to the Deal first.
     //
-    // CLEAR HUBSPOT'S OWN COPY OF THE LINE ITEMS.
-    //
-    // Associating the Deal on the create makes HubSpot clone the Deal's line items onto the new
-    // quote -- verified 2026-09-01: quote 42620168501 came out of the create carrying ten line
-    // items with fresh ids (585154794xx) cloned from the Deal's (585112051xx). The app then
-    // creates its own, so leaving them would print every product twice. Anything associated to
-    // the quote at this instant is HubSpot's clone, because the app has not created a line item
-    // yet.
-    //
-    // NOT a return to "the quote has no line items of its own". The app's own lines are what the
-    // calculator computed and what the Order Form renders; these are duplicates of them.
-    try {
-      const clonedLineItemIds = await associatedIds(
-        client,
-        'quotes',
-        String(quote.id),
-        'line_items',
-        200,
-      );
-      if (clonedLineItemIds.length > 0) {
-        console.info(
-          `Nylas pricing: clearing ${clonedLineItemIds.length} line item(s) HubSpot cloned from ` +
-            `deal ${dealId} onto quote ${quote.id}; the calculator's own lines follow.`,
-        );
-        await inBatches(clonedLineItemIds, (id) =>
-          client.crm.lineItems.basicApi.archive(String(id)).catch((error) => {
-            console.warn(
-              `Nylas pricing: could not archive cloned line item ${id} on quote ${quote.id}. ` +
-                `${providerMessage(error)}`,
-            );
-          }),
-        );
-      }
-    } catch (error) {
-      console.warn(
-        `Nylas pricing: could not read the line items HubSpot cloned onto quote ${quote.id}. ` +
-          `Duplicate lines may appear. ${providerMessage(error)}`,
-      );
-    }
-    // Applied on EVERY Lock in, not only the first. Regenerating the quote leaves the label on the
-    // old one, so the Deal's primary quote silently goes stale -- Holly, 2026-08-31: "that got
-    // deleted", "I need it to refresh again".
-    const primaryQuote = await markAsPrimaryQuote(client, quote.id, dealId);
+    await clearClonedLineItems(client, quote.id, dealId);
 
     // The quote owns its line items, and they carry the same information as the Deal's.
     //
@@ -2827,35 +2876,7 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
     ]);
     const quoteUrl = finalized?.properties?.hs_quote_link || '';
 
-    // DID THE TEMPLATE ACTUALLY TAKE? One line in the log, every Lock in.
-    //
-    // A quote that was initialized from its template carries the template's own content: net
-    // payment terms and the terms block. A quote that was not carries neither, no matter what its
-    // quote_template association says -- that is the whole failure this create was restructured to
-    // fix, and it is invisible in the association. So it is measured rather than assumed.
-    //
-    // Not fatal, and deliberately not a thrown error: the quote exists and its pricing is right.
-    // What this buys is that "the document came out wrong" stops being a day of bisecting
-    // properties and becomes a line that says which half of the create failed.
-    const templateApplied = Boolean(
-      finalized?.properties?.hs_terms || finalized?.properties?.hs_net_payment_terms,
-    );
-    if (templateApplied) {
-      console.info(
-        `Nylas pricing: quote ${quote.id} initialized from template ${templateId} ` +
-          `("${templateName}") -- hs_type=${finalized?.properties?.hs_type || 'unset'}, ` +
-          `net terms ${finalized?.properties?.hs_net_payment_terms || '0'}, terms block ` +
-          `${finalized?.properties?.hs_terms ? 'present' : 'absent'}.`,
-      );
-    } else {
-      console.error(
-        `Nylas pricing: quote ${quote.id} carries template ${templateId} ("${templateName}") but ` +
-          'was NOT initialized from it -- no terms block and no net payment terms came across. ' +
-          'The document will render from HubSpot\'s default, not this template. The template ' +
-          'association is on the create request, so if this fires the create was rejected or ' +
-          'reordered; read the create response before changing anything else.',
-      );
-    }
+    reportTemplateApplied(quote.id, templateId, templateName, finalized);
     // The Seller block, checked rather than assumed.
     //
     // hs_sender_* was sent on the create above and the block still came out blank. Rather than
@@ -3414,6 +3435,7 @@ exports._test = Object.freeze({
   offeredQuoteTemplates,
   usableQuoteTemplates,
   defaultQuoteTemplate,
+  providerMessage,
   adoptableQuotes,
   priceExistingQuote,
   repairLineItemsBatch,

@@ -1575,12 +1575,23 @@ test('the lock refuses a legacy template, before any quote is created', () => {
     /if \(templateType !== REQUIRED_QUOTE_TEMPLATE_TYPE && templateType !== 'unknown'\) \{[\s\S]{0,600}?QUOTE_TEMPLATE_NOT_CPQ/,
     'a non-CPQ template must throw QUOTE_TEMPLATE_NOT_CPQ',
   );
-  const guardAt = source.indexOf("throw failure;\n  }\n  // A new Quote every time");
-  const createAt = source.indexOf('quote = await client.crm.quotes.basicApi.create({');
-  assert.ok(guardAt > 0, 'the guard must be findable');
+  // Structural, not positional. The guard lives in resolveQuoteTemplate (split out 2026-09-02),
+  // and what matters is that generateQuote calls it before it creates anything -- both of that
+  // helper's exits are throws, so reaching the create at all means the template passed.
+  const helper = source.slice(
+    source.indexOf('const resolveQuoteTemplate'),
+    source.indexOf('const generateQuote'),
+  );
+  assert.ok(helper.length > 0, 'the template guard must live in its own function');
+  assert.match(helper, /QUOTE_TEMPLATE_NOT_CPQ/, 'and it is the thing that refuses');
+
+  const generate = source.slice(source.indexOf('const generateQuote'));
+  const resolveAt = generate.indexOf('await resolveQuoteTemplate(');
+  const createAt = generate.indexOf('quote = await client.crm.quotes.basicApi.create({');
+  assert.ok(resolveAt > 0, 'generateQuote must resolve the template');
   assert.ok(createAt > 0, 'the quote create must be findable');
   assert.ok(
-    guardAt < createAt,
+    resolveAt < createAt,
     'the template type must be checked BEFORE the quote record is created',
   );
   // And the rep gets told which thing to change, not just that something failed.
@@ -2695,4 +2706,59 @@ test('a batch that fails partway removes what it created before retrying', async
   );
   // What remains is exactly one set of line items, not two.
   assert.equal(createdIds.length, items.length, 'no duplicates survive the retry');
+});
+
+// HubSpot puts its reason in one of three places, and only one helper used to check all three.
+//
+// Eighteen call sites flattened errors by hand as
+//   String(error?.body?.message || error?.message || error)
+// which skips error.response.body.message -- the shape the SDK uses when the failure arrives as a
+// response body. Those logged "[object Object]" or the bare error name, throwing away the reason
+// HubSpot gave at exactly the moment it was needed. 2026-09-02.
+test('the provider message is read from every place HubSpot puts it', () => {
+  assert.equal(_test.providerMessage({ body: { message: 'from body' } }), 'from body');
+  assert.equal(
+    _test.providerMessage({ response: { body: { message: 'from response body' } } }),
+    'from response body',
+    'the shape the old inline flattening dropped',
+  );
+  assert.equal(_test.providerMessage({ message: 'from message' }), 'from message');
+  // Precedence matches safeProviderDiagnostics exactly, so the two cannot disagree about which
+  // message a rep or a log is shown.
+  assert.equal(
+    _test.providerMessage({
+      body: { message: 'body wins' },
+      response: { body: { message: 'not this' } },
+      message: 'nor this',
+    }),
+    'body wins',
+  );
+  assert.equal(_test.providerMessage('a bare string'), 'a bare string');
+  assert.equal(_test.providerMessage(undefined), '');
+  // An object with none of the three fields returns empty rather than "[object Object]", which is
+  // what the old inline form printed into the log line.
+  assert.equal(_test.providerMessage({}), '');
+});
+
+// And nothing hand-rolls it any more.
+test('no call site flattens a provider error by hand', () => {
+  const source = require('node:fs').readFileSync(
+    require('node:path').join(__dirname, 'QuoteOptionsFunction.js'),
+    'utf8',
+  );
+  // Line-based, not a bare regex: the legitimate three-place chains inside providerMessage and
+  // safeProviderDiagnostics contain "?.body?.message" too, so the test has to allow a line that
+  // reads response.body.message and reject one that does not.
+  const offenders = source
+    .split('\n')
+    .map((line, index) => [index + 1, line])
+    .filter(
+      ([, line]) =>
+        line.includes('?.body?.message') && !line.includes('response?.body?.message'),
+    );
+  assert.deepEqual(
+    offenders,
+    [],
+    'use providerMessage(error) -- a hand-rolled chain drops response.body.message',
+  );
 });
