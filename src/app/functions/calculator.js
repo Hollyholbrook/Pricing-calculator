@@ -322,6 +322,16 @@ const buildApproval = (
   dealCategory = 'new_business',
 ) => {
   const reasons = [];
+  // EVERY ENTRY HERE IS READ BY A REP, VERBATIM.
+  //
+  // The card renders blockingReasons straight into the red banner, mixed with prose it writes
+  // itself ("A discount reason is required before this can be locked in."). Until 2026-09-02 two of
+  // these were SHOUTY_IDENTIFIERS -- BELOW_ENTERPRISE_MINIMUM and SPECIAL_TERMS_BELOW_THRESHOLD --
+  // sitting in that banner next to real sentences.
+  //
+  // So: a sentence, and one that says what to DO about it. The parallel `reasons` array is the
+  // descriptive half ("Committed ARR is below the $25,000 Enterprise minimum"); this one is the
+  // remedy. A test asserts no entry is an identifier.
   const blockingReasons = [];
   let tier = 'none';
   const percentLabel = (value) => `${round(value * 100, 2)}%`;
@@ -398,7 +408,10 @@ const buildApproval = (
     reasons.push(
       `Committed ARR is below the ${currencyLabel(activeRules.minimumCommittedArr)} Enterprise minimum.`,
     );
-    blockingReasons.push('BELOW_ENTERPRISE_MINIMUM');
+    blockingReasons.push(
+      `Committed ARR must reach ${currencyLabel(activeRules.minimumCommittedArr)} before this ` +
+        'can be locked in. Raise the commitment or the term, or ask Finance for an exception.',
+    );
   }
   if (!relaxed && input.redliningRequested && committedArr < activeRules.redliningMinimumArr) {
     tier = 'finance';
@@ -406,10 +419,10 @@ const buildApproval = (
       `Special terms were requested below the ${currencyLabel(activeRules.redliningMinimumArr)} ` +
         'ARR threshold.',
     );
-    // The CODE is what the rep reads: the card renders blockingReasons verbatim in the banner
-    // alongside the prose. So this string is user-facing copy, not an internal identifier, and it
-    // had to follow the rename too. Only calculator.js and its test refer to it.
-    blockingReasons.push('SPECIAL_TERMS_BELOW_THRESHOLD');
+    blockingReasons.push(
+      `Special terms require ${currencyLabel(activeRules.redliningMinimumArr)} committed ARR. ` +
+        'Raise the commitment, or remove the special-terms request.',
+    );
   }
   if (input.redliningRequested) {
     reasons.push('Customer-requested special terms require Legal approval.');

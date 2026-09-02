@@ -819,8 +819,10 @@ const contentHash = (option, content) =>
 
 module.exports = {
   CATALOG,
+  // Same reasoning as APPROVAL_TIERS in appSettings: no importer today, kept because it names the
+  // fee slots any consumer of these line items has to understand.
   FEE_TOTAL_PROPERTIES,
-  _test: { discountPercentageFor, feeTotals, withFeeTotals },
+  _test: { discountPercentageFor },
   buildDealLineItems,
   buildQuoteLineItems,
   contentHash,

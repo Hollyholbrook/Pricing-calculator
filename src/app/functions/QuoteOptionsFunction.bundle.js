@@ -579,14 +579,18 @@ var require_calculator = __commonJS({
         reasons.push(
           `Committed ARR is below the ${currencyLabel(activeRules.minimumCommittedArr)} Enterprise minimum.`
         );
-        blockingReasons.push("BELOW_ENTERPRISE_MINIMUM");
+        blockingReasons.push(
+          `Committed ARR must reach ${currencyLabel(activeRules.minimumCommittedArr)} before this can be locked in. Raise the commitment or the term, or ask Finance for an exception.`
+        );
       }
       if (!relaxed && input.redliningRequested && committedArr < activeRules.redliningMinimumArr) {
         tier = "finance";
         reasons.push(
           `Special terms were requested below the ${currencyLabel(activeRules.redliningMinimumArr)} ARR threshold.`
         );
-        blockingReasons.push("SPECIAL_TERMS_BELOW_THRESHOLD");
+        blockingReasons.push(
+          `Special terms require ${currencyLabel(activeRules.redliningMinimumArr)} committed ARR. Raise the commitment, or remove the special-terms request.`
+        );
       }
       if (input.redliningRequested) {
         reasons.push("Customer-requested special terms require Legal approval.");
@@ -1510,8 +1514,10 @@ var require_lineItemModel = __commonJS({
     var contentHash2 = (option, content) => crypto2.createHash("sha256").update(JSON.stringify({ optionId: option.id, stateHash: option.result.stateHash, content })).digest("hex");
     module2.exports = {
       CATALOG,
+      // Same reasoning as APPROVAL_TIERS in appSettings: no importer today, kept because it names the
+      // fee slots any consumer of these line items has to understand.
       FEE_TOTAL_PROPERTIES,
-      _test: { discountPercentageFor, feeTotals, withFeeTotals },
+      _test: { discountPercentageFor },
       buildDealLineItems: buildDealLineItems2,
       buildQuoteLineItems: buildQuoteLineItems2,
       contentHash: contentHash2,
@@ -1790,8 +1796,6 @@ var require_productLibrary = __commonJS({
         scaleBands,
         compareProduct,
         localExpectation,
-        parseJsonProperty,
-        sameMoney,
         PRODUCT_PROPERTIES
       }
     };
@@ -2331,6 +2335,9 @@ var require_appSettings = __commonJS({
       return category === "new_business" && settings.allowNewBusiness || category === "renewal" && settings.allowRenewals;
     };
     module2.exports = {
+      // Exported with no importer today, and kept on purpose: it is the list of tiers the card would
+      // need to label an approval, and validation reads it. A named constant describing the module's
+      // contract is not dead code just because nothing imports it yet.
       APPROVAL_TIERS,
       accountIdFromContext: accountIdFromContext2,
       productRateDescriptors: productRateDescriptors2,
@@ -2523,6 +2530,9 @@ var normalizeOptionName = (value, fallback) => {
   if (!trimmed) return fallback;
   return trimmed.slice(0, 80);
 };
+var providerMessage = (error) => String(
+  error?.body?.message || error?.response?.body?.message || error?.message || error || ""
+);
 var safeProviderDiagnostics = (error, operation) => {
   const rawStatus = error?.statusCode || error?.status || error?.code || error?.response?.statusCode;
   const rawCategory = error?.body?.category || error?.response?.body?.category;
@@ -3282,7 +3292,7 @@ var createLineItem = async (client, properties, associations, attempt = 0) => {
     if (rejected) {
       const { [rejected]: unused, ...withoutRejected } = properties;
       console.error(
-        `Nylas pricing: HubSpot rejected ${rejected} as a Line Item property this portal does not have. Creating the line item WITHOUT it -- that field will be blank on the quote. Rejection: ${String(error?.body?.message || error?.message || error)}`
+        `Nylas pricing: HubSpot rejected ${rejected} as a Line Item property this portal does not have. Creating the line item WITHOUT it -- that field will be blank on the quote. Rejection: ${providerMessage(error)}`
       );
       return createLineItem(client, withoutRejected, associations, attempt);
     }
@@ -3350,7 +3360,7 @@ var createLineItemsBatch = async (client, items, createdIds = [], attempt = 0) =
       );
       await archiveLineItemsBatch(client, thisAttemptIds).catch((archiveError) => {
         console.error(
-          `Nylas pricing: could not remove the line items a partial batch created. The retry below may duplicate them -- ids ${thisAttemptIds.join(", ")}. ${String(archiveError?.body?.message || archiveError?.message || archiveError)}`,
+          `Nylas pricing: could not remove the line items a partial batch created. The retry below may duplicate them -- ids ${thisAttemptIds.join(", ")}. ${providerMessage(archiveError)}`,
           safeProviderDiagnostics(archiveError, "archive_partial_line_item_batch")
         );
       });
@@ -3368,7 +3378,7 @@ var createLineItemsBatch = async (client, items, createdIds = [], attempt = 0) =
     );
     if (rejected) {
       console.error(
-        `Nylas pricing: HubSpot rejected ${rejected} as a Line Item property this portal does not have. Recreating every line item WITHOUT it -- that field will be blank. Rejection: ${String(error?.body?.message || error?.message || error)}`
+        `Nylas pricing: HubSpot rejected ${rejected} as a Line Item property this portal does not have. Recreating every line item WITHOUT it -- that field will be blank. Rejection: ${providerMessage(error)}`
       );
       return createLineItemsBatch(
         client,
@@ -3381,7 +3391,7 @@ var createLineItemsBatch = async (client, items, createdIds = [], attempt = 0) =
       );
     }
     console.error(
-      `Nylas pricing: batch line item create failed; falling back to one create per line item. ${String(error?.body?.message || error?.message || error)}`
+      `Nylas pricing: batch line item create failed; falling back to one create per line item. ${providerMessage(error)}`
     );
     const created = new Array(items.length);
     const indexed = items.map((item, index) => ({ item, index }));
@@ -3432,7 +3442,7 @@ var repairLineItemsBatch = async (client, pairs) => {
     return updates.map(({ id }) => id);
   } catch (error) {
     console.error(
-      "Nylas pricing: could not verify or repair line item fee properties. " + String(error?.body?.message || error?.message || error)
+      "Nylas pricing: could not verify or repair line item fee properties. " + providerMessage(error)
     );
     return [];
   }
@@ -3548,7 +3558,7 @@ var latestQuoteTemplate = async (client, quoteId, templates) => {
     return { quoteId: String(quoteId), id, name: match?.name || "" };
   } catch (error) {
     console.warn(
-      `Nylas pricing: could not read the template on quote ${quoteId}. ${String(error?.body?.message || error?.message || error)}`
+      `Nylas pricing: could not read the template on quote ${quoteId}. ${providerMessage(error)}`
     );
     return null;
   }
@@ -3695,7 +3705,7 @@ var dealOwnerIdFor = async (client, dealId) => {
     return ownerRead?.properties?.hubspot_owner_id || "";
   } catch (error) {
     console.warn(
-      `Nylas pricing: could not read hubspot_owner_id on deal ${dealId}. ${String(error?.body?.message || error?.message || error)}`
+      `Nylas pricing: could not read hubspot_owner_id on deal ${dealId}. ${providerMessage(error)}`
     );
     return "";
   }
@@ -3728,7 +3738,7 @@ var senderProperties = async (client, ownerId) => {
     };
   } catch (error) {
     console.warn(
-      `Nylas pricing: could not read owner ${ownerId} for the Seller block. ${String(error?.body?.message || error?.message || error)}`
+      `Nylas pricing: could not read owner ${ownerId} for the Seller block. ${providerMessage(error)}`
     );
     return {};
   }
@@ -3754,7 +3764,7 @@ var archiveSupersededQuote = async (client, supersededQuoteId, newQuoteId) => {
     return supersededQuoteId;
   } catch (error) {
     console.warn(
-      `Nylas pricing: could not archive superseded quote ${supersededQuoteId}. It is left in place. ${String(error?.body?.message || error?.message || error)}`
+      `Nylas pricing: could not archive superseded quote ${supersededQuoteId}. It is left in place. ${providerMessage(error)}`
     );
     return null;
   }
@@ -3784,7 +3794,7 @@ var primaryQuoteAssociationType = async (client) => {
     return primaryQuoteLabelCache;
   } catch (error) {
     console.warn(
-      `Nylas pricing: could not read the quotes -> deals association labels. ${String(error?.body?.message || error?.message || error)}`
+      `Nylas pricing: could not read the quotes -> deals association labels. ${providerMessage(error)}`
     );
     primaryQuoteLabelCache = null;
     return primaryQuoteLabelCache;
@@ -3802,7 +3812,7 @@ var markAsPrimaryQuote = async (client, quoteId, dealId) => {
     );
     return { applied: true, label: labelType.label, reason: null };
   } catch (error) {
-    const detail = String(error?.body?.message || error?.message || error);
+    const detail = providerMessage(error);
     const ineligible = /not eligible to become primary/i.test(detail);
     if (ineligible) {
       console.info(
@@ -3870,7 +3880,7 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
     supersededQuoteId = priorDeal?.properties?.pricing_latest_quote_id || "";
   } catch (error) {
     console.warn(
-      `Nylas pricing: could not read pricing_latest_quote_id on deal ${dealId}. ${String(error?.body?.message || error?.message || error)}`
+      `Nylas pricing: could not read pricing_latest_quote_id on deal ${dealId}. ${providerMessage(error)}`
     );
   }
   const dealOwnerId = await dealOwnerIdFor(client, dealId);
@@ -4014,14 +4024,14 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
           clonedLineItemIds,
           (id) => client.crm.lineItems.basicApi.archive(String(id)).catch((error) => {
             console.warn(
-              `Nylas pricing: could not archive cloned line item ${id} on quote ${quote.id}. ${String(error?.body?.message || error?.message || error)}`
+              `Nylas pricing: could not archive cloned line item ${id} on quote ${quote.id}. ${providerMessage(error)}`
             );
           })
         );
       }
     } catch (error) {
       console.warn(
-        `Nylas pricing: could not read the line items HubSpot cloned onto quote ${quote.id}. Duplicate lines may appear. ${String(error?.body?.message || error?.message || error)}`
+        `Nylas pricing: could not read the line items HubSpot cloned onto quote ${quote.id}. Duplicate lines may appear. ${providerMessage(error)}`
       );
     }
     const primaryQuote = await markAsPrimaryQuote(client, quote.id, dealId);
@@ -4060,7 +4070,7 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
         );
       } catch (error) {
         console.warn(
-          `Nylas pricing: could not associate contact ${chosenContactId} to deal ${dealId}. ${String(error?.body?.message || error?.message || error)}`
+          `Nylas pricing: could not associate contact ${chosenContactId} to deal ${dealId}. ${providerMessage(error)}`
         );
       }
     }
@@ -4122,9 +4132,7 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
         quoteStatus = after?.properties?.hs_status || quoteStatus;
         quoteStatusRepaired = quoteStatus === desiredQuoteStatus;
       } catch (error) {
-        quoteStatusError = String(
-          error?.body?.message || error?.message || error || ""
-        ).slice(0, 600);
+        quoteStatusError = providerMessage(error).slice(0, 600);
         console.error(
           `Nylas pricing: could not set hs_status on quote ${quote.id}. The approval workflow will not enrol it. ${quoteStatusError}`,
           safeProviderDiagnostics(error, "set_quote_status")
@@ -4150,7 +4158,7 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
         senderRepaired = Object.keys(sender).every((name) => after?.properties?.[name]);
       } catch (error) {
         console.error(
-          `Nylas pricing: the Seller block could not be set on quote ${quote.id}. ${String(error?.body?.message || error?.message || error)}`
+          `Nylas pricing: the Seller block could not be set on quote ${quote.id}. ${providerMessage(error)}`
         );
       }
     }
@@ -4273,7 +4281,7 @@ var priceExistingQuote = async (client, dealId, state, parameters, settings) => 
     );
     await archiveLineItemsBatch(client, existingLineItemIds).catch((error) => {
       console.warn(
-        `Nylas pricing: could not archive the previous line items on quote ${quoteId}. It may now show both sets. ${String(error?.body?.message || error?.message || error)}`
+        `Nylas pricing: could not archive the previous line items on quote ${quoteId}. It may now show both sets. ${providerMessage(error)}`
       );
     });
   }
@@ -4291,7 +4299,7 @@ var priceExistingQuote = async (client, dealId, state, parameters, settings) => 
     await client.crm.quotes.basicApi.update(quoteId, { properties });
   } catch (error) {
     console.error(
-      `Nylas pricing: the line items were applied to quote ${quoteId} but its properties were not. ${String(error?.body?.message || error?.message || error)}`,
+      `Nylas pricing: the line items were applied to quote ${quoteId} but its properties were not. ${providerMessage(error)}`,
       safeProviderDiagnostics(error, "price_existing_quote_properties")
     );
   }
@@ -4306,7 +4314,7 @@ var priceExistingQuote = async (client, dealId, state, parameters, settings) => 
       const after = await client.crm.quotes.basicApi.getById(quoteId, ["hs_status"]);
       quoteStatus = after?.properties?.hs_status || quoteStatus;
     } catch (error) {
-      quoteStatusError = String(error?.body?.message || error?.message || error).slice(0, 600);
+      quoteStatusError = providerMessage(error).slice(0, 600);
       console.error(
         `Nylas pricing: could not move quote ${quoteId} to PENDING_APPROVAL. The approval workflow will not enrol it. ${quoteStatusError}`,
         safeProviderDiagnostics(error, "price_existing_quote_status")

@@ -637,6 +637,9 @@ const isDealAllowed = (settings, dealType, pipelineId) => {
 };
 
 module.exports = {
+  // Exported with no importer today, and kept on purpose: it is the list of tiers the card would
+  // need to label an approval, and validation reads it. A named constant describing the module's
+  // contract is not dead code just because nothing imports it yet.
   APPROVAL_TIERS,
   accountIdFromContext,
   productRateDescriptors,

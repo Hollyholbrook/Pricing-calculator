@@ -864,7 +864,7 @@ test('the Enterprise ARR minimum is disabled', () => {
       `${label}: the fixture must actually be under the minimum or this proves nothing`,
     );
     assert.equal(
-      quote.blockingReasons.includes('BELOW_ENTERPRISE_MINIMUM'),
+      quote.blockingReasons.some((r) => /Committed ARR must reach/.test(r)),
       false,
       `${label}: a small deal must not be blocked`,
     );
@@ -893,7 +893,7 @@ test('the ARR minimum can be switched back on', () => {
 
   const on = calculateQuote(tiny, { enforceMinimumCommittedArr: true }, 0, 'new_business');
   assert.ok(
-    on.blockingReasons.includes('BELOW_ENTERPRISE_MINIMUM'),
+    on.blockingReasons.some((r) => /Committed ARR must reach/.test(r)),
     'switching it on must block a deal under the threshold',
   );
   assert.ok(
@@ -917,7 +917,7 @@ test('the ARR minimum can be switched back on', () => {
       { enforceMinimumCommittedArr: true, minimumCommittedArr: 10_000_000 },
       0,
       'new_business',
-    ).blockingReasons.includes('BELOW_ENTERPRISE_MINIMUM'),
+    ).blockingReasons.some((r) => /Committed ARR must reach/.test(r)),
     'and is blocked once the threshold is raised above it',
   );
 });
@@ -932,7 +932,7 @@ test('renewals skip the non-discount approvals that block new business', () => {
   const enforcing = { enforceMinimumCommittedArr: true };
   const small = renewalInput({ volumes: { ...renewalInput().volumes, connect_ca: 10 } });
   const asNew = calculateQuote(small, enforcing, 0, 'new_business');
-  assert.ok(asNew.blockingReasons.includes('BELOW_ENTERPRISE_MINIMUM'));
+  assert.ok(asNew.blockingReasons.some((r) => /Committed ARR must reach/.test(r)));
 
   const asRenewal = calculateQuote(small, enforcing, 0, 'renewal');
   assert.deepEqual(asRenewal.blockingReasons, [], 'a small renewal must not be blocked');
@@ -943,8 +943,8 @@ test('renewals skip the non-discount approvals that block new business', () => {
   // everything a rep reads now says special terms.
   const redlined = { ...small, redliningRequested: true };
   assert.ok(
-    calculateQuote(redlined, {}, 0, 'new_business').blockingReasons.includes(
-      'SPECIAL_TERMS_BELOW_THRESHOLD',
+    calculateQuote(redlined, {}, 0, 'new_business').blockingReasons.some((r) =>
+      /Special terms require/.test(r),
     ),
   );
   assert.ok(
@@ -988,5 +988,49 @@ test('OAuth without professional services is blocked on a renewal too', () => {
   });
   for (const category of ['new_business', 'renewal']) {
     assert.deepEqual(calculateQuote(withService, {}, 0, category).blockingReasons, []);
+  }
+});
+
+// EVERY BLOCKING REASON IS READ BY A REP, VERBATIM.
+//
+// The card renders blockingReasons straight into the red banner, alongside prose it writes itself
+// ("A discount reason is required before this can be locked in."). Until 2026-09-02 two of them
+// were SHOUTY_IDENTIFIERS sitting in that banner next to real sentences.
+//
+// This drives every blocking path that exists and asserts each one reads as a sentence. It is the
+// guard that stops the next one being added as a code, which is the natural thing to write.
+test('every blocking reason is a sentence, not an identifier', () => {
+  const base = {
+    termMonths: 12,
+    paymentFrequency: 'annual_in_advance',
+    volumes: { connect_ca: 10 },
+    supportLevel: 'basic',
+    onboardingPackage: 'none',
+    professionalServices: [],
+    addOns: [],
+  };
+  const cases = [
+    // ARR below the Enterprise minimum, with the rule switched on.
+    [{ ...base }, { enforceMinimumCommittedArr: true }],
+    // Special terms below the ARR floor.
+    [{ ...base, redliningRequested: true }, {}],
+    // Turnkey Verified OAuth with no professional-services item.
+    [{ ...base, addOns: ['verified_oauth'] }, {}],
+  ];
+  const seen = [];
+  for (const [input, policy] of cases) {
+    seen.push(...calculateQuote(input, policy, 0, 'new_business').blockingReasons);
+  }
+  assert.ok(seen.length >= 3, 'every blocking path must be exercised here');
+
+  for (const reason of seen) {
+    assert.doesNotMatch(
+      reason,
+      /^[A-Z][A-Z0-9_]+$/,
+      `"${reason}" is an identifier, not something to show a rep`,
+    );
+    assert.match(reason, /^[A-Z]/, `"${reason}" should start as a sentence does`);
+    assert.match(reason, /\.$/, `"${reason}" should end in a full stop`);
+    assert.ok(reason.includes(' '), `"${reason}" should be words, not a token`);
   }
 });

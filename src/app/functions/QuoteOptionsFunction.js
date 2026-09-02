@@ -317,6 +317,21 @@ const normalizeOptionName = (value, fallback) => {
 // status, HubSpot's error category, the error type, and a truncated, control-character-stripped
 // message -- which is enough to name a bad property or a rejected value without exposing
 // anything about the customer.
+// WHAT HUBSPOT ACTUALLY SAID, in one place.
+//
+// HubSpot puts the useful text in one of three places depending on how the SDK surfaced the
+// failure: error.body.message, error.response.body.message, or plain error.message. Eighteen call
+// sites flattened this by hand and every one of them checked only the FIRST and THIRD -- so any
+// rejection that arrived as a response body logged as "[object Object]" or as the bare error name,
+// and the reason HubSpot gave was thrown away at exactly the moment it was needed.
+//
+// safeProviderDiagnostics (above) always checked all three. This is the same rule for the plain
+// string form, so the two cannot drift again.
+const providerMessage = (error) =>
+  String(
+    error?.body?.message || error?.response?.body?.message || error?.message || error || '',
+  );
+
 const safeProviderDiagnostics = (error, operation) => {
   const rawStatus =
     error?.statusCode || error?.status || error?.code || error?.response?.statusCode;
@@ -1406,7 +1421,7 @@ const createLineItem = async (client, properties, associations, attempt = 0) => 
       console.error(
         `Nylas pricing: HubSpot rejected ${rejected} as a Line Item property this portal does ` +
           'not have. Creating the line item WITHOUT it -- that field will be blank on the quote. ' +
-          `Rejection: ${String(error?.body?.message || error?.message || error)}`,
+          `Rejection: ${providerMessage(error)}`,
       );
       return createLineItem(client, withoutRejected, associations, attempt);
     }
@@ -1515,7 +1530,7 @@ const createLineItemsBatch = async (client, items, createdIds = [], attempt = 0)
         console.error(
           'Nylas pricing: could not remove the line items a partial batch created. The retry ' +
             `below may duplicate them -- ids ${thisAttemptIds.join(', ')}. ` +
-            `${String(archiveError?.body?.message || archiveError?.message || archiveError)}`,
+            `${providerMessage(archiveError)}`,
           safeProviderDiagnostics(archiveError, 'archive_partial_line_item_batch'),
         );
       });
@@ -1539,7 +1554,7 @@ const createLineItemsBatch = async (client, items, createdIds = [], attempt = 0)
       console.error(
         `Nylas pricing: HubSpot rejected ${rejected} as a Line Item property this portal does ` +
           'not have. Recreating every line item WITHOUT it -- that field will be blank. ' +
-          `Rejection: ${String(error?.body?.message || error?.message || error)}`,
+          `Rejection: ${providerMessage(error)}`,
       );
       return createLineItemsBatch(
         client,
@@ -1556,7 +1571,7 @@ const createLineItemsBatch = async (client, items, createdIds = [], attempt = 0)
     // the single-property drop still live. Slower, but only on the path that was already failing.
     console.error(
       'Nylas pricing: batch line item create failed; falling back to one create per line item. ' +
-        `${String(error?.body?.message || error?.message || error)}`,
+        `${providerMessage(error)}`,
     );
     const created = new Array(items.length);
     const indexed = items.map((item, index) => ({ item, index }));
@@ -1616,7 +1631,7 @@ const repairLineItemsBatch = async (client, pairs) => {
   } catch (error) {
     console.error(
       'Nylas pricing: could not verify or repair line item fee properties. ' +
-        String(error?.body?.message || error?.message || error),
+        providerMessage(error),
     );
     return [];
   }
@@ -1883,7 +1898,7 @@ const latestQuoteTemplate = async (client, quoteId, templates) => {
   } catch (error) {
     console.warn(
       `Nylas pricing: could not read the template on quote ${quoteId}. ` +
-        `${String(error?.body?.message || error?.message || error)}`,
+        `${providerMessage(error)}`,
     );
     return null;
   }
@@ -2108,7 +2123,7 @@ const dealOwnerIdFor = async (client, dealId) => {
   } catch (error) {
     console.warn(
       `Nylas pricing: could not read hubspot_owner_id on deal ${dealId}. ` +
-        `${String(error?.body?.message || error?.message || error)}`,
+        `${providerMessage(error)}`,
     );
     return '';
   }
@@ -2146,7 +2161,7 @@ const senderProperties = async (client, ownerId) => {
   } catch (error) {
     console.warn(
       `Nylas pricing: could not read owner ${ownerId} for the Seller block. ` +
-        `${String(error?.body?.message || error?.message || error)}`,
+        `${providerMessage(error)}`,
     );
     return {};
   }
@@ -2193,7 +2208,7 @@ const archiveSupersededQuote = async (client, supersededQuoteId, newQuoteId) => 
   } catch (error) {
     console.warn(
       `Nylas pricing: could not archive superseded quote ${supersededQuoteId}. It is left in ` +
-        `place. ${String(error?.body?.message || error?.message || error)}`,
+        `place. ${providerMessage(error)}`,
     );
     return null;
   }
@@ -2253,7 +2268,7 @@ const primaryQuoteAssociationType = async (client) => {
   } catch (error) {
     console.warn(
       'Nylas pricing: could not read the quotes -> deals association labels. ' +
-        `${String(error?.body?.message || error?.message || error)}`,
+        `${providerMessage(error)}`,
     );
     primaryQuoteLabelCache = null;
     return primaryQuoteLabelCache;
@@ -2277,7 +2292,7 @@ const markAsPrimaryQuote = async (client, quoteId, dealId) => {
     );
     return { applied: true, label: labelType.label, reason: null };
   } catch (error) {
-    const detail = String(error?.body?.message || error?.message || error);
+    const detail = providerMessage(error);
     // Told apart from a real failure. "Not eligible" is HubSpot enforcing its own rule on a draft,
     // which is the normal path at Lock in; anything else is a problem worth looking at.
     const ineligible = /not eligible to become primary/i.test(detail);
@@ -2468,7 +2483,7 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
   } catch (error) {
     console.warn(
       `Nylas pricing: could not read pricing_latest_quote_id on deal ${dealId}. ` +
-        `${String(error?.body?.message || error?.message || error)}`,
+        `${providerMessage(error)}`,
     );
   }
 
@@ -2683,7 +2698,7 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
           client.crm.lineItems.basicApi.archive(String(id)).catch((error) => {
             console.warn(
               `Nylas pricing: could not archive cloned line item ${id} on quote ${quote.id}. ` +
-                `${String(error?.body?.message || error?.message || error)}`,
+                `${providerMessage(error)}`,
             );
           }),
         );
@@ -2691,7 +2706,7 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
     } catch (error) {
       console.warn(
         `Nylas pricing: could not read the line items HubSpot cloned onto quote ${quote.id}. ` +
-          `Duplicate lines may appear. ${String(error?.body?.message || error?.message || error)}`,
+          `Duplicate lines may appear. ${providerMessage(error)}`,
       );
     }
     // Applied on EVERY Lock in, not only the first. Regenerating the quote leaves the label on the
@@ -2771,7 +2786,7 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
         // Not fatal: the quote can still carry the contact. Say so rather than failing the lock.
         console.warn(
           `Nylas pricing: could not associate contact ${chosenContactId} to deal ${dealId}. ` +
-            `${String(error?.body?.message || error?.message || error)}`,
+            `${providerMessage(error)}`,
         );
       }
     }
@@ -2877,9 +2892,7 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
       } catch (error) {
         // Never fatal. The quote exists and the pricing is right; what is lost is the workflow
         // trigger, and saying so beats throwing away a lock the rep has already committed.
-        quoteStatusError = String(
-          error?.body?.message || error?.message || error || '',
-        ).slice(0, 600);
+        quoteStatusError = providerMessage(error).slice(0, 600);
         console.error(
           `Nylas pricing: could not set hs_status on quote ${quote.id}. The approval workflow ` +
             `will not enrol it. ${quoteStatusError}`,
@@ -2913,7 +2926,7 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
       } catch (error) {
         console.error(
           `Nylas pricing: the Seller block could not be set on quote ${quote.id}. ` +
-            `${String(error?.body?.message || error?.message || error)}`,
+            `${providerMessage(error)}`,
         );
       }
     }
@@ -3106,7 +3119,7 @@ const priceExistingQuote = async (client, dealId, state, parameters, settings) =
     await archiveLineItemsBatch(client, existingLineItemIds).catch((error) => {
       console.warn(
         `Nylas pricing: could not archive the previous line items on quote ${quoteId}. It may ` +
-          `now show both sets. ${String(error?.body?.message || error?.message || error)}`,
+          `now show both sets. ${providerMessage(error)}`,
       );
     });
   }
@@ -3132,7 +3145,7 @@ const priceExistingQuote = async (client, dealId, state, parameters, settings) =
     // Not fatal: the pricing is on the quote, which is the point. Say which half failed.
     console.error(
       `Nylas pricing: the line items were applied to quote ${quoteId} but its properties were ` +
-        `not. ${String(error?.body?.message || error?.message || error)}`,
+        `not. ${providerMessage(error)}`,
       safeProviderDiagnostics(error, 'price_existing_quote_properties'),
     );
   }
@@ -3151,7 +3164,7 @@ const priceExistingQuote = async (client, dealId, state, parameters, settings) =
       const after = await client.crm.quotes.basicApi.getById(quoteId, ['hs_status']);
       quoteStatus = after?.properties?.hs_status || quoteStatus;
     } catch (error) {
-      quoteStatusError = String(error?.body?.message || error?.message || error).slice(0, 600);
+      quoteStatusError = providerMessage(error).slice(0, 600);
       console.error(
         `Nylas pricing: could not move quote ${quoteId} to PENDING_APPROVAL. The approval ` +
           `workflow will not enrol it. ${quoteStatusError}`,

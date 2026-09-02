@@ -393,8 +393,6 @@ module.exports = {
     scaleBands,
     compareProduct,
     localExpectation,
-    parseJsonProperty,
-    sameMoney,
     PRODUCT_PROPERTIES,
   },
 };
