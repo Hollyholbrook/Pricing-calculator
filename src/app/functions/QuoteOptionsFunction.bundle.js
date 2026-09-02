@@ -2507,7 +2507,14 @@ var UNVERIFIED_DEAL_PROPERTIES = [
   // CONFIRMED multiple-checkboxes by Holly, 2026-09-01, so the semicolon-joined value is right.
   // Still guarded, like everything else here whose name came from outside the code.
   "pricing_subscription_addons",
-  "pricing_contract_summary"
+  "pricing_contract_summary",
+  // Added 2026-09-02 at Holly's request, to split recurring revenue three ways on the Deal. All
+  // three were confirmed to exist as `number` properties in portal 45023718 before the first
+  // write, so the guard is belt and braces rather than a guess -- but a property that exists today
+  // can be renamed, and this update runs after the Deal's line items are already archived.
+  "enterprise_drawdown_commitment_arr",
+  "subscription_add_ons_arr",
+  "subscription_support_arr"
 ];
 var choiceProperty = ({ property, values }, choice) => {
   if (!property) return {};
@@ -3033,6 +3040,21 @@ var buildSelectedProperties = (option, approvalStatus) => {
     pricing_subscription_addons: hubSpotChoiceList(input.addOns, addOnHubSpotValue),
     // The whole configuration in words. See contractSummaryText.
     pricing_contract_summary: contractSummaryText(option),
+    // THE CONTRACT SUMMARY'S THREE ARR LINES, each on its own Deal property so reporting can split
+    // recurring revenue by what it was sold as without parsing pricing_calculation_payload. These
+    // are the workbook's own rows -- QUOTE BUILDER rows 51, 52 and 53, the three that sum to the
+    // "Recurring Fees Per Year (ARR)" total in row 54 -- so a figure here and the same figure on
+    // the Order Form come from one calculation, not two.
+    //
+    // Verified as `number` properties in portal 45023718 on 2026-09-02 before being written.
+    // Guarded in UNVERIFIED_DEAL_PROPERTIES anyway: this list is the one place a property name
+    // arriving from outside the code can empty a Deal, because the update runs after the line
+    // items have been archived.
+    //
+    // They must keep summing to pricing_arr. A test asserts it.
+    enterprise_drawdown_commitment_arr: String(result.proposedPlatformArr),
+    subscription_add_ons_arr: String(result.annualAddOns),
+    subscription_support_arr: String(result.supportAnnual),
     pricing_arr: String(result.committedArr),
     pricing_tcv: String(result.tcv),
     pricing_list_price_tcv: String(result.listTcv),

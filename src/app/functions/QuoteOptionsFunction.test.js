@@ -1153,6 +1153,135 @@ test('a pure uplift with no reason is refused, and with a reason is not', async 
   assert.ok(allowed.dealWrites.length > 0, 'a reasoned uplift must lock in');
 });
 
+// THE THREE ARR SPLITS. Holly, 2026-09-02: fill these on the Deal whenever a quote is locked in.
+//
+// They are the workbook's Contract Summary rows 51, 52 and 53 -- the three lines that sum to the
+// "Recurring Fees Per Year (ARR)" total in row 54. Executed rather than read from source, and the
+// sum is asserted, because the failure worth catching is not a missing property: it is one of the
+// three quietly carrying the wrong figure, which no amount of reading the file would show.
+test('a lock writes the three ARR splits, and they sum to the committed ARR', async () => {
+  const input = {
+    termMonths: 24,
+    paymentFrequency: 'quarterly_in_advance',
+    volumes: { connect_ca: 5_000, calendar_ca: 1_000 },
+    supportLevel: 'full',
+    onboardingPackage: 'quick_launch',
+    professionalServices: ['gtm_review'],
+    addOns: ['privacy_filter', 'enterprise_accelerator'],
+    productDiscounts: { connect_ca: 0.05 },
+    // A discount on one add-on, so annualAddOns and listAnnualAddOns cannot be equal. Without it
+    // the two are identical and this test passes against either field.
+    addOnDiscounts: { privacy_filter: 0.25 },
+  };
+  const option = { id: 'selected-1', input, result: calculateQuote(input) };
+  const state = {
+    document: { options: [option] },
+    selectedOptionId: option.id,
+    selectedStateHash: option.result.stateHash,
+    dealType: 'newbusiness',
+    pipelineId: 'p1',
+    dealName: 'Test Co',
+  };
+  const settings = normalizeSettings({
+    ...defaultSettings(),
+    enabledQuoteTemplateIds: ['567553820432'],
+    defaultQuoteTemplateId: '567553820432',
+  });
+
+  const client = generateQuoteClient();
+  await _test.lockLiveCalculation(
+    client,
+    'deal-1',
+    state,
+    {
+      quoteContent: {},
+      contactId: '123',
+      input,
+      paymentMethod: 'ach',
+      discountReason: 'Competitive pressure on Connect.',
+    },
+    '45023718',
+    settings,
+  );
+
+  const written = client.dealWrites.find(
+    (props) => props.enterprise_drawdown_commitment_arr != null,
+  );
+  assert.ok(written, 'the lock must write the ARR splits');
+
+  const drawdown = Number(written.enterprise_drawdown_commitment_arr);
+  const addOns = Number(written.subscription_add_ons_arr);
+  const support = Number(written.subscription_support_arr);
+
+  // Each is the figure the calculator produced, not a re-derivation.
+  assert.equal(drawdown, option.result.proposedPlatformArr);
+  assert.equal(addOns, option.result.annualAddOns);
+  assert.equal(support, option.result.supportAnnual);
+
+  // Each has a plausible-looking wrong neighbour on the result, and the fixture is built so that
+  // picking the wrong one is visible rather than coincidentally equal.
+  //
+  // Support: listSupportAnnual is 10% of the LIST platform ARR, supportAnnual is 10% of what the
+  // customer actually pays. The 5% Connect discount separates them.
+  assert.notEqual(
+    support,
+    option.result.listSupportAnnual,
+    'support must be the charged figure, not the list one',
+  );
+  // Add-ons: two are selected, so a zero here means the selection was dropped, and the figure must
+  // be the sum of exactly those two rather than every add-on in the rate card.
+  assert.ok(addOns > 0, 'two add-ons are selected, so this must not be zero');
+  assert.notEqual(
+    addOns,
+    option.result.listAnnualAddOns,
+    'add-ons must be the charged figure, not the list one',
+  );
+  assert.equal(
+    addOns,
+    Math.round(
+      option.result.selectedAddOns.reduce((sum, addOn) => sum + addOn.annualAmount, 0) * 100,
+    ) / 100,
+  );
+
+  // The relationship that makes them trustworthy: the three splits ARE the committed ARR. A future
+  // change that swaps one for a list figure or a per-period figure breaks here rather than in a
+  // finance report.
+  assert.equal(
+    Math.round((drawdown + addOns + support) * 100) / 100,
+    option.result.committedArr,
+  );
+  assert.equal(Number(written.pricing_arr), option.result.committedArr);
+
+  // Written as plain numbers. HubSpot's number type rejects a currency-formatted string.
+  for (const [name, value] of Object.entries({
+    enterprise_drawdown_commitment_arr: written.enterprise_drawdown_commitment_arr,
+    subscription_add_ons_arr: written.subscription_add_ons_arr,
+    subscription_support_arr: written.subscription_support_arr,
+  })) {
+    assert.match(String(value), /^-?\d+(\.\d+)?$/, `${name} must be a bare number, got ${value}`);
+  }
+});
+
+test('the three ARR splits are guarded like every other externally-named property', () => {
+  const source = require('node:fs').readFileSync(
+    require('node:path').join(__dirname, 'QuoteOptionsFunction.js'),
+    'utf8',
+  );
+  const list = source.slice(
+    source.indexOf('const UNVERIFIED_DEAL_PROPERTIES'),
+    source.indexOf('// \'\' is a real answer meaning'),
+  );
+  // This update runs AFTER the Deal's line items have been archived, so a rejected property name
+  // must be dropped and retried rather than fail the commit and leave the Deal empty.
+  for (const name of [
+    'enterprise_drawdown_commitment_arr',
+    'subscription_add_ons_arr',
+    'subscription_support_arr',
+  ]) {
+    assert.ok(list.includes(name), `${name} must be in UNVERIFIED_DEAL_PROPERTIES`);
+  }
+});
+
 test('the discount reason guard runs before anything is written', () => {
   const source = require('node:fs').readFileSync(
     require('node:path').join(__dirname, 'QuoteOptionsFunction.js'),
