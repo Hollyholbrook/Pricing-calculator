@@ -9,6 +9,7 @@ const {
   isDealAllowed,
   normalizeSettings,
   quoteTemplateSettings,
+  quoteKindForTemplate,
   dealCategory,
 } = require('./appSettings');
 
@@ -421,4 +422,83 @@ test('dealCategory still resolves the renewal pipeline, for approvals', () => {
     'new_business',
   );
   assert.equal(isDealAllowed(settings, 'newbusiness', '876727403'), true);
+});
+
+// ALL THREE DOCUMENTS, KEPT AS THREE. Holly, 2026-09-02: "I want to make sure there's all three
+// because I feel like the API will become available to do what we need to do. But for the time
+// being I need to keep all of the data I can."
+//
+// Behaviourally change and renewal are identical today -- both are offered on a renewal-pipeline
+// Deal, both produce an ordinary INITIAL quote. The lists are split so the app can still say WHICH
+// document a quote was meant to be and record it on the Deal.
+test('a renewal Deal sees all three lists and opens on the renewal default', () => {
+  const NB = '567553820432';
+  const RENEW = '583243745379';
+  const CHANGE = '583243623796';
+  const settings = normalizeSettings({
+    ...defaultSettings(),
+    allowRenewals: true,
+    newBusinessPipelineIds: ['db8895ce-da7b-4843-8d7b-4be80a0b7d7b'],
+    renewalPipelineIds: ['876727403'],
+    enabledQuoteTemplateIds: [NB],
+    defaultQuoteTemplateId: NB,
+    renewalQuoteTemplateIds: [RENEW],
+    changeQuoteTemplateIds: [CHANGE],
+    renewalDefaultQuoteTemplateId: RENEW,
+  });
+
+  const renewal = quoteTemplateSettings(settings, 'renewal');
+  assert.deepEqual(renewal.enabledIds, [NB, RENEW, CHANGE], 'all three, shared list first');
+  assert.equal(renewal.defaultId, RENEW, 'and it opens on the renewal template');
+
+  // DON'T TOUCH ANYTHING WITH NEW BUSINESS -- Holly, 2026-09-01. Still true.
+  const newBusiness = quoteTemplateSettings(settings, 'new_business');
+  assert.deepEqual(newBusiness.enabledIds, [NB]);
+  assert.equal(newBusiness.defaultId, NB, 'the renewal default must not leak into new business');
+});
+
+test('the renewal default falls back to the shared default when unset', () => {
+  const NB = '567553820432';
+  const RENEW = '583243745379';
+  const settings = normalizeSettings({
+    ...defaultSettings(),
+    allowRenewals: true,
+    renewalPipelineIds: ['876727403'],
+    enabledQuoteTemplateIds: [NB],
+    defaultQuoteTemplateId: NB,
+    renewalQuoteTemplateIds: [RENEW],
+  });
+  assert.equal(settings.renewalDefaultQuoteTemplateId, '');
+  assert.equal(
+    quoteTemplateSettings(settings, 'renewal').defaultId,
+    NB,
+    'a portal that never sets it behaves exactly as before the key existed',
+  );
+});
+
+test('the quote kind is recoverable from the template, for recording', () => {
+  const NB = '567553820432';
+  const RENEW = '583243745379';
+  const CHANGE = '583243623796';
+  const settings = normalizeSettings({
+    ...defaultSettings(),
+    enabledQuoteTemplateIds: [NB],
+    defaultQuoteTemplateId: NB,
+    renewalQuoteTemplateIds: [RENEW],
+    changeQuoteTemplateIds: [CHANGE],
+  });
+  assert.equal(quoteKindForTemplate(settings, CHANGE), 'change');
+  assert.equal(quoteKindForTemplate(settings, RENEW), 'renewal');
+  assert.equal(quoteKindForTemplate(settings, NB), 'new_business');
+  assert.equal(quoteKindForTemplate(settings, '999'), null, 'unclaimed is null, not a guess');
+  assert.equal(quoteKindForTemplate(settings, ''), null);
+
+  // CHANGE AND RENEWAL WIN OVER new_business. A template in both lists -- which is how a renewal
+  // Deal may send an ordinary new-business quote -- keeps the identity of the document it is.
+  const shared = normalizeSettings({
+    ...defaultSettings(),
+    enabledQuoteTemplateIds: [CHANGE],
+    changeQuoteTemplateIds: [CHANGE],
+  });
+  assert.equal(quoteKindForTemplate(shared, CHANGE), 'change');
 });

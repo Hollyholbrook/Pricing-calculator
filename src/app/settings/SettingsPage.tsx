@@ -46,6 +46,8 @@ interface AppSettings {
   enabledQuoteTemplateIds: string[];
   defaultQuoteTemplateId: string;
   renewalQuoteTemplateIds: string[];
+  changeQuoteTemplateIds: string[];
+  renewalDefaultQuoteTemplateId: string;
   // Derived server-side from the two keys above and never edited here. It exists so code
   // predating this change still finds the per-kind shape it expects after a rollback.
   quoteTemplatesByKind: Record<
@@ -386,26 +388,57 @@ const SettingsPage = () => {
               list above, or pick a different default.
             </Text>
           )}
-          <MultiSelect
-            label="Extra Templates On Renewal Pipelines"
-            name="renewal_quote_templates"
-            value={settings.renewalQuoteTemplateIds}
-            options={templateOptions}
-            readOnly={!canEdit}
-            onChange={(value) =>
-              setSettings({
-                ...settings,
-                renewalQuoteTemplateIds: value.map(String),
-              })
-            }
-          />
+          <AutoGrid columnWidth={230} flexible gap="sm">
+            <MultiSelect
+              label="Renewal Templates"
+              name="renewal_quote_templates"
+              value={settings.renewalQuoteTemplateIds}
+              options={templateOptions}
+              readOnly={!canEdit}
+              onChange={(value) =>
+                setSettings({
+                  ...settings,
+                  renewalQuoteTemplateIds: value.map(String),
+                })
+              }
+            />
+            <MultiSelect
+              label="Change Templates"
+              name="change_quote_templates"
+              value={settings.changeQuoteTemplateIds}
+              options={templateOptions}
+              readOnly={!canEdit}
+              onChange={(value) =>
+                setSettings({
+                  ...settings,
+                  changeQuoteTemplateIds: value.map(String),
+                })
+              }
+            />
+            <Select
+              label="Default On Renewal Pipelines"
+              name="renewal_default_quote_template"
+              value={settings.renewalDefaultQuoteTemplateId}
+              options={[
+                { value: "", label: "Use the default above" },
+                ...templateOptions,
+              ]}
+              readOnly={!canEdit}
+              onChange={(value) =>
+                setSettings({
+                  ...settings,
+                  renewalDefaultQuoteTemplateId: String(value ?? ""),
+                })
+              }
+            />
+          </AutoGrid>
           <Text variant="microcopy">
-            Offered in addition to the list above, and only on Deals in a
-            renewal pipeline. This is where the Change template goes: a change
-            is sent as an ordinary quote carrying that template, and a HubSpot
-            workflow ends the previous contract once the customer accepts. Leave
-            empty and renewal Deals see the same templates as everyone else. The
-            default above does not change either way.
+            Both lists are offered in addition to the templates above, and only
+            on Deals in a renewal pipeline, so a renewal rep sees new business,
+            renewal and change, and opens on the default set here. They are two
+            lists rather than one so the app can still record which of the three
+            documents a quote was meant to be, on the Calculator details field.
+            Leave them empty and renewal Deals behave like everyone else.
           </Text>
           {quoteTemplates.length === 0 && (
             <Text variant="microcopy">

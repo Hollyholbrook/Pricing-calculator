@@ -131,6 +131,24 @@ const defaultSettings = () => ({
   // EMPTY IS THE DEFAULT and means "renewal Deals see the same list as everyone else", so a portal
   // that never sets this behaves exactly as it did before the key existed.
   renewalQuoteTemplateIds: [],
+  // The CHANGE templates, kept in their OWN list rather than folded in with renewal.
+  //
+  // Behaviourally the two are identical today -- both are offered on a renewal-pipeline Deal, both
+  // produce an ordinary INITIAL quote. The split exists so the app can still say WHICH of the three
+  // documents a quote was meant to be, and record it. Holly, 2026-09-02: "I want to make sure
+  // there's all three because I feel like the API will become available to do what we need to do.
+  // But for the time being I need to keep all of the data I can."
+  //
+  // READ ONLY FOR RECORDING. Nothing may branch on the kind. That coupling -- kind deciding
+  // templates, contracts and hs_type -- is what was removed on 2026-09-01, and it broke all three
+  // flows on the way out.
+  changeQuoteTemplateIds: [],
+  // The default on a renewal-pipeline Deal. Falls back to defaultQuoteTemplateId when unset, which
+  // is what every portal had before this key existed.
+  //
+  // Without it a renewal Deal opened on the NEW BUSINESS template and the rep had to notice and
+  // change it -- a manual step, and a forgettable one.
+  renewalDefaultQuoteTemplateId: '',
   // DERIVED MIRROR, the inverse of what this key used to be. Never edited; written on every save.
   //
   // It IS still read, in one place and for one reason: a record written before the kinds were
@@ -226,16 +244,55 @@ const quoteTemplateSettings = (settings, category) => {
     (Array.isArray(flatEnabled) && flatEnabled.length > 0
       ? flatEnabled
       : legacy?.enabledIds) || [];
-  const extra =
-    category === 'renewal' && Array.isArray(settings?.renewalQuoteTemplateIds)
-      ? settings.renewalQuoteTemplateIds
+  const renewalExtras =
+    category === 'renewal'
+      ? [
+          ...(Array.isArray(settings?.renewalQuoteTemplateIds)
+            ? settings.renewalQuoteTemplateIds
+            : []),
+          ...(Array.isArray(settings?.changeQuoteTemplateIds)
+            ? settings.changeQuoteTemplateIds
+            : []),
+        ]
       : [];
   return {
     // De-duplicated, shared list first, so the order the picker renders is stable and the
     // additions read as additions.
-    enabledIds: [...new Set([...shared, ...extra].map(String))],
-    defaultId: (flatDefault || legacy?.defaultId) || '',
+    enabledIds: [...new Set([...shared, ...renewalExtras].map(String))],
+    // A renewal Deal opens on the renewal default when one is set. Everything else, and a renewal
+    // portal that has not set one, opens on the shared default exactly as before.
+    defaultId:
+      (category === 'renewal' && settings?.renewalDefaultQuoteTemplateId) ||
+      flatDefault ||
+      legacy?.defaultId ||
+      '',
   };
+};
+
+// Which of the three documents a template represents. FOR RECORDING ONLY.
+//
+// Returns 'change', 'renewal' or 'new_business', or null when Settings claims the template under
+// none of them -- normal on a portal that has not configured the extra lists.
+//
+// CHANGE AND RENEWAL ARE CHECKED FIRST, new_business last. A template listed under both -- which is
+// how a renewal Deal is allowed to send an ordinary new-business quote -- keeps the identity of the
+// document it actually is rather than being renamed by the list that borrowed it.
+//
+// NOTHING MAY BRANCH ON THIS. It exists so the Deal can record what a quote was meant to be while
+// HubSpot refuses to create anything but INITIAL. The moment it decides a template, a contract or
+// an hs_type, it is the coupling that was removed on 2026-09-01.
+const quoteKindForTemplate = (settings, templateId) => {
+  const id = String(templateId || '');
+  if (!id) return null;
+  const lists = [
+    ['change', settings?.changeQuoteTemplateIds],
+    ['renewal', settings?.renewalQuoteTemplateIds],
+    ['new_business', settings?.enabledQuoteTemplateIds],
+  ];
+  const match = lists.find(
+    ([, ids]) => Array.isArray(ids) && ids.map(String).includes(id),
+  );
+  return match ? match[0] : null;
 };
 
 const requireApprovalTier = (value, field) => {
@@ -501,6 +558,14 @@ const normalizeSettings = (value, currentVersion = 0) => {
       value.renewalQuoteTemplateIds || [],
       'renewalQuoteTemplateIds',
     ),
+    changeQuoteTemplateIds: normalizePipelineIds(
+      value.changeQuoteTemplateIds || [],
+      'changeQuoteTemplateIds',
+    ),
+    renewalDefaultQuoteTemplateId: normalizeTemplateId(
+      value.renewalDefaultQuoteTemplateId || '',
+      'renewalDefaultQuoteTemplateId',
+    ),
     pricingPolicy: normalizePricingPolicy(value.pricingPolicy),
   };
 };
@@ -650,6 +715,7 @@ module.exports = {
   isSettingsAdmin,
   normalizeSettings,
   quoteTemplateSettings,
+  quoteKindForTemplate,
   readDealPipelines,
   readSettings,
   saveSettings,

@@ -18,6 +18,7 @@ const {
   userIdFromContext,
   dealCategory,
   quoteTemplateSettings,
+  quoteKindForTemplate,
 } = require('./appSettings');
 const {
   buildDealLineItems,
@@ -117,8 +118,14 @@ const DEAL_CHOICE_PROPERTIES = [
 // of them could be misnamed, and they ride in the same update as everything else -- which on Lock
 // in runs after the Deal's line items have already been replaced. So the guard below drops a
 // rejected one and retries, exactly as it does for the two enumerations above.
+const CALCULATOR_DETAILS_PROPERTY = 'calculator_details';
+
 const UNVERIFIED_DEAL_PROPERTIES = [
   DEAL_CONTRACT_TERM_PROPERTY,
+  // Created by Holly 2026-09-02 to hold what the calculator knows and HubSpot cannot yet act on.
+  // Guarded like the rest: if the internal name is not what the portal actually has, the write is
+  // dropped with a warning rather than failing the lock.
+  CALCULATOR_DETAILS_PROPERTY,
   // Both of these mirror a property the app already writes under a different name --
   // pricing_approval_reasons and pricing_latest_quote_id -- because the portal's list shows these
   // names instead and the approval block reads one of each pair. Guarded, so the one the portal
@@ -1840,9 +1847,14 @@ const offeredQuoteTemplates = (templates, settings, category) => {
   return narrowed;
 };
 
-// The configured default, then the QUOTE_TEMPLATE_ID secret, which is where it lived before.
-const defaultQuoteTemplate = (settings) =>
-  quoteTemplateSettings(settings).defaultId || configuredQuoteTemplateId();
+// The configured default for this Deal's category, then the QUOTE_TEMPLATE_ID secret, which is
+// where the default lived before Settings existed.
+//
+// The CATEGORY matters: a renewal-pipeline Deal opens on renewalDefaultQuoteTemplateId when one is
+// set. Without that the card opened every renewal on the NEW BUSINESS template and the rep had to
+// notice and change it -- a manual step, and a forgettable one.
+const defaultQuoteTemplate = (settings, category) =>
+  quoteTemplateSettings(settings, category).defaultId || configuredQuoteTemplateId();
 
 // The Deal's company name, for the default quote title. Never fatal: a missing name falls back
 // to the deal name rather than failing the card load.
@@ -2438,7 +2450,9 @@ const resolveQuoteTemplate = async (client, content, state, settings) => {
   //
   // Only when Settings actually lists templates: an empty list means "offer every usable
   // template", and there "not in the list" means the list is empty, not that the choice is wrong.
-  const requestedTemplateId = content.templateId || defaultQuoteTemplate(settings);
+  const templateCategoryEarly = dealCategory(settings, state.dealType, state.pipelineId);
+  const requestedTemplateId =
+    content.templateId || defaultQuoteTemplate(settings, templateCategoryEarly);
   if (!/^\d+$/.test(requestedTemplateId)) throw new Error('QUOTE_CONFIGURATION_REQUIRED');
 
   // The category widens the ALLOWED LIST and nothing else -- see quoteTemplateSettings. It is
@@ -2451,7 +2465,7 @@ const resolveQuoteTemplate = async (client, content, state, settings) => {
   );
   let templateId = requestedTemplateId;
   if (allowedTemplateIds.size > 0 && !allowedTemplateIds.has(String(requestedTemplateId))) {
-    const configuredDefault = defaultQuoteTemplate(settings);
+    const configuredDefault = defaultQuoteTemplate(settings, templateCategory);
     console.error(
       `Nylas pricing: template ${requestedTemplateId} is not one of the templates chosen in ` +
         `Settings (${[...allowedTemplateIds].join(', ')}). Using ${configuredDefault} instead. ` +
@@ -2968,6 +2982,22 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
       pricing_quote_content_hash: hash,
       pricing_quote_generation_status: 'draft_created',
       pricing_quote_generated_at: generatedAt,
+      // Everything the calculator knew and the quote record cannot carry. Guarded in
+      // UNVERIFIED_DEAL_PROPERTIES, so a portal without the property drops this and keeps the rest.
+      [CALCULATOR_DETAILS_PROPERTY]: calculatorDetails({
+        generatedAt,
+        quoteId: String(quote.id),
+        quoteType: finalized?.properties?.hs_type,
+        intendedKind: quoteKindForTemplate(settings, templateId),
+        templateId,
+        templateName,
+        category: dealCategory(settings, state.dealType, state.pipelineId),
+        pipelineId: state.pipelineId,
+        option,
+        lineItemCount: createdLineItemIds.length,
+        status: quoteStatus,
+        outcome: 'Quote created by the app',
+      }),
     });
     // Only when the rep asked for it. Every Lock in creates a new quote; whether the one it
     // supersedes is archived is their call, made on the checkbox beside the button. Archiving by
@@ -3217,6 +3247,22 @@ const priceExistingQuote = async (client, dealId, state, parameters, settings) =
     pricing_latest_quote_url: quoteUrl,
     pricing_quote_generation_status: 'draft_created',
     pricing_quote_generated_at: generatedAt,
+    // The quote HubSpot made carries its own real hs_type, so this record is the more interesting
+    // half: it says what the app priced onto it and with which numbers.
+    [CALCULATOR_DETAILS_PROPERTY]: calculatorDetails({
+      generatedAt,
+      quoteId,
+      quoteType: finalized?.properties?.hs_type,
+      intendedKind: quoteKindForTemplate(settings, ''),
+      templateId: '(HubSpot chose it)',
+      templateName: finalized?.properties?.hs_title,
+      category: dealCategory(settings, state.dealType, state.pipelineId),
+      pipelineId: state.pipelineId,
+      option,
+      lineItemCount: lineItems.length,
+      status: quoteStatus,
+      outcome: "Pricing applied to a quote HubSpot created",
+    }),
   });
   console.info(
     `Nylas pricing: priced HubSpot-created quote ${quoteId} ` +
@@ -3238,6 +3284,68 @@ const priceExistingQuote = async (client, dealId, state, parameters, settings) =
     needsApproval,
     seller: { ownerId: dealOwnerId || '', sent: Object.keys(sender) },
   };
+};
+
+// WHAT THE CALCULATOR KNEW, WRITTEN TO THE DEAL.
+//
+// HubSpot will not create anything but an INITIAL quote through the public API, so a renewal and a
+// change both come out as ordinary quotes and the DOCUMENT is the only trace of which was meant.
+// This keeps the rest. Holly, 2026-09-02: "for the time being I need to keep all of the data I
+// can" -- against the API opening up later, and against anyone having to reconstruct what a quote
+// was from the pricing alone.
+//
+// Deliberately human-readable rather than JSON: it is read in the HubSpot UI, in a plain text
+// property, usually by someone asking "what did this quote actually do". A JSON blob in that box
+// is unreadable at exactly the moment it is wanted. Aligned columns, newest facts first.
+//
+// intendedKind is the one thing here that exists ONLY as a record. Nothing branches on it -- see
+// quoteKindForTemplate in appSettings -- and when the API allows a real change or renewal quote,
+// this is the field that says which Deals were meant to be which.
+const calculatorDetails = ({
+  generatedAt,
+  quoteId,
+  quoteType,
+  intendedKind,
+  templateId,
+  templateName,
+  category,
+  pipelineId,
+  option,
+  lineItemCount,
+  status,
+  outcome,
+}) => {
+  const result = option?.result || {};
+  const money = (value) =>
+    value == null ? '-' : `$${Number(value).toLocaleString('en-US')}`;
+  const row = (label, value) => `${String(label).padEnd(16)}${value}`;
+  return [
+    `${generatedAt}  Lock in`,
+    row('Outcome', outcome),
+    row('Quote', quoteId ? `${quoteId}  (${quoteType || 'INITIAL'}, ${status || '-'})` : 'none'),
+    // The whole point of the field: what this WOULD be if HubSpot allowed it.
+    // "unknown", not "new_business": a template no list claims is unconfigured, and guessing a
+    // kind here would put a wrong answer in the one field that exists to hold the right one.
+    row('Intended kind', intendedKind || 'unknown (template not listed in Settings)'),
+    row('Template', `${templateId}  "${templateName || '-'}"`),
+    row('Deal category', `${category}  (pipeline ${pipelineId || '-'})`),
+    // Term is on the INPUT, not the result -- the result carries the derived billing period only.
+    row(
+      'Term / payment',
+      `${option?.input?.termMonths || '-'} months, ${result.billingPeriod || '-'}`,
+    ),
+    row('Approval', `${result.approvalTierRequired || 'none'}${
+      result.largestDiscretionaryDiscount
+        ? `  (largest discount ${Math.round(result.largestDiscretionaryDiscount * 1000) / 10}%)`
+        : ''
+    }`),
+    row('Committed ARR', money(result.committedArr)),
+    row('TCV', money(result.tcv)),
+    row('Line items', lineItemCount == null ? '-' : String(lineItemCount)),
+    ...(result.blockingReasons?.length
+      ? [row('Blocked by', result.blockingReasons.join(' | '))]
+      : []),
+  ].join('\n');
 };
 
 const stateResponse = (state) => ({
@@ -3312,7 +3420,10 @@ exports.main = async (context) => {
         success: true,
         ...stateResponse(state),
         quoteTemplates: listTemplates,
-        defaultQuoteTemplateId: defaultQuoteTemplate(settings),
+        defaultQuoteTemplateId: defaultQuoteTemplate(
+          settings,
+          dealCategory(settings, state.dealType, state.pipelineId),
+        ),
         ...(await quoteContactOptions(client, dealId)),
         // The Deal's draft Change and Renewal quotes. HubSpot has to create those; the card offers
         // them so the rep can send this Deal's pricing to one instead of making a new quote.
@@ -3451,6 +3562,7 @@ exports._test = Object.freeze({
   adoptableQuotes,
   priceExistingQuote,
   generateQuote,
+  calculatorDetails,
   repairLineItemsBatch,
   createLineItemsBatch,
   archiveLineItemsBatch,

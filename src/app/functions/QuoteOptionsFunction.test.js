@@ -2250,9 +2250,37 @@ test('no quote-kind or Contract-object surface remains in the function', () => {
   // thing to write the next time a renewal needs different treatment, and it is exactly what
   // HubSpot refuses. Renewal templates are configured in Settings instead
   // (renewalQuoteTemplateIds), which needs no notion of a kind at all.
-  for (const gone of ['quoteKind', 'CPQ_QUOTE_TYPE_BY_KIND', 'quoteTemplatesForCategory']) {
+  for (const gone of ['CPQ_QUOTE_TYPE_BY_KIND', 'quoteTemplatesForCategory']) {
     assert.equal(source.includes(gone), false, `${gone} is back in the function`);
   }
+
+  // THE KIND MAY BE RECORDED. IT MAY NOT BE BRANCHED ON.
+  //
+  // quoteKindForTemplate came back on 2026-09-02 so the Deal can say which of the three documents a
+  // quote was MEANT to be, against the API allowing it later. That is a write to
+  // calculator_details and nothing else.
+  //
+  // What must not come back is the coupling: a kind deciding a template, a contract, or hs_type.
+  // That is what was removed on 2026-09-01, and it broke all three flows on the way out. So the
+  // test is not "no kind anywhere" -- it is "no conditional on a kind".
+  // The precise rule: never COMPARE a kind. `intendedKind || 'unclaimed'` is a display fallback and
+  // is fine; `quoteKind === 'change'` deciding a template, a contract or an hs_type is the bug that
+  // was removed on 2026-09-01.
+  const comparisons =
+    source.match(/\b(quoteKind|intendedKind)\w*\s*[!=]==/g) ||
+    [];
+  const againstLiterals =
+    source.match(/['"](change|renewal|new_business)['"]\s*[!=]==/g) || [];
+  assert.deepEqual(
+    [...comparisons, ...againstLiterals],
+    [],
+    'the quote kind is recorded, never compared -- see appSettings.quoteKindForTemplate',
+  );
+  assert.match(
+    source,
+    /intendedKind/,
+    'and it IS recorded, or the field Holly made has nothing in it',
+  );
 
   // quoteTemplatesByKind is NOT asserted absent. It legitimately survives in appSettings.js as the
   // derived rollback mirror -- what must not come back is it being READ as a decision input, which
@@ -2776,13 +2804,17 @@ const generateQuoteClient = (overrides = {}) => {
   const created = [];
   const client = {
     calls: [],
+    dealWrites: [],
     crm: {
       deals: {
         basicApi: {
           getById: async () => ({
             properties: { hubspot_owner_id: '99', dealname: 'Test Co', pipeline: 'p1' },
           }),
-          update: async () => ({}),
+          update: async (_id, { properties }) => {
+            client.dealWrites.push(properties);
+            return {};
+          },
         },
       },
       companies: { basicApi: { getById: async () => ({ properties: { name: 'Test Co' } }) } },
@@ -2848,8 +2880,9 @@ test('generateQuote runs end to end without throwing', async () => {
     defaultQuoteTemplateId: '567553820432',
   });
 
+  const client = generateQuoteClient();
   const result = await _test.generateQuote(
-    generateQuoteClient(),
+    client,
     'deal-1',
     state,
     { quoteContent: {}, contactId: '123' },
@@ -2862,6 +2895,19 @@ test('generateQuote runs end to end without throwing', async () => {
   assert.equal(result.quoteId, 'q1');
   assert.equal(result.quoteUrl, 'https://example.test/q1');
   assert.ok('primaryQuote' in result, 'primaryQuote must be returned, not merely referenced');
+
+  // CALCULATOR DETAILS. The field Holly created 2026-09-02 to hold what the calculator knew and the
+  // quote record cannot carry -- above all which of the three documents this was MEANT to be, since
+  // HubSpot only lets the API make INITIAL ones.
+  const written = client.dealWrites.find((props) => props.calculator_details);
+  assert.ok(written, 'the lock must write calculator_details');
+  const details = written.calculator_details;
+  assert.match(details, /Intended kind\s+new_business/, 'the kind must be recorded, not blank');
+  assert.match(details, /Quote\s+q1/);
+  assert.match(details, /Template\s+567553820432/);
+  assert.match(details, /Committed ARR\s+\$/);
+  assert.match(details, /Line items\s+\d/);
+  assert.match(details, /Outcome\s+Quote created by the app/);
   assert.ok('seller' in result);
   assert.ok('templateId' in result);
   assert.ok('generatedAt' in result);
