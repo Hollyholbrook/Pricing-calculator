@@ -2762,3 +2762,140 @@ test('no call site flattens a provider error by hand', () => {
     'use providerMessage(error) -- a hand-rolled chain drops response.body.message',
   );
 });
+
+// GENERATE A QUOTE FOR REAL, END TO END.
+//
+// Added 2026-09-02 after `primaryQuote is not defined` reached a live new-business Lock in. The
+// declaration was deleted by a refactor and NOTHING caught it: every other generateQuote test
+// asserts on the TEXT of this file, so a ReferenceError on the main path passes 198 of them.
+//
+// This one executes the function against a fake client. It does not check pricing -- other tests
+// do that -- it checks that the whole path runs without throwing, which is the class of bug that
+// source-text assertions structurally cannot see.
+const generateQuoteClient = (overrides = {}) => {
+  const created = [];
+  const client = {
+    calls: [],
+    crm: {
+      deals: {
+        basicApi: {
+          getById: async () => ({
+            properties: { hubspot_owner_id: '99', dealname: 'Test Co', pipeline: 'p1' },
+          }),
+          update: async () => ({}),
+        },
+      },
+      companies: { basicApi: { getById: async () => ({ properties: { name: 'Test Co' } }) } },
+      owners: { basicApi: { getById: async () => ({ firstName: 'A', lastName: 'B', email: 'a@b.c' }) } },
+      objects: {
+        basicApi: {
+          getById: async () => ({ properties: { hs_type: 'cpq_template', hs_name: 'New Business Template' } }),
+        },
+      },
+      quotes: {
+        basicApi: {
+          create: async () => ({ id: 'q1' }),
+          getById: async () => ({
+            properties: {
+              hs_quote_link: 'https://example.test/q1',
+              hs_status: 'DRAFT',
+              hs_type: 'INITIAL',
+              hs_terms: '<p>terms</p>',
+              hs_net_payment_terms: '30',
+              hs_sender_firstname: 'A',
+              hs_sender_lastname: 'B',
+              hs_sender_email: 'a@b.c',
+            },
+          }),
+          update: async () => ({}),
+          archive: async () => ({}),
+        },
+        batchApi: { read: async () => ({ results: [] }) },
+      },
+      lineItems: {
+        basicApi: { create: async () => ({ id: 'li' }), archive: async () => ({}) },
+        batchApi: {
+          create: async ({ inputs }) => {
+            const results = inputs.map((_, i) => ({ id: `li${created.length + i}`, properties: {} }));
+            created.push(...results);
+            return { results };
+          },
+          read: async () => ({ results: [] }),
+          update: async () => ({}),
+          archive: async () => ({}),
+        },
+      },
+      associations: {
+        v4: {
+          basicApi: {
+            getPage: async () => ({ results: [] }),
+            create: async () => ({}),
+            createDefault: async () => ({}),
+          },
+          schema: { definitionsApi: { getAll: async () => ({ results: [] }) } },
+        },
+      },
+    },
+  };
+  return Object.assign(client, overrides);
+};
+
+test('generateQuote runs end to end without throwing', async () => {
+  const state = { ...lineItemSyncFixture(), dealType: 'newbusiness', pipelineId: 'p1', dealName: 'Test Co' };
+  const settings = normalizeSettings({
+    ...defaultSettings(),
+    enabledQuoteTemplateIds: ['567553820432'],
+    defaultQuoteTemplateId: '567553820432',
+  });
+
+  const result = await _test.generateQuote(
+    generateQuoteClient(),
+    'deal-1',
+    state,
+    { quoteContent: {}, contactId: '123' },
+    '45023718',
+    settings,
+  );
+
+  // The return shape the card reads. `primaryQuote` is listed explicitly: it is the field whose
+  // missing declaration caused the outage this test exists for.
+  assert.equal(result.quoteId, 'q1');
+  assert.equal(result.quoteUrl, 'https://example.test/q1');
+  assert.ok('primaryQuote' in result, 'primaryQuote must be returned, not merely referenced');
+  assert.ok('seller' in result);
+  assert.ok('templateId' in result);
+  assert.ok('generatedAt' in result);
+});
+
+test('priceExistingQuote runs end to end without throwing', async () => {
+  const client = generateQuoteClient();
+  // One draft CHANGE quote on the Deal, so it is adoptable.
+  client.crm.associations.v4.basicApi.getPage = async (from, id, to) =>
+    to === 'quotes' ? { results: [{ toObjectId: '42608004129' }] } : { results: [] };
+  client.crm.quotes.batchApi.read = async () => ({
+    results: [
+      {
+        id: '42608004129',
+        properties: {
+          hs_title: 'Change for Test Co',
+          hs_type: 'CHANGE',
+          hs_status: 'DRAFT',
+          hs_createdate: '2026-09-01T20:00:00Z',
+        },
+      },
+    ],
+  });
+  const state = { ...lineItemSyncFixture(), dealType: 'newbusiness', pipelineId: 'p1' };
+  const settings = normalizeSettings({ ...defaultSettings() });
+
+  const result = await _test.priceExistingQuote(
+    client,
+    'deal-1',
+    state,
+    { quoteContent: {}, applyToQuoteId: '42608004129' },
+    settings,
+  );
+  assert.equal(result.quoteId, '42608004129');
+  assert.equal(result.adopted, true);
+  assert.ok(result.lineItemCount > 0, 'the calculator lines must be applied');
+});

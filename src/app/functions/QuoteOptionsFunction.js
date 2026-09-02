@@ -2763,6 +2763,11 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
     //
     await clearClonedLineItems(client, quote.id, dealId);
 
+    // Applied on EVERY Lock in, not only the first. Regenerating the quote leaves the label on the
+    // old one, so the Deal's primary quote silently goes stale -- Holly, 2026-08-31: "that got
+    // deleted", "I need it to refresh again".
+    const primaryQuote = await markAsPrimaryQuote(client, quote.id, dealId);
+
     // The quote owns its line items, and they carry the same information as the Deal's.
     //
     // These were removed once, when every product appeared twice on generated quotes and the
@@ -3101,9 +3106,16 @@ const priceExistingQuote = async (client, dealId, state, parameters, settings) =
   const eligible = await adoptableQuotes(client, dealId);
   if (!eligible.some(({ id }) => id === quoteId)) throw new Error('QUOTE_NOT_ADOPTABLE');
 
+  // The title is required by normalizeQuoteContent and IRRELEVANT here -- HubSpot named this quote
+  // when it created it, and this function deliberately never touches hs_title. So a fallback is
+  // supplied purely to satisfy validation; it reaches nothing.
+  //
+  // It was '' until 2026-09-02, which threw INVALID_QUOTE_CONTENT on every Lock in where the rep
+  // had not typed a title -- i.e. the common case. Caught by the end-to-end test added the same
+  // day, not by any of the source-text ones.
   const lineItems = buildQuoteLineItems(
     option,
-    normalizeQuoteContent(parameters.quoteContent, ''),
+    normalizeQuoteContent(parameters.quoteContent, state.dealName || 'Quote'),
   );
 
   const dealOwnerId = await dealOwnerIdFor(client, dealId);
@@ -3438,6 +3450,7 @@ exports._test = Object.freeze({
   providerMessage,
   adoptableQuotes,
   priceExistingQuote,
+  generateQuote,
   repairLineItemsBatch,
   createLineItemsBatch,
   archiveLineItemsBatch,

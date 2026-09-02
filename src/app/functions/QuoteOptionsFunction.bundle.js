@@ -3771,6 +3771,68 @@ var archiveSupersededQuote = async (client, supersededQuoteId, newQuoteId) => {
     return null;
   }
 };
+var primaryQuoteLabelCache;
+var primaryQuoteAssociationType = async (client) => {
+  if (primaryQuoteLabelCache !== void 0) return primaryQuoteLabelCache;
+  try {
+    const schema = await client.crm.associations.v4.schema.definitionsApi.getAll("quotes", "deals");
+    const definitions = schema?.results || [];
+    const match = definitions.find((entry) => /primary/i.test(String(entry?.label || "")));
+    if (!match) {
+      console.warn(
+        `Nylas pricing: no primary-quote association label exists on quotes -> deals. Labels available: [${definitions.map((e) => e?.label || e?.typeId).join(", ")}]. Create one in HubSpot association settings and the next Lock in will apply it.`
+      );
+      primaryQuoteLabelCache = null;
+      return primaryQuoteLabelCache;
+    }
+    primaryQuoteLabelCache = {
+      typeId: match.typeId,
+      label: match.label,
+      category: match.category || "USER_DEFINED"
+    };
+    console.info(
+      `Nylas pricing: primary-quote label resolved -- "${match.label}" typeId=${match.typeId} category=${primaryQuoteLabelCache.category}`
+    );
+    return primaryQuoteLabelCache;
+  } catch (error) {
+    console.warn(
+      `Nylas pricing: could not read the quotes -> deals association labels. ${providerMessage(error)}`
+    );
+    primaryQuoteLabelCache = null;
+    return primaryQuoteLabelCache;
+  }
+};
+var markAsPrimaryQuote = async (client, quoteId, dealId) => {
+  const labelType = await primaryQuoteAssociationType(client);
+  if (!labelType) return { applied: false, label: null, reason: "no primary-quote label" };
+  try {
+    await client.crm.associations.v4.basicApi.create("quotes", String(quoteId), "deals", String(dealId), [
+      { associationCategory: labelType.category, associationTypeId: labelType.typeId }
+    ]);
+    console.info(
+      `Nylas pricing: quote ${quoteId} marked as the primary quote on deal ${dealId}.`
+    );
+    return { applied: true, label: labelType.label, reason: null };
+  } catch (error) {
+    const detail = providerMessage(error);
+    const ineligible = /not eligible to become primary/i.test(detail);
+    if (ineligible) {
+      console.info(
+        `Nylas pricing: quote ${quoteId} is a draft, so HubSpot will not make it the primary quote on deal ${dealId} yet. It becomes eligible when the quote is published.`
+      );
+    } else {
+      console.warn(
+        `Nylas pricing: could not mark quote ${quoteId} primary on deal ${dealId}. ${detail}`
+      );
+    }
+    return {
+      applied: false,
+      label: labelType.label,
+      ineligible,
+      reason: detail
+    };
+  }
+};
 var CPQ_QUOTE_TYPE_INITIAL = "INITIAL";
 var reportTemplateApplied = (quoteId, templateId, templateName, finalized) => {
   const applied = Boolean(
@@ -3994,6 +4056,7 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
       associations: quoteCreateAssociations
     });
     await clearClonedLineItems(client, quote.id, dealId);
+    const primaryQuote = await markAsPrimaryQuote(client, quote.id, dealId);
     const sendingQuoteLines = lineItems.map((item) => ({
       properties: hubSpotLineItemProperties(item.properties),
       // 68, not 67. Association type ids are directional: 67 is defined FROM the quote (0-14) TO
@@ -4204,7 +4267,7 @@ var priceExistingQuote = async (client, dealId, state, parameters, settings) => 
   if (!eligible.some(({ id }) => id === quoteId)) throw new Error("QUOTE_NOT_ADOPTABLE");
   const lineItems = buildQuoteLineItems(
     option,
-    normalizeQuoteContent(parameters.quoteContent, "")
+    normalizeQuoteContent(parameters.quoteContent, state.dealName || "Quote")
   );
   const dealOwnerId = await dealOwnerIdFor(client, dealId);
   const sender = await senderProperties(client, dealOwnerId);
@@ -4497,6 +4560,7 @@ exports._test = Object.freeze({
   providerMessage,
   adoptableQuotes,
   priceExistingQuote,
+  generateQuote,
   repairLineItemsBatch,
   createLineItemsBatch,
   archiveLineItemsBatch,
