@@ -431,7 +431,7 @@ test('dealCategory still resolves the renewal pipeline, for approvals', () => {
 // Behaviourally change and renewal are identical today -- both are offered on a renewal-pipeline
 // Deal, both produce an ordinary INITIAL quote. The lists are split so the app can still say WHICH
 // document a quote was meant to be and record it on the Deal.
-test('a renewal Deal sees all three lists and opens on the renewal default', () => {
+test('a renewal Deal sees only its own templates, and opens on the renewal default', () => {
   const NB = '567553820432';
   const RENEW = '583243745379';
   const CHANGE = '583243623796';
@@ -447,8 +447,11 @@ test('a renewal Deal sees all three lists and opens on the renewal default', () 
     renewalDefaultQuoteTemplateId: RENEW,
   });
 
+  // Renewal and change ONLY. Holly, 2026-09-02: "Remove New business from the sales dropdown."
+  // Offering a new-business template on a renewal Deal prints the wrong document.
   const renewal = quoteTemplateSettings(settings, 'renewal');
-  assert.deepEqual(renewal.enabledIds, [NB, RENEW, CHANGE], 'all three, shared list first');
+  assert.deepEqual(renewal.enabledIds, [RENEW, CHANGE]);
+  assert.equal(renewal.enabledIds.includes(NB), false, 'new business must not be on offer');
   assert.equal(renewal.defaultId, RENEW, 'and it opens on the renewal template');
 
   // DON'T TOUCH ANYTHING WITH NEW BUSINESS -- Holly, 2026-09-01. Still true.
@@ -501,4 +504,19 @@ test('the quote kind is recoverable from the template, for recording', () => {
     changeQuoteTemplateIds: [CHANGE],
   });
   assert.equal(quoteKindForTemplate(shared, CHANGE), 'change');
+});
+
+// The never-empty-picker rule still holds. A renewal portal that has configured NEITHER list falls
+// back to the shared templates rather than rendering an empty dropdown, which reads as broken.
+test('a renewal Deal with no renewal templates configured still sees the shared list', () => {
+  const NB = '567553820432';
+  const settings = normalizeSettings({
+    ...defaultSettings(),
+    allowRenewals: true,
+    renewalPipelineIds: ['876727403'],
+    enabledQuoteTemplateIds: [NB],
+    defaultQuoteTemplateId: NB,
+  });
+  assert.deepEqual(quoteTemplateSettings(settings, 'renewal').enabledIds, [NB]);
+  assert.equal(quoteTemplateSettings(settings, 'renewal').defaultId, NB);
 });

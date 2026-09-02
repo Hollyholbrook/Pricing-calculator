@@ -2012,10 +2012,12 @@ var require_appSettings = __commonJS({
         ...Array.isArray(settings?.renewalQuoteTemplateIds) ? settings.renewalQuoteTemplateIds : [],
         ...Array.isArray(settings?.changeQuoteTemplateIds) ? settings.changeQuoteTemplateIds : []
       ] : [];
+      const renewalOnly = category === "renewal" && renewalExtras.length > 0;
       return {
-        // De-duplicated, shared list first, so the order the picker renders is stable and the
-        // additions read as additions.
-        enabledIds: [...new Set([...shared, ...renewalExtras].map(String))],
+        // De-duplicated, shared list first, so the order the picker renders is stable.
+        enabledIds: [
+          ...new Set((renewalOnly ? renewalExtras : [...shared, ...renewalExtras]).map(String))
+        ],
         // A renewal Deal opens on the renewal default when one is set. Everything else, and a renewal
         // portal that has not set one, opens on the shared default exactly as before.
         defaultId: category === "renewal" && settings?.renewalDefaultQuoteTemplateId || flatDefault || legacy?.defaultId || ""

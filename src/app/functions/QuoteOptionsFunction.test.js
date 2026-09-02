@@ -2629,10 +2629,11 @@ test('a renewal Deal is offered the extra templates; new business is not', () =>
     'no category reads as new business, so a forgetful caller cannot widen the picker',
   );
 
-  // A renewal Deal sees both, shared list first.
+  // A renewal Deal sees ONLY its own templates. Holly, 2026-09-02: "Remove New business from the
+  // sales dropdown." Reverses 2026-09-01, deliberately -- see quoteTemplateSettings.
   assert.deepEqual(
     _test.offeredQuoteTemplates(all, settings, 'renewal').map(({ id }) => id),
-    ['567553820432', '583243623796'],
+    ['583243623796'],
   );
 
   // The DEFAULT does not move. A renewal Deal still opens on the same template it opens on today;

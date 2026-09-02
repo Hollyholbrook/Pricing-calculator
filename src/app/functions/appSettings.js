@@ -255,10 +255,22 @@ const quoteTemplateSettings = (settings, category) => {
             : []),
         ]
       : [];
+  // A RENEWAL DEAL SEES ITS OWN TEMPLATES ONLY. Holly, 2026-09-02: "Remove New business from the
+  // sales dropdown."
+  //
+  // This reverses 2026-09-01 ("make it so I can submit a new business template from renewals"),
+  // deliberately. That was the answer while renewal Deals had no templates of their own; now they
+  // have two, and offering a third that prints the wrong document is a mis-send waiting to happen.
+  //
+  // The fallback matters: a renewal portal that has configured NEITHER list still gets the shared
+  // one, because an empty picker reads as a broken card. So this narrows only where there is
+  // something to narrow to.
+  const renewalOnly = category === 'renewal' && renewalExtras.length > 0;
   return {
-    // De-duplicated, shared list first, so the order the picker renders is stable and the
-    // additions read as additions.
-    enabledIds: [...new Set([...shared, ...renewalExtras].map(String))],
+    // De-duplicated, shared list first, so the order the picker renders is stable.
+    enabledIds: [
+      ...new Set((renewalOnly ? renewalExtras : [...shared, ...renewalExtras]).map(String)),
+    ],
     // A renewal Deal opens on the renewal default when one is set. Everything else, and a renewal
     // portal that has not set one, opens on the shared default exactly as before.
     defaultId:

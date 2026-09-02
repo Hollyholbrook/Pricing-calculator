@@ -433,12 +433,12 @@ const SettingsPage = () => {
             />
           </AutoGrid>
           <Text variant="microcopy">
-            Both lists are offered in addition to the templates above, and only
-            on Deals in a renewal pipeline, so a renewal rep sees new business,
-            renewal and change, and opens on the default set here. They are two
+            On a renewal-pipeline Deal these two lists REPLACE the templates
+            above, so a renewal rep sees renewal and change only. They are two
             lists rather than one so the app can still record which of the three
-            documents a quote was meant to be, on the Calculator details field.
-            Leave them empty and renewal Deals behave like everyone else.
+            documents a quote was meant to be, on the Deal&apos;s Calculator
+            details field. Leave both empty and renewal Deals fall back to the
+            templates above, rather than to an empty dropdown.
           </Text>
           {quoteTemplates.length === 0 && (
             <Text variant="microcopy">
