@@ -315,3 +315,207 @@ test('the same volumes on a 12-month monthly deal give the card figures, not the
     [1.08, 0.76, 0.38, 0.27],
   );
 });
+
+// NEGATIVE DISCOUNTS: AN UPLIFT IS A RATE ABOVE LIST
+//
+// The workbook permits this and always has. QUOTE BUILDER's discount cells (column J, rows 13-19,
+// 26-28, 33, 38, 40) carry NO data validation -- the sheet's only validations are the three
+// dropdowns for support level, payment frequency and onboarding package. K = I * (1 - J), so a
+// negative J prices above list arithmetically, with nothing in the sheet to stop it.
+//
+// Renewals are the case: a legacy rate being moved back toward the current rate card is a real
+// term of the deal, and before 2026-09-02 the calculator refused it, leaving a rep to misstate the
+// rate card instead.
+//
+// These figures are derived from the workbook's own formulas, not read back from this calculator.
+
+test('workbook parity: a negative discount prices ABOVE list, by the workbook formula', () => {
+  const result = calculateQuote({
+    ...WORKBOOK_INPUT,
+    // Connect uplifted 10%. Notetaker keeps the worked example's 10% discount, so one run holds
+    // both directions and neither can be satisfied by a sign error that flips them together.
+    productDiscounts: { connect_ca: -0.1, notetaker_bot_hours: 0.1 },
+  });
+  const connect = result.lines.find(({ productKey }) => productKey === 'connect_ca');
+  const notetaker = result.lines.find(({ productKey }) => productKey === 'notetaker_bot_hours');
+
+  // Nothing about the LIST side moves. Rate card 1.575, adjusted additively by
+  // (1 - 0.025 + 0.04) = 1.015, is 1.598625 whatever the discretionary cell holds.
+  assert.equal(connect.baseBlendedRate, 1.575);
+  assert.equal(connect.listUnitRate, 1.6);
+
+  // K13 = I13 * (1 - J13) with J13 = -0.1: 1.598625 x 1.1 = 1.7584875, displayed 1.76.
+  assert.equal(connect.proposedUnitRate, 1.76);
+  assert.ok(
+    connect.proposedUnitRate > connect.listUnitRate,
+    'an uplifted line must price above its own list rate',
+  );
+  // L13 = D13 x K13 x 12, from the UNROUNDED rate: 1.7584875 x 2,000 x 12.
+  assert.equal(connect.annualCommitment, 42_203.7);
+  assert.equal(Math.round(1.7584875 * 2_000 * 12 * 100) / 100, connect.annualCommitment);
+
+  // The discounted line is untouched by the uplift on the other one.
+  assert.equal(notetaker.proposedUnitRate, 0.55);
+  assert.equal(notetaker.annualCommitment, 6_577.2);
+
+  // Row 20, and then row 33: support is 10% of the drawdown the customer actually pays, so the
+  // uplift carries into it exactly as a discount would.
+  assert.equal(result.proposedPlatformArr, 48_780.9);
+  assert.equal(result.supportAnnual, 4_878.09);
+  assert.equal(result.committedArr, 53_658.99);
+
+  // And the list side stays the list side, so the blended effective figure reads NEGATIVE --
+  // above list -- rather than being floored to zero somewhere.
+  assert.ok(result.tcv > result.listTcv, 'an uplifted quote must exceed its own list TCV');
+});
+
+test('the largest line discount reports 0 when every entry is an uplift', () => {
+  // The reported FIGURE still floors at zero even though the approval ladder no longer does. The
+  // two are separate on purpose: largestDiscretionaryDiscount is what was given away, and it is
+  // what the Deal and the option document report as a discount. A -10% entry reported there as
+  // -10% would read as a concession that was never made.
+  //
+  // Every other discount surface is removed from this scenario so the uplift is the ONLY entry --
+  // with support, onboarding, an add-on or a PS item present, each contributes a 0 of its own and
+  // the floor is never reached.
+  const result = calculateQuote({
+    ...WORKBOOK_INPUT,
+    productDiscounts: { connect_ca: -0.1 },
+    volumes: { ...WORKBOOK_INPUT.volumes, notetaker_bot_hours: 0 },
+    supportLevel: 'basic',
+    onboardingPackage: 'none',
+    onboardingDiscount: 0,
+    professionalServices: [],
+    addOns: [],
+    addOnDiscounts: {},
+  });
+  assert.equal(result.largestDiscretionaryDiscount, 0, 'must floor at 0, not report -0.1');
+  // Reported separately, as a positive magnitude, so nothing has to infer it from a sign.
+  assert.equal(result.largestDiscretionaryUplift, 0.1);
+  // The uplift is still in the money, so the floor is a reporting rule and not a lost input.
+  assert.ok(result.tcv > result.listTcv);
+});
+
+// THE ONE DELIBERATE DEPARTURE FROM THE WORKBOOK, AND THE REASON FOR IT
+//
+// The sheet routes on MAX(J13:J19,J26:J28,J33,J38,J40) against >0.3, >0.1 and >0.0001, so an
+// uplift clears none of them and E62 prints "None - Auto Approved (rate card)". This calculator
+// does NOT follow it here. Shane, 2026-09-02, asking before release: "With absolute approval
+// thresholds working? Meaning -11% premium pricing (avg TCV) will go to Ana/Chris?" -- yes.
+//
+// The case that settles it: under the sheet's rule a -45% entry, pricing a line at nearly twice
+// the rate card, goes out with no approver and no reason recorded. Off the rate card is off the
+// rate card, whichever way it points.
+//
+// Every OTHER approval behaviour still matches the sheet, and the tests above hold it there. This
+// is the single exception and it is asserted so that a future "restore workbook parity" cannot
+// quietly undo it.
+test('an uplift routes on magnitude, the one place this departs from the sheet', () => {
+  const uplift = (value) =>
+    calculateQuote({
+      ...WORKBOOK_INPUT,
+      productDiscounts: { connect_ca: value },
+      onboardingDiscount: 0,
+      addOnDiscounts: { enterprise_accelerator: 0 },
+    });
+
+  // Same ladder, same thresholds, read as a magnitude.
+  const small = uplift(-0.05);
+  assert.equal(small.approvalTierRequired, 'sales_director');
+  const medium = uplift(-0.11);
+  assert.equal(medium.approvalTierRequired, 'head_sales', '-11% must reach the second tier');
+  const large = uplift(-0.45);
+  assert.equal(large.approvalTierRequired, 'finance');
+
+  // The approver is told which direction it went. "Discount" on an uplifted deal would send them
+  // looking for a concession that does not exist.
+  assert.ok(
+    medium.approvalReasons.some((reason) => reason.startsWith('Discretionary uplift is greater')),
+    `expected an uplift-worded reason, got: ${medium.approvalReasons.join(' | ')}`,
+  );
+  assert.ok(
+    !medium.approvalReasons.some((reason) => reason.includes('Discretionary discount')),
+    'an uplift must not be described to the approver as a discount',
+  );
+
+  // Renewals keep their own approver names on the same rungs.
+  const renewal = calculateQuote(
+    {
+      ...WORKBOOK_INPUT,
+      productDiscounts: { connect_ca: -0.11 },
+      onboardingDiscount: 0,
+      addOnDiscounts: { enterprise_accelerator: 0 },
+    },
+    {},
+    0,
+    'renewal',
+  );
+  assert.equal(renewal.approvalTierRequired, 'ccso');
+});
+
+test('routing takes the larger of the two, and a tie is described as the discount', () => {
+  const both = (discount, upliftValue) =>
+    calculateQuote({
+      ...WORKBOOK_INPUT,
+      productDiscounts: { connect_ca: upliftValue, notetaker_bot_hours: discount },
+      onboardingDiscount: 0,
+      addOnDiscounts: { enterprise_accelerator: 0 },
+    });
+
+  // A big uplift beats a small discount. Under the old rule this was sales_director on the 3%.
+  const upliftWins = both(0.03, -0.11);
+  assert.equal(upliftWins.largestDiscretionaryDiscount, 0.03);
+  assert.equal(upliftWins.largestDiscretionaryUplift, 0.11);
+  assert.equal(upliftWins.approvalTierRequired, 'head_sales');
+
+  // And the reverse.
+  const discountWins = both(0.35, -0.02);
+  assert.equal(discountWins.approvalTierRequired, 'finance');
+  assert.ok(
+    discountWins.approvalReasons.some((reason) => reason.includes('Discretionary discount')),
+  );
+
+  // A tie is named as the discount: if a deal holds a 12% discount and a 12% uplift, the discount
+  // is the half that needs defending.
+  const tied = both(0.12, -0.12);
+  assert.equal(tied.approvalTierRequired, 'head_sales');
+  assert.ok(
+    tied.approvalReasons.some((reason) => reason.startsWith('Discretionary discount is greater')),
+    `a tie must read as a discount, got: ${tied.approvalReasons.join(' | ')}`,
+  );
+});
+
+test('a 100% uplift is not reported as a line discounted 100%', () => {
+  // -1 doubles a line. It reaches Finance on magnitude like any other large departure, but the
+  // "A line is discounted 100%" reason belongs to a free line and must not appear here.
+  const result = calculateQuote({
+    ...WORKBOOK_INPUT,
+    productDiscounts: { connect_ca: -1 },
+    onboardingDiscount: 0,
+    addOnDiscounts: { enterprise_accelerator: 0 },
+  });
+  assert.equal(result.approvalTierRequired, 'finance');
+  assert.equal(result.largestDiscretionaryDiscount, 0);
+  assert.ok(
+    !result.approvalReasons.includes('A line is discounted 100%.'),
+    'nothing was given away, so nothing was discounted 100%',
+  );
+});
+
+test('the uplift floor is -100%, and a mistyped -20 is refused like a mistyped 20', () => {
+  // The mirror of the onboarding-discount test above. -20 meaning -20% would otherwise price a
+  // line at twenty-one times list, which is the same class of error the upper bound catches.
+  for (const value of [-20, -1.01]) {
+    assert.throws(
+      () => calculateQuote({ ...WORKBOOK_INPUT, onboardingDiscount: value }),
+      (error) =>
+        error instanceof QuoteValidationError &&
+        error.code === 'INVALID_PERCENTAGE' &&
+        error.field === 'onboardingDiscount',
+      `${value} must fail closed`,
+    );
+  }
+  // -1 is the floor itself and is accepted: Quick Launch at $5,000 x (1 - -1) = $10,000.
+  const result = calculateQuote({ ...WORKBOOK_INPUT, onboardingDiscount: -1 });
+  assert.equal(result.onboardingAmount, 10_000);
+});

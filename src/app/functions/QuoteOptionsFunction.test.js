@@ -1038,6 +1038,121 @@ test('every discount surface is caught by the reason requirement', () => {
   assert.equal(calculateQuote(discountedInput()).largestDiscretionaryDiscount, 0);
 });
 
+// The uplift half of the rule above. Added 2026-09-02, when the approval ladder started routing on
+// magnitude: an uplift now reaches an approver, so it must carry a reason for the same reason a
+// discount does. The guard reads the LARGER of the two figures, so a surface that raises only the
+// uplift has to be caught just as surely.
+test('every surface raises the uplift figure the reason guard also reads', () => {
+  const surfaces = {
+    'deal-wide': { discretionaryDiscount: -0.1 },
+    product: { productDiscounts: { connect_ca: -0.6 } },
+    'add-on': { addOnDiscounts: { privacy_filter: -0.5 } },
+    support: { supportDiscount: -0.2 },
+    onboarding: { onboardingDiscount: -0.3 },
+    'professional services': { professionalServicesDiscount: -0.4 },
+  };
+  for (const [name, extra] of Object.entries(surfaces)) {
+    const result = calculateQuote(discountedInput(extra));
+    assert.ok(
+      result.largestDiscretionaryUplift > 0,
+      `a ${name} uplift must raise largestDiscretionaryUplift or the guard misses it`,
+    );
+    // And it must NOT be reported as a discount, which is what the Deal property records.
+    assert.equal(
+      result.largestDiscretionaryDiscount,
+      0,
+      `a ${name} uplift must not be reported as a discount`,
+    );
+    // It reached an approver, which is the whole reason a reason is now required.
+    assert.notEqual(result.approvalTierRequired, 'none');
+  }
+  assert.equal(calculateQuote(discountedInput()).largestDiscretionaryUplift, 0);
+});
+
+// EXECUTED, not read. A source-text version of this test passed against a guard that had been
+// changed back to discount-only, because the console.warn a line above the throw still mentioned
+// both figures. Reading the file proves the words are present; only running it proves the guard
+// uses them.
+test('a pure uplift with no reason is refused, and with a reason is not', async () => {
+  const upliftState = () => {
+    const input = {
+      termMonths: 12,
+      paymentFrequency: 'annual_in_advance',
+      volumes: { connect_ca: 2_000 },
+      supportLevel: 'basic',
+      onboardingPackage: 'quick_launch',
+      professionalServices: [],
+      addOns: [],
+      productDiscounts: { connect_ca: -0.11 },
+    };
+    const option = { id: 'selected-1', input, result: calculateQuote(input) };
+    return {
+      document: { options: [option] },
+      selectedOptionId: option.id,
+      selectedStateHash: option.result.stateHash,
+      dealType: 'newbusiness',
+      pipelineId: 'p1',
+      dealName: 'Test Co',
+      option,
+    };
+  };
+
+  const settings = normalizeSettings({
+    ...defaultSettings(),
+    enabledQuoteTemplateIds: ['567553820432'],
+    defaultQuoteTemplateId: '567553820432',
+  });
+
+  const state = upliftState();
+  // Nothing was given away, so the discount figure is 0 -- which is exactly the case a
+  // discount-only guard waves through.
+  assert.equal(state.option.result.largestDiscretionaryDiscount, 0);
+  assert.equal(state.option.result.largestDiscretionaryUplift, 0.11);
+  assert.notEqual(state.option.result.approvalTierRequired, 'none');
+
+  const blocked = generateQuoteClient();
+  await assert.rejects(
+    () =>
+      _test.lockLiveCalculation(
+        blocked,
+        'deal-1',
+        state,
+        // paymentMethod: the invoice clears the credit-card ceiling, and that guard runs first.
+      {
+        quoteContent: {},
+        contactId: '123',
+        discountReason: '   ',
+        input: state.option.input,
+        paymentMethod: 'ach',
+      },
+        '45023718',
+        settings,
+      ),
+    /DISCOUNT_REASON_REQUIRED/,
+    'an uplift that reaches an approver must not lock in unexplained',
+  );
+  // And it refused BEFORE writing. syncDealLineItems is what empties the Deal.
+  assert.equal(blocked.dealWrites.length, 0, 'nothing may be written by a refused lock');
+
+  // The same deal with a reason goes through, so the guard is the reason and not the uplift.
+  const allowed = generateQuoteClient();
+  await _test.lockLiveCalculation(
+    allowed,
+    'deal-1',
+    upliftState(),
+    {
+      quoteContent: {},
+      contactId: '123',
+      discountReason: 'Legacy rate moved back toward current list at renewal.',
+      input: upliftState().option.input,
+      paymentMethod: 'ach',
+    },
+    '45023718',
+    settings,
+  );
+  assert.ok(allowed.dealWrites.length > 0, 'a reasoned uplift must lock in');
+});
+
 test('the discount reason guard runs before anything is written', () => {
   const source = require('node:fs').readFileSync(
     require('node:path').join(__dirname, 'QuoteOptionsFunction.js'),

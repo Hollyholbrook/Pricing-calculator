@@ -35,8 +35,30 @@ const requireInteger = (value, min, max, field) => {
   return value;
 };
 
+// A discretionary discount, as a fraction. NEGATIVE IS LEGAL: it is an uplift, a rate above list.
+//
+// The workbook has always allowed this. Every discount cell in QUOTE BUILDER column J is free
+// entry -- the sheet's only data validation is the three dropdowns -- and K = I * (1 - J), so a
+// negative J prices above list by construction. Renewals are the case it exists for: a rep moving
+// a legacy rate back toward current list had no field for it and was forced to misstate the rate
+// card instead. Holly, 2026-09-02.
+//
+// The bounds are not symmetric with the workbook's, which has none. The upper bound stays because
+// it catches the workbook's own bug -- its onboarding cell holds 20 where every other cell holds a
+// fraction, and computes 5,000 x (1 - 20) = -$95,000 (see workbookQuoteBuilder.test.js). A floor of
+// -1 is the same guard facing the other way: -20 typed for -20% is refused rather than doubling a
+// rate twenty times over. -1 itself means double the list rate, which is further than any real
+// uplift needs to go.
+const PERCENT_MIN = -1;
+const PERCENT_MAX = 1;
+
 const requirePercent = (value, field) => {
-  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > 1) {
+  if (
+    typeof value !== 'number' ||
+    !Number.isFinite(value) ||
+    value < PERCENT_MIN ||
+    value > PERCENT_MAX
+  ) {
     throw new QuoteValidationError('INVALID_PERCENTAGE', field);
   }
   return value;
@@ -320,6 +342,7 @@ const buildApproval = (
   committedArr,
   activeRules = rules,
   dealCategory = 'new_business',
+  largestDiscretionaryUplift = 0,
 ) => {
   const reasons = [];
   // EVERY ENTRY HERE IS READ BY A REP, VERBATIM.
@@ -358,32 +381,62 @@ const buildApproval = (
     ? activeRules.renewalSecondApprovalTier
     : activeRules.newBusinessSecondApprovalTier;
 
+  // THE LADDER RUNS ON MAGNITUDE, IN BOTH DIRECTIONS. Shane, 2026-09-02: "With absolute approval
+  // thresholds working? Meaning -11% premium pricing (avg TCV) will go to Ana/Chris?" -- yes, and
+  // this is what makes it so.
+  //
+  // This is a DELIBERATE departure from the workbook, and the only one in the approval path. The
+  // sheet routes on MAX(J13:J19,J26:J28,J33,J38,J40) against >0.3, >0.1 and >0.0001, so an uplift
+  // clears none of them and reads "None - Auto Approved (rate card)". That was defensible while an
+  // uplift was purely the customer paying more. It stopped being defensible once a -45% entry --
+  // pricing a line at nearly twice the rate card, with no reason recorded and nobody informed --
+  // could go out under it. Off the rate card is off the rate card, whichever way it points.
+  //
+  // The two figures stay separate everywhere else. largestDiscretionaryDiscount is still only what
+  // was given away, and is what the Deal and the option document report; the uplift is reported in
+  // its own right. Only the ROUTING takes the larger of the two.
+  const largestRateDeparture = Math.max(
+    largestDiscretionaryDiscount,
+    largestDiscretionaryUplift,
+  );
+  // Which word the approver reads. Ties go to "discount": if a deal holds a 12% discount and a 12%
+  // uplift, the discount is the one that needs defending.
+  const departureLabel =
+    largestDiscretionaryUplift > largestDiscretionaryDiscount
+      ? 'Discretionary uplift'
+      : 'Discretionary discount';
+
   if (
-    largestDiscretionaryDiscount > 0 &&
-    largestDiscretionaryDiscount <= activeRules.salesDirectorDiscountMax
+    largestRateDeparture > 0 &&
+    largestRateDeparture <= activeRules.salesDirectorDiscountMax
   ) {
     tier = firstTier;
     reasons.push(
-      `Discretionary discount is greater than 0% and no more than ${percentLabel(activeRules.salesDirectorDiscountMax)}.`,
+      `${departureLabel} is greater than 0% and no more than ${percentLabel(activeRules.salesDirectorDiscountMax)}.`,
     );
   } else if (
-    largestDiscretionaryDiscount > activeRules.salesDirectorDiscountMax &&
-    largestDiscretionaryDiscount <= activeRules.headSalesDiscountMax
+    largestRateDeparture > activeRules.salesDirectorDiscountMax &&
+    largestRateDeparture <= activeRules.headSalesDiscountMax
   ) {
     tier = secondTier;
     reasons.push(
-      `Discretionary discount is greater than ${percentLabel(activeRules.salesDirectorDiscountMax)} and no more than ${percentLabel(activeRules.headSalesDiscountMax)}.`,
+      `${departureLabel} is greater than ${percentLabel(activeRules.salesDirectorDiscountMax)} and no more than ${percentLabel(activeRules.headSalesDiscountMax)}.`,
     );
-  } else if (largestDiscretionaryDiscount > activeRules.headSalesDiscountMax) {
+  } else if (largestRateDeparture > activeRules.headSalesDiscountMax) {
     tier = 'finance';
     reasons.push(
-      `Discretionary discount is greater than ${percentLabel(activeRules.headSalesDiscountMax)}.`,
+      `${departureLabel} is greater than ${percentLabel(activeRules.headSalesDiscountMax)}.`,
     );
   }
 
   // A line given away entirely is Finance's call whatever the thresholds say. Redundant while the
   // top threshold is 30% -- 100% already exceeds it -- but it stops a raised threshold from
   // quietly letting a free line through at a lower tier.
+  //
+  // DISCOUNT ONLY, and not by omission. A -100% entry is a line priced at double, which the ladder
+  // above already sends to Finance on magnitude. A free line is a different fact about a contract
+  // and keeps its own named reason; "A line is discounted 100%" must not appear on a deal where
+  // nothing was given away.
   if (activeRules.financeApprovesFullDiscount && largestDiscretionaryDiscount >= 1) {
     tier = 'finance';
     reasons.push('A line is discounted 100%.');
@@ -729,16 +782,34 @@ const calculateQuote = (
     ...(listOnboardingAmount > 0 ? [input.onboardingDiscount] : []),
     ...(listProfessionalServicesAmount > 0 ? [input.professionalServicesDiscount] : []),
   ];
+  // The floor of 0 is what makes an UPLIFT approval-neutral, and it is the workbook's own rule
+  // rather than a convenience. QUOTE BUILDER E62 routes on
+  // MAX(J13:J19,J26:J28,J33,J38,J40) tested against >0.3, >0.1 and >0.0001, so a sheet whose
+  // discount cells are all negative falls through every branch to "None - Auto Approved (rate
+  // card)". A mix routes on the largest POSITIVE entry, which is what MAX returns and what this
+  // returns. An uplift is the customer paying more; there is nothing to approve.
   const largestDiscretionaryDiscount = Math.max(0, ...effectiveDiscounts);
+  // The uplift side, as a POSITIVE magnitude. Kept as its own figure rather than folded into the
+  // one above, because the two answer different questions: how much was given away, and how far
+  // above the rate card did this go. Reports, the Deal and the option document want them apart.
+  // Only approval routing takes the larger of the two -- see buildApproval.
+  const largestDiscretionaryUplift = Math.max(
+    0,
+    ...effectiveDiscounts.map((discount) => -discount),
+  );
   const approval = buildApproval(
     input,
     largestDiscretionaryDiscount,
     committedArr,
     activeRules,
     dealCategory,
+    largestDiscretionaryUplift,
   );
 
   const legacyGuardrails = [];
+  // DISCOUNT ONLY. This one is named FINANCE_APPROVAL_MULTI_YEAR_DISCOUNT and means "a deep
+  // discount locked in for more than a year". An uplift held for three years is not that, and the
+  // magnitude ladder in buildApproval already sends anything this size to Finance regardless.
   if (largestDiscretionaryDiscount > activeRules.headSalesDiscountMax && input.termMonths > 12) {
     legacyGuardrails.push('FINANCE_APPROVAL_MULTI_YEAR_DISCOUNT');
   }
@@ -788,6 +859,7 @@ const calculateQuote = (
     listTcv,
     tcv,
     largestDiscretionaryDiscount,
+    largestDiscretionaryUplift,
     approvalTierRequired: approval.tier,
     approvalReasons: approval.reasons,
     blockingReasons: approval.blockingReasons,

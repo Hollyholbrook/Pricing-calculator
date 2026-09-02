@@ -1395,17 +1395,20 @@ const OptionEditor = ({
   ).length;
   // Any discount anywhere, from the rep's own entries rather than from the calculated result: the
   // reason box has to appear as soon as they discount something, before a preview has returned.
+  //
+  // `!== 0`, so UPLIFTS COUNT. An earlier build the same day used `> 0`, on the reasoning that an
+  // uplift auto-approved and the reason box exists to justify giving money away. The approval
+  // ladder now runs on magnitude in both directions, so a -5% entry reaches a Sales Director --
+  // and it must not reach them with no explanation. Anything that routes to an approver carries a
+  // reason. Holly, 2026-09-02.
+  const departed = (value: number | undefined) => (value || 0) !== 0;
   const hasAnyDiscount =
-    Object.values(option.input.productDiscounts || {}).some(
-      (value) => value > 0,
-    ) ||
-    Object.values(option.input.addOnDiscounts || {}).some(
-      (value) => value > 0,
-    ) ||
-    (option.input.supportDiscount || 0) > 0 ||
-    (option.input.onboardingDiscount || 0) > 0 ||
-    (option.input.professionalServicesDiscount || 0) > 0 ||
-    (option.input.discretionaryDiscount || 0) > 0;
+    Object.values(option.input.productDiscounts || {}).some(departed) ||
+    Object.values(option.input.addOnDiscounts || {}).some(departed) ||
+    departed(option.input.supportDiscount) ||
+    departed(option.input.onboardingDiscount) ||
+    departed(option.input.professionalServicesDiscount) ||
+    departed(option.input.discretionaryDiscount);
   // WHICH discounts, by name. hasAnyDiscount only says "somewhere", and "somewhere" sent a rep
   // hunting a long form for a field they were sure they had not touched. Naming them turns
   // "why is this required" into "because Notetaker is at 15%". Holly, 2026-08-28.
@@ -1413,38 +1416,43 @@ const OptionEditor = ({
   // A discount on a product with NO committed volume is flagged as such -- those fields became
   // editable earlier the same day, so a rate negotiated on a product nobody is buying yet is a
   // real entry sitting in an otherwise empty row, and it is the easiest one to lose track of.
-  const asPercent = (value: number) => `${Math.round(value * 100)}%`;
+  const asPercent = (value: number) => `${Math.round(Math.abs(value) * 100)}%`;
+  // Named with its DIRECTION, not just its size. "Notetaker 15%" beside "Support 10% uplift" is
+  // what the approver needs to see; a bare 15% on both would describe two opposite moves
+  // identically. asPercent takes the magnitude so the word carries the sign.
+  const departureLabel = (value: number) =>
+    `${asPercent(value)}${value < 0 ? " uplift" : ""}`;
   const discountedItems: string[] = [
     ...products
-      .filter(({ key }) => (option.input.productDiscounts?.[key] || 0) > 0)
+      .filter(({ key }) => departed(option.input.productDiscounts?.[key]))
       .map(
         ({ key, label }) =>
-          `${label} ${asPercent(option.input.productDiscounts?.[key] || 0)}` +
+          `${label} ${departureLabel(option.input.productDiscounts?.[key] || 0)}` +
           ((option.input.volumes[key] || 0) > 0 ? "" : " (no volume)"),
       ),
     ...addOnOptions
-      .filter(
-        ({ value }) => (option.input.addOnDiscounts?.[String(value)] || 0) > 0,
+      .filter(({ value }) =>
+        departed(option.input.addOnDiscounts?.[String(value)]),
       )
       .map(
         ({ value, label }) =>
-          `${label} ${asPercent(option.input.addOnDiscounts?.[String(value)] || 0)}`,
+          `${label} ${departureLabel(option.input.addOnDiscounts?.[String(value)] || 0)}`,
       ),
-    ...((option.input.supportDiscount || 0) > 0
-      ? [`Support ${asPercent(option.input.supportDiscount || 0)}`]
+    ...(departed(option.input.supportDiscount)
+      ? [`Support ${departureLabel(option.input.supportDiscount || 0)}`]
       : []),
-    ...((option.input.onboardingDiscount || 0) > 0
-      ? [`Onboarding ${asPercent(option.input.onboardingDiscount || 0)}`]
+    ...(departed(option.input.onboardingDiscount)
+      ? [`Onboarding ${departureLabel(option.input.onboardingDiscount || 0)}`]
       : []),
-    ...((option.input.professionalServicesDiscount || 0) > 0
+    ...(departed(option.input.professionalServicesDiscount)
       ? [
-          `Professional Services ${asPercent(
+          `Professional Services ${departureLabel(
             option.input.professionalServicesDiscount || 0,
           )}`,
         ]
       : []),
-    ...((option.input.discretionaryDiscount || 0) > 0
-      ? [`Deal-wide ${asPercent(option.input.discretionaryDiscount || 0)}`]
+    ...(departed(option.input.discretionaryDiscount)
+      ? [`Deal-wide ${departureLabel(option.input.discretionaryDiscount || 0)}`]
       : []),
   ];
   // The two pre-approved adjustments, named only when they are non-zero. They are what make a
@@ -1506,11 +1514,18 @@ const OptionEditor = ({
       rateCardAmount != null && Math.abs(rateCardAmount - listAmount) > 0.005
         ? `Rate card ${currency(rateCardAmount)}${termDiscountLabel()}${paymentPremiumLabel()} · `
         : "";
+    // A NEGATIVE discount is an uplift: a rate above list, which renewals use to move a legacy
+    // rate back toward the current rate card. "-10% discount saves -$1,200" is arithmetically
+    // right and unreadable, and this line is what a rep checks their own entry against. The sign
+    // is spent on the wording instead, and the amount is always shown positive.
+    const gap = listAmount - proposedAmount;
+    const isUplift = gap < 0;
     return (
       <Text variant="microcopy">
-        {adjustment}List {currency(listAmount)} {unit} · {percent(discount)}{" "}
-        discount saves {currency(listAmount - proposedAmount)} · Proposed{" "}
-        {currency(proposedAmount)} {unit}
+        {adjustment}List {currency(listAmount)} {unit} ·{" "}
+        {percent(Math.abs(discount))}{" "}
+        {isUplift ? "uplift adds" : "discount saves"} {currency(Math.abs(gap))}{" "}
+        · Proposed {currency(proposedAmount)} {unit}
       </Text>
     );
   };
@@ -1643,7 +1658,17 @@ const OptionEditor = ({
                     value={
                       (option.input.productDiscounts?.[product.key] || 0) * 100
                     }
-                    min={0}
+                    // NEGATIVE IS LEGAL, on this input and every other discount field. A negative
+                    // is an uplift: proposed = list x (1 - discount), so -10 prices the line 10%
+                    // ABOVE the rate card. Renewals are what it is for -- a legacy rate being
+                    // moved back toward current list is a real term of the deal, and until now the
+                    // only way to enter one was to misstate the rate card.
+                    //
+                    // The workbook has always permitted this: QUOTE BUILDER column J carries no
+                    // data validation at all. -100 is the app's own floor, mirroring the +100
+                    // ceiling, so a -20 typed for -20% is refused rather than pricing a line at
+                    // twenty-one times list.
+                    min={-100}
                     max={100}
                     precision={0}
                     formatStyle="percentage"
@@ -1981,7 +2006,7 @@ const OptionEditor = ({
                   label="Support Discount"
                   name="support_discount"
                   value={(option.input.supportDiscount || 0) * 100}
-                  min={0}
+                  min={-100}
                   max={100}
                   precision={2}
                   formatStyle="percentage"
@@ -2010,7 +2035,7 @@ const OptionEditor = ({
                   label="Onboarding Discount"
                   name="onboarding_discount"
                   value={(option.input.onboardingDiscount || 0) * 100}
-                  min={0}
+                  min={-100}
                   max={100}
                   precision={2}
                   formatStyle="percentage"
@@ -2061,7 +2086,7 @@ const OptionEditor = ({
                               (option.input.addOnDiscounts?.[String(value)] ||
                                 0) * 100
                             }
-                            min={0}
+                            min={-100}
                             max={100}
                             precision={2}
                             formatStyle="percentage"
@@ -2104,7 +2129,7 @@ const OptionEditor = ({
                       value={
                         (option.input.professionalServicesDiscount || 0) * 100
                       }
-                      min={0}
+                      min={-100}
                       max={100}
                       precision={2}
                       formatStyle="percentage"
@@ -2195,28 +2220,28 @@ const OptionEditor = ({
       {hasAnyDiscount && (
         <Flex direction="column" gap="xs">
           <TextArea
-            label="Discount Reason"
+            label="Discount / Uplift Reason"
             name="discount_reason"
             value={discountReason}
             rows={2}
             maxLength={4_000}
-            placeholder="Why is this discount being given?"
+            placeholder="Why does this price differ from the rate card?"
             onChange={(value) => onDiscountReasonChange(String(value))}
           />
-          {/* Which discounts, by name, so "there are no discounts" can be checked rather than
-              argued with. */}
+          {/* Which entries, by name and direction, so "there are no discounts" can be checked
+              rather than argued with. */}
           <Text variant="microcopy">
-            Discounts applied: {discountedItems.join(" · ")}
+            Off rate card: {discountedItems.join(" · ")}
           </Text>
           {discountReasonMissing ? (
             <Text variant="microcopy" format={{ fontWeight: "bold" }}>
-              Required. A discount cannot be locked in without a reason — this
-              is what the approver reads.
+              Required. A price off the rate card cannot be locked in without a
+              reason — this is what the approver reads.
             </Text>
           ) : (
             <Text variant="microcopy">
-              Recorded on the Deal for approval. Appears only because a discount
-              has been entered.
+              Recorded on the Deal for approval. Appears only because a price
+              differs from the rate card.
             </Text>
           )}
         </Flex>

@@ -306,8 +306,10 @@ var require_calculator = __commonJS({
       }
       return value;
     };
+    var PERCENT_MIN = -1;
+    var PERCENT_MAX = 1;
     var requirePercent = (value, field) => {
-      if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 1) {
+      if (typeof value !== "number" || !Number.isFinite(value) || value < PERCENT_MIN || value > PERCENT_MAX) {
         throw new QuoteValidationError2("INVALID_PERCENTAGE", field);
       }
       return value;
@@ -539,7 +541,7 @@ var require_calculator = __commonJS({
         nonRenewalNoticeDate: formatDate(noticeDate)
       };
     };
-    var buildApproval = (input, largestDiscretionaryDiscount, committedArr, activeRules = rules, dealCategory2 = "new_business") => {
+    var buildApproval = (input, largestDiscretionaryDiscount, committedArr, activeRules = rules, dealCategory2 = "new_business", largestDiscretionaryUplift = 0) => {
       const reasons = [];
       const blockingReasons = [];
       let tier = "none";
@@ -548,20 +550,25 @@ var require_calculator = __commonJS({
       const isRenewal = dealCategory2 === "renewal";
       const firstTier = isRenewal ? activeRules.renewalFirstApprovalTier : activeRules.newBusinessFirstApprovalTier;
       const secondTier = isRenewal ? activeRules.renewalSecondApprovalTier : activeRules.newBusinessSecondApprovalTier;
-      if (largestDiscretionaryDiscount > 0 && largestDiscretionaryDiscount <= activeRules.salesDirectorDiscountMax) {
+      const largestRateDeparture = Math.max(
+        largestDiscretionaryDiscount,
+        largestDiscretionaryUplift
+      );
+      const departureLabel = largestDiscretionaryUplift > largestDiscretionaryDiscount ? "Discretionary uplift" : "Discretionary discount";
+      if (largestRateDeparture > 0 && largestRateDeparture <= activeRules.salesDirectorDiscountMax) {
         tier = firstTier;
         reasons.push(
-          `Discretionary discount is greater than 0% and no more than ${percentLabel(activeRules.salesDirectorDiscountMax)}.`
+          `${departureLabel} is greater than 0% and no more than ${percentLabel(activeRules.salesDirectorDiscountMax)}.`
         );
-      } else if (largestDiscretionaryDiscount > activeRules.salesDirectorDiscountMax && largestDiscretionaryDiscount <= activeRules.headSalesDiscountMax) {
+      } else if (largestRateDeparture > activeRules.salesDirectorDiscountMax && largestRateDeparture <= activeRules.headSalesDiscountMax) {
         tier = secondTier;
         reasons.push(
-          `Discretionary discount is greater than ${percentLabel(activeRules.salesDirectorDiscountMax)} and no more than ${percentLabel(activeRules.headSalesDiscountMax)}.`
+          `${departureLabel} is greater than ${percentLabel(activeRules.salesDirectorDiscountMax)} and no more than ${percentLabel(activeRules.headSalesDiscountMax)}.`
         );
-      } else if (largestDiscretionaryDiscount > activeRules.headSalesDiscountMax) {
+      } else if (largestRateDeparture > activeRules.headSalesDiscountMax) {
         tier = "finance";
         reasons.push(
-          `Discretionary discount is greater than ${percentLabel(activeRules.headSalesDiscountMax)}.`
+          `${departureLabel} is greater than ${percentLabel(activeRules.headSalesDiscountMax)}.`
         );
       }
       if (activeRules.financeApprovesFullDiscount && largestDiscretionaryDiscount >= 1) {
@@ -810,12 +817,17 @@ var require_calculator = __commonJS({
         ...listProfessionalServicesAmount > 0 ? [input.professionalServicesDiscount] : []
       ];
       const largestDiscretionaryDiscount = Math.max(0, ...effectiveDiscounts);
+      const largestDiscretionaryUplift = Math.max(
+        0,
+        ...effectiveDiscounts.map((discount) => -discount)
+      );
       const approval = buildApproval(
         input,
         largestDiscretionaryDiscount,
         committedArr,
         activeRules,
-        dealCategory2
+        dealCategory2,
+        largestDiscretionaryUplift
       );
       const legacyGuardrails = [];
       if (largestDiscretionaryDiscount > activeRules.headSalesDiscountMax && input.termMonths > 12) {
@@ -863,6 +875,7 @@ var require_calculator = __commonJS({
         listTcv,
         tcv,
         largestDiscretionaryDiscount,
+        largestDiscretionaryUplift,
         approvalTierRequired: approval.tier,
         approvalReasons: approval.reasons,
         blockingReasons: approval.blockingReasons,
@@ -2536,7 +2549,7 @@ var SAFE_ERRORS = Object.freeze({
   INVALID_OPTION: "The quote option contains invalid or incomplete information.",
   INVALID_QUOTE_CONTENT: "The quote display choices are invalid or incomplete.",
   LINE_ITEM_SYNC_FAILED: "HubSpot could not replace the Deal line items. Review the Deal before trying again.",
-  DISCOUNT_REASON_REQUIRED: "A discount reason is required when any discount is applied. Add one and try again.",
+  DISCOUNT_REASON_REQUIRED: "A reason is required when a rate departs from the rate card, in either direction. Add one and try again.",
   QUOTE_CONTACT_REQUIRED: "A contact is required on the Quote. Choose one on the pricing card, or associate a contact with this Deal.",
   QUOTE_TEMPLATE_NOT_CPQ: "That quote template is a legacy template and cannot be used. Choose a CPQ template on the card, or change which templates are offered in Settings > Quote Templates.",
   QUOTE_NOT_ADOPTABLE: "That quote can no longer be priced. It has to be a draft Change or Renewal quote on this Deal. Reload the card to see the current list.",
@@ -2846,6 +2859,11 @@ var summaryPercent = (fraction) => {
   const percent = Math.round(value * 1e4) / 100;
   return `${percent}%`;
 };
+var discountLabel = (fraction) => {
+  const percent = summaryPercent(Math.abs(Number(fraction) || 0));
+  if (!percent) return null;
+  return Number(fraction) < 0 ? `${percent} above list` : `${percent} off list`;
+};
 var summaryNumber = (value) => Number(value || 0).toLocaleString("en-US");
 var summaryDate = (iso) => {
   if (!iso || !/^\d{4}-\d{2}-\d{2}$/.test(iso)) return "not set";
@@ -2914,7 +2932,7 @@ var contractSummaryText = (option) => {
     const rate = line.displayProposedUnitRate ?? line.proposedUnitRate;
     const unit = line.unitOfMeasure ? ` ${line.unitOfMeasure}` : "";
     const discount = summaryPercent(line.discretionaryDiscount);
-    return `${line.productName || line.productKey}: ${summaryNumber(line.volume)}${unit}/month at ${summaryMoney(rate)} = ${summaryMoney(line.annualCommitment)}/year` + (discount ? ` (${discount} off list)` : "");
+    return `${line.productName || line.productKey}: ${summaryNumber(line.volume)}${unit}/month at ${summaryMoney(rate)} = ${summaryMoney(line.annualCommitment)}/year` + (discount ? ` (${discountLabel(line.discretionaryDiscount)})` : "");
   });
   out.push(...summarySection("PRODUCTS", productRows));
   const extraRows = [];
@@ -2954,12 +2972,15 @@ var contractSummaryText = (option) => {
   if (premium) discountRow("Payment frequency", `+${premium}`);
   const largest = summaryPercent(result.largestDiscretionaryDiscount);
   if (largest) discountRow("Largest line discount", largest);
+  const largestUplift = summaryPercent(result.largestDiscretionaryUplift);
+  if (largestUplift) discountRow("Largest line uplift", largestUplift);
   const effective = Number(result.listTcv) > 0 ? 1 - Number(result.tcv) / Number(result.listTcv) : 0;
   const blended = summaryPercent(effective);
   if (blended) {
+    const gap = Number(result.listTcv) - Number(result.tcv);
     discountRow(
       "Blended effective",
-      `${blended} (${summaryMoney(Number(result.listTcv) - Number(result.tcv))} off list)`
+      `${blended} (${summaryMoney(Math.abs(gap))} ${gap < 0 ? "above" : "off"} list)`
     );
   }
   out.push(...summarySection("DISCOUNTS", discountRows));
@@ -3132,9 +3153,13 @@ var lockLiveCalculation = async (client, dealId, state, parameters, portalId, se
     );
     throw new Error("PAYMENT_METHOD_REQUIRES_BANK_TRANSFER");
   }
-  if (result.largestDiscretionaryDiscount > 0 && String(parameters.discountReason || "").trim() === "") {
+  const largestRateDeparture = Math.max(
+    Number(result.largestDiscretionaryDiscount) || 0,
+    Number(result.largestDiscretionaryUplift) || 0
+  );
+  if (largestRateDeparture > 0 && String(parameters.discountReason || "").trim() === "") {
     console.warn(
-      `Nylas pricing: refused Lock in -- a discount of ${result.largestDiscretionaryDiscount} was entered with no discount reason.`
+      `Nylas pricing: refused Lock in -- a rate departure of ${largestRateDeparture} (discount ${result.largestDiscretionaryDiscount}, uplift ${result.largestDiscretionaryUplift}) was entered with no reason.`
     );
     throw new Error("DISCOUNT_REASON_REQUIRED");
   }
@@ -4446,6 +4471,17 @@ var priceExistingQuote = async (client, dealId, state, parameters, settings) => 
     seller: { ownerId: dealOwnerId || "", sent: Object.keys(sender) }
   };
 };
+var departureNote = (result) => {
+  const parts = [];
+  const pct = (value) => `${Math.round(Number(value) * 1e3) / 10}%`;
+  if (result.largestDiscretionaryDiscount) {
+    parts.push(`largest discount ${pct(result.largestDiscretionaryDiscount)}`);
+  }
+  if (result.largestDiscretionaryUplift) {
+    parts.push(`largest uplift ${pct(result.largestDiscretionaryUplift)}`);
+  }
+  return parts.length ? `  (${parts.join(", ")})` : "";
+};
 var calculatorDetails = ({
   generatedAt,
   quoteId,
@@ -4478,7 +4514,12 @@ var calculatorDetails = ({
       "Term / payment",
       `${option?.input?.termMonths || "-"} months, ${result.billingPeriod || "-"}`
     ),
-    row("Approval", `${result.approvalTierRequired || "none"}${result.largestDiscretionaryDiscount ? `  (largest discount ${Math.round(result.largestDiscretionaryDiscount * 1e3) / 10}%)` : ""}`),
+    // Both directions, because the ladder routes on whichever is larger. A tier with no figure
+    // beside it is the thing that makes an approval unreadable six months later.
+    row(
+      "Approval",
+      `${result.approvalTierRequired || "none"}${departureNote(result)}`
+    ),
     row("Committed ARR", money(result.committedArr)),
     row("TCV", money(result.tcv)),
     row("Line items", lineItemCount == null ? "-" : String(lineItemCount)),

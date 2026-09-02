@@ -1000,3 +1000,37 @@ test('the Agent Email line stays at quantity 0, because its tier units differ', 
     );
   }
 });
+
+// AN UPLIFT MUST NEVER REACH HUBSPOT AS A NEGATIVE hs_discount_percentage.
+//
+// HubSpot models a discounted line as list `price` plus a discount. It has no representation for a
+// line priced ABOVE list, so an uplifted line is sent at its uplifted price with no discount field
+// at all -- which is what priceProperties already does, because its guard is `list - net < 0.01`
+// rather than an inequality. That is load-bearing now rather than incidental, so it is asserted.
+test('an uplifted line is sent at its price with no discount field', () => {
+  const input = { ...option().input, productDiscounts: { connect_ca: -0.15 } };
+  const selected = { id: 'option-1', name: 'Uplift', input, result: calculateQuote(input) };
+  const content = normalizeQuoteContent({});
+  const everyLine = [
+    ...buildDealLineItems(selected),
+    ...buildQuoteLineItems(selected, content),
+  ];
+
+  let uplifted = 0;
+  for (const item of everyLine) {
+    const percentage = item.properties.hs_discount_percentage;
+    if (percentage != null) {
+      assert.ok(
+        Number(percentage) > 0,
+        `${item.key}: hs_discount_percentage ${percentage} must never be negative`,
+      );
+    }
+    if (!String(item.key).includes('connect')) continue;
+    uplifted += 1;
+    // The uplifted rate is the price, and netPrice reads it back unchanged -- no phantom discount
+    // is reconstructed from a field that is not there.
+    assert.equal(percentage, undefined, `${item.key} must carry no discount`);
+    assert.equal(netPrice(item.properties), Number(item.properties.price));
+  }
+  assert.ok(uplifted > 0, 'the fixture must actually produce an uplifted Connect line');
+});

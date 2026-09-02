@@ -253,7 +253,8 @@ const SAFE_ERRORS = Object.freeze({
   INVALID_QUOTE_CONTENT: 'The quote display choices are invalid or incomplete.',
   LINE_ITEM_SYNC_FAILED: 'HubSpot could not replace the Deal line items. Review the Deal before trying again.',
   DISCOUNT_REASON_REQUIRED:
-    'A discount reason is required when any discount is applied. Add one and try again.',
+    'A reason is required when a rate departs from the rate card, in either direction. Add one ' +
+    'and try again.',
   QUOTE_CONTACT_REQUIRED:
     'A contact is required on the Quote. Choose one on the pricing card, or associate a contact ' +
     'with this Deal.',
@@ -729,6 +730,16 @@ const summaryPercent = (fraction) => {
   return `${percent}%`;
 };
 
+// "12% off list" or "12% above list". A discretionary discount may be NEGATIVE -- an uplift, a rate
+// deliberately above the rate card, which renewals use to move a legacy rate back toward current
+// list. Printing that as "-12% off list" reads as a discount to anyone skimming, and this block is
+// read by whoever approves the deal. The sign is spent on the word, not left on the number.
+const discountLabel = (fraction) => {
+  const percent = summaryPercent(Math.abs(Number(fraction) || 0));
+  if (!percent) return null;
+  return Number(fraction) < 0 ? `${percent} above list` : `${percent} off list`;
+};
+
 const summaryNumber = (value) => Number(value || 0).toLocaleString('en-US');
 
 // 2026-10-01 -> 1 Oct 2026. Unambiguous across US and EU readers, which "10/01/2026" is not.
@@ -808,7 +819,7 @@ const contractSummaryText = (option) => {
         `${line.productName || line.productKey}: ` +
         `${summaryNumber(line.volume)}${unit}/month at ${summaryMoney(rate)} ` +
         `= ${summaryMoney(line.annualCommitment)}/year` +
-        (discount ? ` (${discount} off list)` : '')
+        (discount ? ` (${discountLabel(line.discretionaryDiscount)})` : '')
       );
     });
   out.push(...summarySection('PRODUCTS', productRows));
@@ -860,13 +871,23 @@ const contractSummaryText = (option) => {
   if (premium) discountRow('Payment frequency', `+${premium}`);
   const largest = summaryPercent(result.largestDiscretionaryDiscount);
   if (largest) discountRow('Largest line discount', largest);
+  // Its own row rather than a sign on the one above. The two are different facts -- what was given
+  // away, and how far above the rate card this went -- and a deal can hold both at once.
+  const largestUplift = summaryPercent(result.largestDiscretionaryUplift);
+  if (largestUplift) discountRow('Largest line uplift', largestUplift);
+
   const effective =
     Number(result.listTcv) > 0 ? 1 - Number(result.tcv) / Number(result.listTcv) : 0;
   const blended = summaryPercent(effective);
   if (blended) {
+    const gap = Number(result.listTcv) - Number(result.tcv);
+    // The percentage keeps its sign here -- this row is the audit figure, and a negative blended
+    // effective is the honest way to say the quote came out above list. Only the money is worded,
+    // because "-$10,722.26 off list" reads as a discount at a glance and this is what an approver
+    // skims.
     discountRow(
       'Blended effective',
-      `${blended} (${summaryMoney(Number(result.listTcv) - Number(result.tcv))} off list)`,
+      `${blended} (${summaryMoney(Math.abs(gap))} ${gap < 0 ? 'above' : 'off'} list)`,
     );
   }
   out.push(...summarySection('DISCOUNTS', discountRows));
@@ -1101,15 +1122,24 @@ const lockLiveCalculation = async (
   // support, onboarding and professional services -- so this catches a discount anywhere, not
   // just the deal-wide one. Verified against each surface individually.
   //
+  // UPLIFTS COUNT TOO, from 2026-09-02. Until the same day they did not, and the reasoning was
+  // sound at the time: an uplift auto-approved, and the reason box exists to justify giving money
+  // away. Making the approval ladder run on magnitude removed that premise -- a -5% entry now
+  // lands on a Sales Director's desk, and it must not land there reading "Discretionary uplift is
+  // greater than 0%" with no explanation attached. The rule is now the simpler one: anything that
+  // routes to an approver carries a reason. Holly, 2026-09-02.
+  //
   // Same position rule as the guard above: this is still ABOVE every write. The card blocks the
   // button too, but the card is not the only way in.
-  if (
-    result.largestDiscretionaryDiscount > 0 &&
-    String(parameters.discountReason || '').trim() === ''
-  ) {
+  const largestRateDeparture = Math.max(
+    Number(result.largestDiscretionaryDiscount) || 0,
+    Number(result.largestDiscretionaryUplift) || 0,
+  );
+  if (largestRateDeparture > 0 && String(parameters.discountReason || '').trim() === '') {
     console.warn(
-      'Nylas pricing: refused Lock in -- a discount of ' +
-        `${result.largestDiscretionaryDiscount} was entered with no discount reason.`,
+      'Nylas pricing: refused Lock in -- a rate departure of ' +
+        `${largestRateDeparture} (discount ${result.largestDiscretionaryDiscount}, uplift ` +
+        `${result.largestDiscretionaryUplift}) was entered with no reason.`,
     );
     throw new Error('DISCOUNT_REASON_REQUIRED');
   }
@@ -3301,6 +3331,21 @@ const priceExistingQuote = async (client, dealId, state, parameters, settings) =
 // intendedKind is the one thing here that exists ONLY as a record. Nothing branches on it -- see
 // quoteKindForTemplate in appSettings -- and when the API allows a real change or renewal quote,
 // this is the field that says which Deals were meant to be which.
+// "(largest discount 12%)", "(largest uplift 11%)", or both when a deal holds one of each. Reads
+// off the same two figures the approval ladder routes on, so the recorded line and the tier can
+// never disagree about why an approver was involved.
+const departureNote = (result) => {
+  const parts = [];
+  const pct = (value) => `${Math.round(Number(value) * 1000) / 10}%`;
+  if (result.largestDiscretionaryDiscount) {
+    parts.push(`largest discount ${pct(result.largestDiscretionaryDiscount)}`);
+  }
+  if (result.largestDiscretionaryUplift) {
+    parts.push(`largest uplift ${pct(result.largestDiscretionaryUplift)}`);
+  }
+  return parts.length ? `  (${parts.join(', ')})` : '';
+};
+
 const calculatorDetails = ({
   generatedAt,
   quoteId,
@@ -3334,11 +3379,12 @@ const calculatorDetails = ({
       'Term / payment',
       `${option?.input?.termMonths || '-'} months, ${result.billingPeriod || '-'}`,
     ),
-    row('Approval', `${result.approvalTierRequired || 'none'}${
-      result.largestDiscretionaryDiscount
-        ? `  (largest discount ${Math.round(result.largestDiscretionaryDiscount * 1000) / 10}%)`
-        : ''
-    }`),
+    // Both directions, because the ladder routes on whichever is larger. A tier with no figure
+    // beside it is the thing that makes an approval unreadable six months later.
+    row(
+      'Approval',
+      `${result.approvalTierRequired || 'none'}${departureNote(result)}`,
+    ),
     row('Committed ARR', money(result.committedArr)),
     row('TCV', money(result.tcv)),
     row('Line items', lineItemCount == null ? '-' : String(lineItemCount)),
