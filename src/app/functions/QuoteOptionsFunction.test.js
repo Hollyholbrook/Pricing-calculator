@@ -1262,6 +1262,108 @@ test('a lock writes the three ARR splits, and they sum to the committed ARR', as
   }
 });
 
+// THE FULL-TERM FEE BREAKDOWN, and HubSpot's own Amount.
+//
+// The portal's descriptions are explicit that these are whole-contract figures: "the sum of the
+// total fees over the full license term", "the full fees for the entirety of the two year term".
+// The trap is the two that are NOT multiplied -- onboarding and professional services are charged
+// once, and a 24-month term would double them.
+//
+// A 24-month term is used deliberately: at 12 months every one of these equals its annual figure
+// and the multiplication cannot be wrong.
+test('a lock writes the full-term fee breakdown, and the five sum to Amount', async () => {
+  const input = {
+    termMonths: 24,
+    paymentFrequency: 'quarterly_in_advance',
+    volumes: { connect_ca: 5_000, calendar_ca: 1_000 },
+    supportLevel: 'full',
+    onboardingPackage: 'quick_launch',
+    professionalServices: ['gtm_review', 'google_verification_review'],
+    addOns: ['privacy_filter', 'enterprise_accelerator'],
+    productDiscounts: { connect_ca: 0.05 },
+    addOnDiscounts: { privacy_filter: 0.25 },
+  };
+  const option = { id: 'selected-1', input, result: calculateQuote(input) };
+  const settings = normalizeSettings({
+    ...defaultSettings(),
+    enabledQuoteTemplateIds: ['567553820432'],
+    defaultQuoteTemplateId: '567553820432',
+  });
+
+  const client = generateQuoteClient();
+  await _test.lockLiveCalculation(
+    client,
+    'deal-1',
+    {
+      document: { options: [option] },
+      selectedOptionId: option.id,
+      selectedStateHash: option.result.stateHash,
+      dealType: 'newbusiness',
+      pipelineId: 'p1',
+      dealName: 'Test Co',
+    },
+    {
+      quoteContent: {},
+      contactId: '123',
+      input,
+      paymentMethod: 'ach',
+      discountReason: 'Competitive pressure on Connect.',
+    },
+    '45023718',
+    settings,
+  );
+
+  const written = client.dealWrites.find((props) => props.product_licensing_fees != null);
+  assert.ok(written, 'the lock must write the fee breakdown');
+
+  const licensing = Number(written.product_licensing_fees);
+  const addOns = Number(written.add_on_fees);
+  const support = Number(written.support_fees);
+  const onboarding = Number(written.onboarding_fees);
+  const services = Number(written.professional_services_fees);
+  const amount = Number(written.amount);
+
+  // The three recurring lines are the annual figure times the term in years.
+  assert.equal(licensing, option.result.proposedPlatformArr * 2);
+  assert.equal(addOns, option.result.annualAddOns * 2);
+  assert.equal(support, option.result.supportAnnual * 2);
+  // ...and each is genuinely bigger than the per-year property beside it, so a missing
+  // multiplication is not mistaken for a pass.
+  assert.ok(licensing > Number(written.enterprise_drawdown_commitment_arr));
+  assert.ok(addOns > Number(written.subscription_add_ons_arr));
+  assert.ok(support > Number(written.subscription_support_arr));
+
+  // The two one-time lines are NOT multiplied. This is the assertion that catches the obvious
+  // wrong fix of applying the term to everything.
+  assert.equal(onboarding, option.result.onboardingAmount);
+  assert.equal(services, option.result.professionalServicesAmount);
+  assert.equal(
+    Math.round((onboarding + services) * 100) / 100,
+    option.result.oneTime,
+    'onboarding plus professional services IS the one-time total, charged once',
+  );
+
+  // Amount is the total contract value, and the five parts add up to it. A term applied to the
+  // wrong line, or a list figure substituted for a charged one, breaks here.
+  assert.equal(amount, option.result.tcv);
+  assert.equal(
+    Math.round((licensing + addOns + support + onboarding + services) * 100) / 100,
+    amount,
+  );
+  assert.equal(Number(written.pricing_tcv), amount);
+
+  for (const [name, value] of Object.entries({
+    product_licensing_fees: written.product_licensing_fees,
+    add_on_fees: written.add_on_fees,
+    support_fees: written.support_fees,
+    onboarding_fees: written.onboarding_fees,
+    professional_services_fees: written.professional_services_fees,
+    amount: written.amount,
+  })) {
+    assert.match(String(value), /^-?\d+(\.\d+)?$/, `${name} must be a bare number, got ${value}`);
+  }
+});
+
 test('the three ARR splits are guarded like every other externally-named property', () => {
   const source = require('node:fs').readFileSync(
     require('node:path').join(__dirname, 'QuoteOptionsFunction.js'),
@@ -1277,9 +1379,20 @@ test('the three ARR splits are guarded like every other externally-named propert
     'enterprise_drawdown_commitment_arr',
     'subscription_add_ons_arr',
     'subscription_support_arr',
+    'product_licensing_fees',
+    'add_on_fees',
+    'support_fees',
+    'onboarding_fees',
+    'professional_services_fees',
   ]) {
     assert.ok(list.includes(name), `${name} must be in UNVERIFIED_DEAL_PROPERTIES`);
   }
+  // `amount` must NOT be guarded. It is HubSpot-defined and present in every portal, so a
+  // rejection naming it means something is wrong that silently dropping it would hide.
+  assert.ok(
+    !/'amount'/.test(list),
+    'amount is a standard property and must not be in the drop list',
+  );
 });
 
 test('the discount reason guard runs before anything is written', () => {

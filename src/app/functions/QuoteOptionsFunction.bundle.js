@@ -2514,7 +2514,15 @@ var UNVERIFIED_DEAL_PROPERTIES = [
   // can be renamed, and this update runs after the Deal's line items are already archived.
   "enterprise_drawdown_commitment_arr",
   "subscription_add_ons_arr",
-  "subscription_support_arr"
+  "subscription_support_arr",
+  // The full-term fee breakdown, added the same day and confirmed the same way. `amount` is
+  // deliberately NOT here: it is a HubSpot-defined Deal property present in every portal, so a
+  // rejection naming it would mean something is wrong that dropping it would hide.
+  "product_licensing_fees",
+  "add_on_fees",
+  "support_fees",
+  "onboarding_fees",
+  "professional_services_fees"
 ];
 var choiceProperty = ({ property, values }, choice) => {
   if (!property) return {};
@@ -3055,6 +3063,32 @@ var buildSelectedProperties = (option, approvalStatus) => {
     enterprise_drawdown_commitment_arr: String(result.proposedPlatformArr),
     subscription_add_ons_arr: String(result.annualAddOns),
     subscription_support_arr: String(result.supportAnnual),
+    // THE SAME MONEY, OVER THE FULL TERM. The three ARR properties above are per year; these five
+    // are what the contract is worth in total, and they are what the portal's own descriptions ask
+    // for -- "the sum of the total fees over the full license term", "the full fees for the
+    // entirety of the two year term".
+    //
+    // The recurring three are multiplied by the term in years. Onboarding and professional
+    // services are one-time and are NOT: onboarding is "invoiced in advance at the contract start
+    // date in its entirety", and multiplying either by the term would double-count a fee charged
+    // once. The workbook agrees -- Contract Summary L49 and L50 are `=I49` and `=I50`, the
+    // one-time column copied across, while L51 to L53 are `K x D70`.
+    //
+    // All five sum to `amount` by construction, and a test asserts it.
+    product_licensing_fees: String(feesForTerm(result.proposedPlatformArr, input.termMonths)),
+    add_on_fees: String(feesForTerm(result.annualAddOns, input.termMonths)),
+    support_fees: String(feesForTerm(result.supportAnnual, input.termMonths)),
+    onboarding_fees: String(result.onboardingAmount),
+    professional_services_fees: String(result.professionalServicesAmount),
+    // HubSpot's own Deal Amount, deliberately. Confirmed on 2026-09-02 that this portal does NOT
+    // calculate it from line items: deal 60785797504 has the app's line items on it and an EMPTY
+    // amount, and deal 41084207764 carries 357,800 against a pricing_tcv of 412,400. So nothing
+    // was maintaining it and it had already drifted.
+    //
+    // Written AFTER the properties but BEFORE syncDealLineItems, which is the order that matters
+    // if that portal setting is ever turned on -- a rollup would then land last and win. If Amount
+    // starts disagreeing with pricing_tcv again, that setting is the first thing to check.
+    amount: String(result.tcv),
     pricing_arr: String(result.committedArr),
     pricing_tcv: String(result.tcv),
     pricing_list_price_tcv: String(result.listTcv),
@@ -3108,6 +3142,7 @@ var buildSelectedProperties = (option, approvalStatus) => {
   }
   return properties;
 };
+var feesForTerm = (annualAmount, termMonths) => Math.round(Number(annualAmount) * (Number(termMonths) / 12) * 100) / 100;
 var roundForProperty = (value) => Math.round((value + Number.EPSILON) * 1e4) / 1e4;
 var assertCurrentSettings = (option, settings) => {
   if (option?.result?.settingsVersion !== settings.version) {
