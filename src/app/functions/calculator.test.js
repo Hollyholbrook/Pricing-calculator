@@ -1034,3 +1034,184 @@ test('every blocking reason is a sentence, not an identifier', () => {
     assert.ok(reason.includes(' '), `"${reason}" should be words, not a token`);
   }
 });
+
+// ===========================================================================
+// Rep-entered list prices  (Holly, 2026-09-03)
+// ===========================================================================
+//
+// EXECUTED, not read. Each of these runs calculateQuote and checks what it charged, what it
+// routed to and what it recorded. Every one was mutation-checked.
+//
+// The design under test: an entered price is stored ABSOLUTE (not as a percentage of a moving
+// base -- Holly's flat-override note rejected that), and its implied departure from the catalogue
+// price is fed into the SAME signed-percentage channel a typed discount uses. That is what makes
+// it inherit the approval ladder, the blocking rules and the reason guard with no new machinery.
+
+const overrideBase = () => ({
+  termMonths: 12,
+  paymentFrequency: 'annual_in_advance',
+  volumes: { connect_ca: 5000 },
+  supportLevel: 'full',
+  onboardingPackage: 'quick_launch',
+  professionalServices: [],
+  addOns: [],
+});
+
+test('an entered onboarding price is what gets charged', () => {
+  const withoutOverride = calculateQuote(overrideBase());
+  assert.equal(withoutOverride.onboardingAmount, 5000, 'the catalogue price, for contrast');
+
+  const overridden = calculateQuote({
+    ...overrideBase(),
+    listPriceOverrides: { onboarding: 3500 },
+  });
+  assert.equal(overridden.onboardingAmount, 3500);
+  // Both figures kept, so the quote's history stays auditable.
+  assert.equal(overridden.catalogueOnboardingList, 5000);
+  assert.equal(overridden.effectiveOnboardingList, 3500);
+  // 3500 off a 5000 catalogue price is a 30% discount, and it is reported as one.
+  assert.equal(overridden.onboardingOverrideDeparture, 0.3);
+  // And it moved the deal's total, not just a display field.
+  assert.equal(overridden.tcv, round(withoutOverride.tcv - 1500, 2));
+});
+
+test('an entered price routes to an approver, exactly as the same discount would', () => {
+  // 3500 against 5000 is 30%. Typing a 30% onboarding discount and entering 3500 must land on the
+  // same approver -- that equivalence is the whole design.
+  const typed = calculateQuote({ ...overrideBase(), onboardingDiscount: 0.3 });
+  const entered = calculateQuote({
+    ...overrideBase(),
+    listPriceOverrides: { onboarding: 3500 },
+  });
+  assert.equal(entered.approvalTierRequired, typed.approvalTierRequired);
+  assert.notEqual(entered.approvalTierRequired, 'none', 'a 30% departure cannot auto-approve');
+  assert.equal(entered.largestDiscretionaryDiscount, 0.3);
+  assert.equal(entered.onboardingAmount, typed.onboardingAmount);
+});
+
+test('an entered price ABOVE the catalogue price is an uplift, not a discount', () => {
+  const uplifted = calculateQuote({
+    ...overrideBase(),
+    listPriceOverrides: { onboarding: 6000 },
+  });
+  assert.equal(uplifted.onboardingAmount, 6000);
+  // -20%: the customer pays more. Reported on the uplift side, never as a discount given.
+  assert.equal(uplifted.onboardingOverrideDeparture, -0.2);
+  assert.equal(uplifted.largestDiscretionaryDiscount, 0);
+  assert.equal(uplifted.largestDiscretionaryUplift, 0.2);
+  // Still routes -- since 2026-09-02 the ladder runs on magnitude, so an uplift needs an approver
+  // and therefore a reason.
+  assert.notEqual(uplifted.approvalTierRequired, 'none');
+});
+
+test('a flat support price replaces the calculated one, and is capped', () => {
+  const calculated = calculateQuote(overrideBase());
+  // Full support is 10% of proposed platform ARR, capped at 10,000.
+  assert.ok(calculated.supportAnnual > 0);
+
+  // A flat figure at or below the cap is honoured -- this is Shane's flat support override.
+  const flat = calculateQuote({
+    ...overrideBase(),
+    listPriceOverrides: { support: 10000 },
+  });
+  assert.equal(flat.supportAnnual, 10000);
+  assert.equal(flat.effectiveSupportList, 10000);
+  assert.equal(flat.catalogueSupportList, calculated.supportAnnual);
+  assert.deepEqual(flat.blockingReasons, [], 'at the cap is allowed, not blocked');
+
+  // Above the cap is REFUSED. Holly, 2026-09-03: block above the cap.
+  const breached = calculateQuote({
+    ...overrideBase(),
+    listPriceOverrides: { support: 12000 },
+  });
+  assert.equal(breached.blockingReasons.length, 1);
+  assert.match(breached.blockingReasons[0], /exceeds the \$10,000 cap/);
+  assert.equal(breached.calculationStatus, 'blocked');
+});
+
+test('Basic support cannot be given a price, because its cap is zero', () => {
+  // Support the rate card gives away is not something a rep may start charging for by typing a
+  // number. Falls out of the cap rule rather than being a special case.
+  const blocked = calculateQuote({
+    ...overrideBase(),
+    supportLevel: 'basic',
+    listPriceOverrides: { support: 5000 },
+  });
+  assert.equal(blocked.calculationStatus, 'blocked');
+  assert.match(blocked.blockingReasons[0], /exceeds the \$0 cap/);
+});
+
+test('an entered add-on price still takes the term discount and payment premium', () => {
+  // Overriding a price does not opt the line out of the deal's own terms.
+  const base = { ...overrideBase(), termMonths: 24, addOns: ['shared_oauth_app'] };
+  const catalogue = calculateQuote(base);
+  const overridden = calculateQuote({
+    ...base,
+    listPriceOverrides: { addOns: { shared_oauth_app: 1200 } },
+  });
+  const addOn = overridden.selectedAddOns.find(({ key }) => key === 'shared_oauth_app');
+  assert.equal(addOn.catalogueAnnualAmount, 2400);
+  assert.equal(addOn.effectiveAnnualAmount, 1200);
+  assert.equal(addOn.overrideDeparture, 0.5);
+  // Half the price, and the 24-month term discount is still applied on top of the entered figure.
+  assert.equal(addOn.annualAmount, round(catalogue.selectedAddOns[0].annualAmount / 2, 2));
+  assert.equal(overridden.largestDiscretionaryDiscount, 0.5);
+});
+
+test('an entered professional-services price replaces the bundle ladder figure', () => {
+  const base = { ...overrideBase(), professionalServices: ['gtm_review', 'provider_oauth_app_creation'] };
+  const catalogue = calculateQuote(base);
+  // Two services price at 3,800 -- the ladder, with its volume break.
+  assert.equal(catalogue.professionalServicesAmount, 3800);
+
+  const overridden = calculateQuote({
+    ...base,
+    listPriceOverrides: { professionalServices: 3000 },
+  });
+  assert.equal(overridden.professionalServicesAmount, 3000);
+  assert.equal(overridden.catalogueProfessionalServicesList, 3800);
+  assert.equal(overridden.effectiveProfessionalServicesList, 3000);
+});
+
+test('an entered price where the catalogue charges nothing goes to the top of the ladder', () => {
+  // There is no percentage of zero. A price with no rate-card basis at all takes the maximum
+  // uplift, which is the right place for it.
+  const priced = calculateQuote({
+    ...overrideBase(),
+    onboardingPackage: 'none',
+    listPriceOverrides: { onboarding: 2500 },
+  });
+  assert.equal(priced.onboardingAmount, 2500);
+  assert.equal(priced.onboardingOverrideDeparture, -1);
+  assert.equal(priced.largestDiscretionaryUplift, 1);
+  assert.equal(priced.approvalTierRequired, 'finance');
+});
+
+test('a bad override is refused rather than silently dropped', () => {
+  // A silently ignored override is a price the rep typed, saw accepted, and did not get.
+  assert.throws(
+    () => calculateQuote({ ...overrideBase(), listPriceOverrides: { addOns: { not_a_real_addon: 100 } } }),
+    (error) => error.field === 'listPriceOverrides.addOns',
+  );
+  assert.throws(
+    () => calculateQuote({ ...overrideBase(), listPriceOverrides: { onboarding: -5 } }),
+    (error) => error.code === 'INVALID_AMOUNT',
+  );
+  assert.throws(
+    () => calculateQuote({ ...overrideBase(), listPriceOverrides: { nonsense: 1 } }),
+    (error) => error.code === 'UNSUPPORTED_FIELD',
+  );
+});
+
+test('no overrides changes nothing, and leaves the state hash alone', () => {
+  // The parity guarantee. An empty map must not even appear on the normalized input, or every
+  // stored option in the portal goes stale the moment this deploys.
+  const plain = calculateQuote(overrideBase());
+  const emptyMap = calculateQuote({ ...overrideBase(), listPriceOverrides: {} });
+  assert.equal(emptyMap.stateHash, plain.stateHash);
+  assert.equal(emptyMap.tcv, plain.tcv);
+  assert.deepEqual(emptyMap.listPriceOverrides, {});
+  // And a real override MUST re-hash, or line items would go stale-free against a changed price.
+  const overridden = calculateQuote({ ...overrideBase(), listPriceOverrides: { onboarding: 4000 } });
+  assert.notEqual(overridden.stateHash, plain.stateHash);
+});

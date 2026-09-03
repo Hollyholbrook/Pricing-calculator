@@ -3,7 +3,6 @@ import {
   Alert,
   AutoGrid,
   Box,
-  Card,
   Checkbox,
   DateInput,
   Divider,
@@ -59,6 +58,36 @@ interface QuoteInput {
   redliningRequested: boolean;
   nonStandardTerms: boolean;
   specialTerms: string;
+  // Rep-entered list prices, absolute rather than percentages -- see calculator.js. Absent when
+  // nothing is overridden, which is what keeps the state hash identical for untouched deals.
+  listPriceOverrides?: {
+    support?: number;
+    onboarding?: number;
+    professionalServices?: number;
+    addOns?: Record<string, number>;
+  };
+}
+
+// THE CATALOGUE, built server-side. Phase 1 of the configurable-calculator work: the card renders
+// what it is given instead of restating every product, price and unit as a literal. Nothing in the
+// table below hard-codes a name, a price, a billing unit or an available option.
+interface CatalogEntry {
+  key: string;
+  label: string;
+  billingUnit?: string;
+  listPrice?: number | null;
+  deprecated?: boolean;
+  percentOfPlatformArr?: number;
+  annualCap?: number;
+}
+
+interface Catalog {
+  products: CatalogEntry[];
+  support: CatalogEntry[];
+  onboarding: CatalogEntry[];
+  addOns: CatalogEntry[];
+  professionalServices: CatalogEntry[];
+  professionalServicesLadder: { itemCount: number; listPrice: number }[];
 }
 
 interface QuoteLine {
@@ -106,6 +135,9 @@ interface QuoteAddOn {
   proposedMonthlyAmount: number;
   listAnnualAmount: number;
   annualAmount: number;
+  catalogueAnnualAmount?: number;
+  effectiveAnnualAmount?: number;
+  overrideDeparture?: number;
 }
 
 interface QuoteResult {
@@ -121,6 +153,22 @@ interface QuoteResult {
   proposedPlatformArr: number;
   listSupportAnnual: number;
   supportAnnual: number;
+  // What the rate card computed, and what is actually being charged. Both, so the table can show
+  // the editable figure without recomputing anything the server already knows.
+  catalogueSupportList?: number;
+  effectiveSupportList?: number;
+  catalogueOnboardingList?: number;
+  effectiveOnboardingList?: number;
+  catalogueProfessionalServicesList?: number;
+  effectiveProfessionalServicesList?: number;
+  // How far each entered price sits from the catalogue price, signed the same way a typed
+  // discount is: positive is below the rate card, negative is an uplift above it. The server
+  // computes these (impliedDeparture) and routes on them; the card reads them rather than
+  // recomputing, because support and Professional Services list prices depend on the deal's ARR
+  // and a UI-side reimplementation would drift from the figure the approval ladder actually used.
+  supportOverrideDeparture?: number;
+  onboardingOverrideDeparture?: number;
+  professionalServicesOverrideDeparture?: number;
   selectedAddOns: QuoteAddOn[];
   listAnnualAddOns: number;
   annualAddOns: number;
@@ -264,6 +312,16 @@ interface ServerlessBody {
   } | null;
   contacts?: { id: string; label: string }[];
   contactSource?: "deal" | "company" | "none";
+  catalog?: Catalog;
+  contracts?: { id: string; label: string; status: string; endDate: string }[];
+  contractSource?:
+    | "company"
+    | "company_none_quotable"
+    | "company_has_none"
+    | "no_company"
+    | "read_failed"
+    | "not_renewal";
+  contractsRead?: boolean;
   companyName?: string;
   // The Internal quote status the generated quote ended up with. Reported because HubSpot's
   // approval workflow enrols on it -- a quote that needed approval and did not get the status is
@@ -394,20 +452,6 @@ const permittedPaymentMethodOptions = (requiresBankTransfer: boolean) =>
 
 const DEFAULT_PAYMENT_METHOD = "credit_card";
 
-const supportOptions = [
-  { value: "basic", label: "Basic" },
-  { value: "full", label: "Full" },
-  { value: "premium", label: "Premium" },
-];
-
-const onboardingOptions = [
-  // Onboarding is optional; "None" produces no onboarding line item.
-  { value: "none", label: "None" },
-  { value: "quick_launch", label: "Quick Launch" },
-  { value: "quick_launch_plus", label: "Quick Launch Plus" },
-  { value: "strategic", label: "Strategic Onboarding" },
-];
-
 // The Accelerator Package is PRO ANNUAL only. On Enterprise its contents are already in the
 // contract, and the one paid Enterprise add-on is the Shared OAuth App -- same $2,400.
 const addOnOptions = [
@@ -450,23 +494,6 @@ const RETIRED_ADD_ONS = ["enterprise_accelerator"];
 const sellableAddOns = (selected: readonly string[]) =>
   selected.filter((value) => !RETIRED_ADD_ONS.includes(String(value)));
 
-const professionalServiceOptions = [
-  { value: "google_verification_review", label: "Google Verification Review" },
-  {
-    value: "architecture_workflow_review",
-    label: "Architecture Design & Workflow Review",
-  },
-  { value: "gtm_review", label: "Go-to-Market Review" },
-  {
-    value: "provider_oauth_app_creation",
-    label: "Provider OAuth App Creation",
-  },
-  {
-    value: "notification_webhook_best_practices",
-    label: "Notification & Webhook Best Practices",
-  },
-];
-
 // Every column has an explicit pixel width and none of them is "max".
 //
 // "max" takes ALL the slack, so whichever column carries it becomes enormous and every other
@@ -489,6 +516,29 @@ const VOLUME_COLUMN_WIDTH = 180;
 const LIST_RATE_COLUMN_WIDTH = 240;
 const DISCOUNT_COLUMN_WIDTH = 110;
 const PROPOSED_RATE_COLUMN_WIDTH = 200;
+
+// The Services and Pricing table carries a SIXTH column -- the catalogue price, read-only,
+// beside the box that overrides it. Holly, 2026-09-03: "make another column of the list price
+// (Not editable) and then the override box next to it." One editable cell could not show both,
+// so once a rep typed a price the rate card figure it departed from was gone from the screen.
+//
+// Its own constants rather than the commitments table's, so widening a services column cannot
+// silently reflow the table above. The total is still 1030, so the two still line up.
+// TOTAL 910, DOWN FROM 1030. The card renders in a panel narrower than the table asked for, and
+// HubSpot compresses every column to fit -- so an over-wide total is paid for by whichever column
+// yields, which was Product. At ~130px it wrapped one word per line: Onboardin/g,
+// Professiona/l Services. Holly, 2026-09-03: "Don't let this happen visually."
+//
+// The Selection column is the reason. A MultiSelect will not shrink below its chips, so a 180
+// hint it could not honour was taken out of its neighbours. 200 is closer to what it actually
+// occupies, and the money columns give up the rest -- every column label is ONE WORD now, so
+// they need less width. A two-word label wrapped even at 140.
+const SERVICE_PRODUCT_WIDTH = 280;
+const SERVICE_SELECTION_WIDTH = 200;
+const SERVICE_LIST_WIDTH = 100;
+const SERVICE_OVERRIDE_WIDTH = 120;
+const SERVICE_DISCOUNT_WIDTH = 100;
+const SERVICE_PROPOSED_WIDTH = 110;
 
 // The quote template to fall back on by NAME, when the configured default id is not among the
 // portal's templates -- a wrong id, a template recreated, or a portal that never had it. The
@@ -624,9 +674,6 @@ const rateCurrency = (value?: number) =>
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   }).format(value || 0);
-
-const percent = (value?: number) =>
-  `${Math.round((value || 0) * 10_000) / 100}%`;
 
 // A zero in this table means "not part of this deal". The workbook prints a dash rather than
 // $0 for those, which keeps the eye on the rows that carry money.
@@ -924,6 +971,14 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
     "deal" | "company" | "none"
   >("none");
   const [contactId, setContactId] = useState("");
+  // Contracts arrive only on a renewal-category Deal -- the server decides that, not the card.
+  const [catalog, setCatalog] = useState<Catalog | null>(null);
+  const [contracts, setContracts] = useState<
+    { id: string; label: string; status: string; endDate: string }[]
+  >([]);
+  const [contractSource, setContractSource] = useState<string>("not_renewal");
+  const [contractsRead, setContractsRead] = useState(true);
+  const [contractId, setContractId] = useState("");
   const [dealOwnerId, setDealOwnerId] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
   const [unsupportedDeal, setUnsupportedDeal] = useState(false);
@@ -942,6 +997,25 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
         if (current !== "") return current;
         const dealContacts = body.dealContactIds || [];
         return dealContacts.length === 1 ? String(dealContacts[0]) : "";
+      });
+    }
+    if (body.catalog) setCatalog(body.catalog);
+    if (body.contracts) {
+      // Captured to a const: the narrowing from the `if` is lost inside the setContractId
+      // callback below, which runs later.
+      const offered = body.contracts;
+      setContracts(offered);
+      setContractSource(body.contractSource || "not_renewal");
+      setContractsRead(body.contractsRead !== false);
+      // DEFAULT TO THE ONLY CONTRACT. Holly, 2026-09-03: "Defaulting to the one they have, if they
+      // have more than one then they need to pick which one."
+      //
+      // Two or more stays empty ON PURPOSE. Picking one of several on the rep's behalf is a guess
+      // about the customer's paperwork, and a wrong contract on a renewal is worse than an empty
+      // picker. The rep's own choice always wins -- `current || only`, never the other way round.
+      setContractId((current) => {
+        if (current !== "") return current;
+        return offered.length === 1 ? String(offered[0].id) : "";
       });
     }
     // Restore the stored discount reason. Only when the box is still untouched, so a later
@@ -1093,17 +1167,22 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dealId]);
 
+  // FUNCTIONAL, not a spread of the captured `editing`. Two field writes in one handler is a
+  // real pattern here -- removing an add-on clears its price override too -- and with
+  // `setEditing({...editing})` both calls read the same stale object in the same React batch,
+  // so the second silently discarded the first. That is why "Remove" on an add-on appeared to
+  // do nothing: the row was filtered out, then immediately overwritten by the override write.
+  // Holly, 2026-09-03.
   const updateInput = <K extends keyof QuoteInput>(
     field: K,
     value: QuoteInput[K],
   ) => {
-    if (!editing) return;
-    setEditing({
-      ...editing,
+    setEditing((current) => ({
+      ...current,
       status: "draft",
       result: undefined,
-      input: { ...editing.input, [field]: value },
-    });
+      input: { ...current.input, [field]: value },
+    }));
   };
 
   // Retired add-ons are stripped from EVERY input that leaves this card, not just from the
@@ -1138,6 +1217,7 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
         discountReason,
         replaceExistingQuote,
         contactId,
+        contractId,
         // Empty means create a new quote. Set means put this pricing on the HubSpot-made Change
         // or Renewal quote the rep chose.
       });
@@ -1248,6 +1328,12 @@ const NylasPricingBuilder = ({ context, actions }: CrmExtensionProps) => {
         contactSource={contactSource}
         contactId={contactId}
         onContactChange={setContactId}
+        catalog={catalog}
+        contracts={contracts}
+        contractSource={contractSource}
+        contractsRead={contractsRead}
+        contractId={contractId}
+        onContractChange={setContractId}
         replaceExistingQuote={replaceExistingQuote}
         onReplaceExistingQuoteChange={setReplaceExistingQuote}
         onPreview={previewQuote}
@@ -1277,6 +1363,12 @@ const OptionEditor = ({
   contactSource,
   contactId,
   onContactChange,
+  catalog,
+  contracts,
+  contractSource,
+  contractsRead,
+  contractId,
+  onContractChange,
   replaceExistingQuote,
   onReplaceExistingQuoteChange,
   onPreview,
@@ -1304,6 +1396,12 @@ const OptionEditor = ({
   contactSource: "deal" | "company" | "none";
   contactId: string;
   onContactChange: (value: string) => void;
+  catalog: Catalog | null;
+  contracts: { id: string; label: string; status: string; endDate: string }[];
+  contractSource: string;
+  contractsRead: boolean;
+  contractId: string;
+  onContractChange: (value: string) => void;
   replaceExistingQuote: boolean;
   onReplaceExistingQuoteChange: (checked: boolean) => void;
   onPreview: (input: QuoteInput) => Promise<QuoteResult>;
@@ -1375,13 +1473,35 @@ const OptionEditor = ({
   // and it must not reach them with no explanation. Anything that routes to an approver carries a
   // reason. Holly, 2026-09-02.
   const departed = (value: number | undefined) => (value || 0) !== 0;
+  // AN ENTERED PRICE HAS TO BE EXPLAINED TOO. Holly, 2026-09-03: "If the rep puts in a price
+  // that's not the unit price we need to ask why."
+  //
+  // The server already refuses one -- lockLiveCalculation routes on largestDiscretionaryDiscount
+  // and largestDiscretionaryUplift, and an override's implied departure is folded into both. But
+  // being refused on Lock in is not being ASKED: the rep would type a price, press the button and
+  // read an error about a reason field they were never shown. So the card asks, and the server
+  // stays as the guard behind it.
+  //
+  // Read from the preview rather than from the entry: an override equal to the catalogue price
+  // implies a departure of 0 and needs no reason, and for support and Professional Services the
+  // catalogue price is a function of the deal's ARR, which only the server has computed. Lock in
+  // is already disabled while a preview is stale (see !pricingIsCurrent below), so there is no
+  // window in which the button is pressable before these figures have arrived.
+  const enteredPriceDeparted =
+    departed(previewResult?.supportOverrideDeparture) ||
+    departed(previewResult?.onboardingOverrideDeparture) ||
+    departed(previewResult?.professionalServicesOverrideDeparture) ||
+    (previewResult?.selectedAddOns || []).some(({ overrideDeparture }) =>
+      departed(overrideDeparture),
+    );
   const hasAnyDiscount =
     Object.values(option.input.productDiscounts || {}).some(departed) ||
     Object.values(option.input.addOnDiscounts || {}).some(departed) ||
     departed(option.input.supportDiscount) ||
     departed(option.input.onboardingDiscount) ||
     departed(option.input.professionalServicesDiscount) ||
-    departed(option.input.discretionaryDiscount);
+    departed(option.input.discretionaryDiscount) ||
+    enteredPriceDeparted;
   // WHICH discounts, by name. hasAnyDiscount only says "somewhere", and "somewhere" sent a rep
   // hunting a long form for a field they were sure they had not touched. Naming them turns
   // "why is this required" into "because Notetaker is at 15%". Holly, 2026-08-28.
@@ -1427,82 +1547,37 @@ const OptionEditor = ({
     ...(departed(option.input.discretionaryDiscount)
       ? [`Deal-wide ${departureLabel(option.input.discretionaryDiscount || 0)}`]
       : []),
+    // Named as an ENTERED PRICE, not as a discount. A rep who typed 3,500 into the Onboarding row
+    // did not type a percentage anywhere, and "Onboarding 30%" would send them hunting for a
+    // discount field they never touched -- the same failure this list was written to fix.
+    ...(departed(previewResult?.supportOverrideDeparture)
+      ? [
+          `Support entered price ${departureLabel(
+            previewResult?.supportOverrideDeparture || 0,
+          )} from list`,
+        ]
+      : []),
+    ...(departed(previewResult?.onboardingOverrideDeparture)
+      ? [
+          `Onboarding entered price ${departureLabel(
+            previewResult?.onboardingOverrideDeparture || 0,
+          )} from list`,
+        ]
+      : []),
+    ...(departed(previewResult?.professionalServicesOverrideDeparture)
+      ? [
+          `Professional Services entered price ${departureLabel(
+            previewResult?.professionalServicesOverrideDeparture || 0,
+          )} from list`,
+        ]
+      : []),
+    ...(previewResult?.selectedAddOns || [])
+      .filter(({ overrideDeparture }) => departed(overrideDeparture))
+      .map(
+        ({ label, overrideDeparture }) =>
+          `${label} entered price ${departureLabel(overrideDeparture || 0)} from list`,
+      ),
   ];
-  // The two pre-approved adjustments, named only when they are non-zero. They are what make a
-  // List figure differ from the rate card amount, and neither is a concession the rep chose.
-  const termDiscountLabel = () => {
-    const term = previewResult?.termDiscount || 0;
-    return term > 0
-      ? ` · ${option.input.termMonths}-month −${asPercent(term)}`
-      : "";
-  };
-  const paymentPremiumLabel = () => {
-    const premium = previewResult?.paymentPremium || 0;
-    if (premium <= 0) return "";
-    const label =
-      paymentOptions.find(
-        ({ value }) => value === option.input.paymentFrequency,
-      )?.label || "Payment";
-    return ` · ${label} +${asPercent(premium)}`;
-  };
-
-  const discountPreview = (
-    listAmount: number | undefined,
-    discount: number,
-    proposedAmount: number | undefined,
-    unit: string,
-    rateCardAmount?: number,
-  ) => {
-    if (listAmount == null || proposedAmount == null) {
-      return (
-        <Text variant="microcopy">
-          Complete the pricing inputs to preview this amount.
-        </Text>
-      );
-    }
-    // A figure that belongs to a DIFFERENT configuration is worse than no figure.
-    //
-    // previewResult is whatever preview last returned, and it is rendered whether or not it
-    // matches what is on screen now. Selecting Quick Launch Plus showed "$5,000" -- the amount for
-    // Quick Launch, which had been selected a moment earlier -- and then "$15,000", from Strategic
-    // before that. The correct $10,000 never appeared, and nothing on the line said the number was
-    // stale. A rep reading that would quote the wrong onboarding fee.
-    //
-    // The Contract Summary already shows "Updating pricing..." while a preview is in flight, but it
-    // sits at the top of the card, nowhere near these inline amounts.
-    if (!pricingIsCurrent) {
-      return <Text variant="microcopy">Updating…</Text>;
-    }
-    // WHY List differs from the rate card, when it does.
-    //
-    // "Shared Google OAuth App is set to 2,400 in the settings but it's saying List $2,544" --
-    // Holly, 2026-09-01. Both figures were right: 2,400 is the RATE CARD amount and 2,544 is it
-    // after the pre-approved adjustments (12-month term 0%, quarterly in advance +6%). The card
-    // showed only the adjusted number, so a correct figure read as a wrong one.
-    //
-    // The workbook prints Rate Card, Multi-Year Discount and Pmt Frequency Adjustment as their own
-    // columns before List rate. This says the same thing in one line, and only when the
-    // adjustments actually move the number.
-    const adjustment =
-      rateCardAmount != null && Math.abs(rateCardAmount - listAmount) > 0.005
-        ? `Rate card ${currency(rateCardAmount)}${termDiscountLabel()}${paymentPremiumLabel()} · `
-        : "";
-    // A NEGATIVE discount is an uplift: a rate above list, which renewals use to move a legacy
-    // rate back toward the current rate card. "-10% discount saves -$1,200" is arithmetically
-    // right and unreadable, and this line is what a rep checks their own entry against. The sign
-    // is spent on the wording instead, and the amount is always shown positive.
-    const gap = listAmount - proposedAmount;
-    const isUplift = gap < 0;
-    return (
-      <Text variant="microcopy">
-        {adjustment}List {currency(listAmount)} {unit} ·{" "}
-        {percent(Math.abs(discount))}{" "}
-        {isUplift ? "uplift adds" : "discount saves"} {currency(Math.abs(gap))}{" "}
-        · Proposed {currency(proposedAmount)} {unit}
-      </Text>
-    );
-  };
-
   // Band labels must match the ones printed on the customer-facing Quote (lineItemModel.js
   // formatBand), so a rep reading the card and a customer reading the quote see the same ranges.
   const bandRange = (lower: number, upper: number | null) => {
@@ -1695,6 +1770,199 @@ const OptionEditor = ({
   // HubSpot requires a Contact on a CPQ quote. Refused server-side too, but blocked here so the
   // rep reads "choose a contact" rather than a 400 that blames the quote template.
   const contactMissing = contactId === "";
+  // Mirrors the server guard in lockLiveCalculation EXACTLY: blocked only when there was a real
+  // choice to make -- contracts were read, at least one came back, and none is chosen. A read
+  // failure or a company with no contracts never blocks, because a rep cannot create a contract.
+  const contractMissing =
+    contractsRead && contracts.length > 0 && contractId === "";
+
+  // ---------------------------------------------------------------------------
+  // Services and Pricing table
+  // ---------------------------------------------------------------------------
+  //
+  // Every list, label, price and unit below is read from `catalog`. Nothing is written in this
+  // file, which is the point: an admin changes a price in Settings or renames a product in
+  // HubSpot and this table follows without a deploy.
+
+  const overrides = option.input.listPriceOverrides || {};
+
+  // An override is REMOVED when the field is cleared, not set to zero -- clearing means "go back
+  // to the catalogue price" and zero means "this is free", which are different answers. The whole
+  // map is dropped when it empties, so an untouched deal's state hash never changes.
+  const writeOverrides = (
+    next: NonNullable<QuoteInput["listPriceOverrides"]>,
+  ) =>
+    onInputChange(
+      "listPriceOverrides",
+      Object.keys(next).length > 0 ? next : undefined,
+    );
+
+  // A FIGURE EQUAL TO THE CATALOGUE PRICE IS NOT AN OVERRIDE, and neither is a cleared box.
+  //
+  // This is what makes the Override column safe to pre-fill. The boxes below start showing the
+  // catalogue price rather than empty, for two reasons. A rep edits a number more reliably than
+  // they invent one -- and, more importantly, an empty NumberInput's onChange contract is not
+  // ours to assume. Bound to `undefined`, a component that reported a cleared box as 0 would
+  // have written an override of ZERO to every row and priced the whole deal free. Pre-filled,
+  // the worst a spurious onChange can do is re-send the price already in force.
+  //
+  // This guard is the other half: it drops any value within half a cent of the catalogue price,
+  // so re-typing the same figure, or a component echoing its own initial value, leaves
+  // `listPriceOverrides` untouched. That keeps the state hash identical on an untouched deal,
+  // which is what stops a deploy from staling every stored quote option.
+  const sameAsCatalogue = (
+    value?: number | null,
+    cataloguePrice?: number | null,
+  ) =>
+    value != null &&
+    cataloguePrice != null &&
+    Math.abs(value - cataloguePrice) < 0.005;
+
+  const setOverride = (
+    field: "support" | "onboarding" | "professionalServices",
+    value?: number | null,
+    cataloguePrice?: number | null,
+  ) => {
+    const next = { ...overrides };
+    if (value == null || sameAsCatalogue(value, cataloguePrice))
+      delete next[field];
+    else next[field] = value;
+    writeOverrides(next);
+  };
+
+  const setAddOnOverride = (
+    key: string,
+    value?: number | null,
+    cataloguePrice?: number | null,
+  ) => {
+    const addOns = { ...(overrides.addOns || {}) };
+    if (value == null || sameAsCatalogue(value, cataloguePrice))
+      delete addOns[key];
+    else addOns[key] = value;
+    const next = { ...overrides };
+    if (Object.keys(addOns).length > 0) next.addOns = addOns;
+    else delete next.addOns;
+    writeOverrides(next);
+  };
+
+  // A read-only money cell that names itself. The table has no header row -- Holly, 2026-09-03 --
+  // so a bare figure in the third column would be indistinguishable from one in the sixth. The
+  // editable cells get the same treatment through NumberInput's own `label`.
+  //
+  // null renders an em dash, not $0: a row with nothing selected has no price, and "$0.00" reads
+  // as a real price of nothing.
+  const moneyCell = (label: string, value?: number | null) => (
+    <Flex direction="column" gap="flush" align="end">
+      <Text variant="microcopy">{label}</Text>
+      <Text>{value == null ? "\u2014" : currency(value)}</Text>
+    </Flex>
+  );
+
+  const supportEntry = (catalog?.support || []).find(
+    ({ key }) => key === option.input.supportLevel,
+  );
+  const onboardingEntry = (catalog?.onboarding || []).find(
+    ({ key }) => key === option.input.onboardingPackage,
+  );
+  const noOnboarding = option.input.onboardingPackage === "none";
+
+  // THE CATALOGUE PRICE, never the rep's. These feed the read-only List Price column; the
+  // Override column binds straight to `overrides.*`, so the two figures stay visible side by
+  // side and an empty override box means "use the catalogue price" rather than "free".
+  //
+  // Support and the services bundle have no catalogue constant -- support is a percentage of
+  // platform ARR capped at the tier cap, and services are priced by bundle count -- so the
+  // server returns each computed figure as catalogue*List precisely so the card need not
+  // recompute it. `undefined` when no preview has returned yet, which moneyCell shows as a dash.
+  const catalogueSupportPrice = previewResult?.catalogueSupportList;
+  const catalogueOnboardingPrice =
+    previewResult?.catalogueOnboardingList ??
+    onboardingEntry?.listPrice ??
+    undefined;
+  const catalogueServicesPrice =
+    previewResult?.catalogueProfessionalServicesList;
+
+  // RETIRED ADD-ONS ARE NEVER OFFERED, but one already on the deal still gets a row so it can be
+  // seen and removed. Dropping it from the list outright is what used to stop the card rendering
+  // at all on deals still carrying the Accelerator.
+  const selectedAddOnKeys = sellableAddOns(option.input.addOns);
+  const addOnEntry = (key: string) =>
+    (catalog?.addOns || []).find((entry) => entry.key === key);
+  // The name without its parenthetical qualifier, for the Product column. The qualifier on
+  // Turnkey Verified OAuth -- it requires a Professional Services item -- is a real rule and is
+  // kept in FULL in the picker below, where the rep is choosing and there is room for it.
+  // Repeating it in a 280px cell wrapped that row to nine lines and told the rep nothing they had
+  // not just read. Stripped at DISPLAY time, so the catalogue keeps one label and the test in
+  // catalog.test.js that pins the rule to it still passes.
+  const withoutQualifier = (label: string) =>
+    label.replace(/\s*\([^()]*\)\s*$/, "");
+  // WHAT THE MULTISELECT OFFERS. Retired add-ons are never offered, but one already on the deal
+  // stays in the list so it can be seen and removed -- dropping it outright is what used to stop
+  // the card rendering at all on deals still carrying the Accelerator.
+  const offerableAddOns = (catalog?.addOns || []).filter(
+    ({ key, deprecated }) => !deprecated || selectedAddOnKeys.includes(key),
+  );
+  const noAddOns = selectedAddOnKeys.length === 0;
+  const catalogueAddOnPrice = (key: string) =>
+    previewResult?.selectedAddOns.find((item) => item.key === key)
+      ?.catalogueAnnualAmount ??
+    addOnEntry(key)?.listPrice ??
+    undefined;
+  // The whole selection is written at once, and any override for an add-on that just left the
+  // deal is dropped in the SAME update. Left behind, it would silently re-apply an old price if
+  // the add-on were added again later.
+  //
+  // Both fields are written from one handler, which only became safe when updateInput started
+  // using the functional form of setEditing -- before that the second write discarded the first.
+  const setAddOns = (keys: string[]) => {
+    onInputChange("addOns", keys);
+    const keptAddOns: Record<string, number> = {};
+    Object.keys(overrides.addOns || {}).forEach((key) => {
+      const value = overrides.addOns?.[key];
+      if (value != null && keys.includes(key)) keptAddOns[key] = value;
+    });
+    const next = { ...overrides };
+    if (Object.keys(keptAddOns).length > 0) next.addOns = keptAddOns;
+    else delete next.addOns;
+    writeOverrides(next);
+  };
+
+  // One add-on on or off. Routed through setAddOns so the override pruning happens here too.
+  const toggleAddOn = (key: string, checked: boolean) =>
+    setAddOns(
+      checked
+        ? [...selectedAddOnKeys, key]
+        : selectedAddOnKeys.filter((value) => value !== key),
+    );
+
+  // The group row's money columns. Catalogue prices are summed here rather than read from the
+  // preview because there is no single server-side figure for "add-ons at list" -- listAnnualAddOns
+  // is after the pre-approved term and payment adjustments, and this column is the rate card.
+  const addOnsCatalogueTotal = selectedAddOnKeys.reduce(
+    (sum, key) => sum + (catalogueAddOnPrice(key) || 0),
+    0,
+  );
+
+  const selectedServiceKeys = option.input.professionalServices || [];
+  const noServices = selectedServiceKeys.length === 0;
+
+  // ONE MultiSelect, not an "Add a service..." Select plus a stack of Remove buttons.
+  //
+  // That pattern was broken, and visibly so: adding a service removed it from the Select's own
+  // option list, which orphaned the value the component was still holding -- so the field showed
+  // the raw key `architecture_workflow_review` and flagged itself invalid in red. Passing
+  // value="" did not clear it, because the value it was rendering was no longer an option at all.
+  // The Remove buttons were the other half of the problem: one full-width button per service,
+  // stacked, was most of the row's height.
+  //
+  // A MultiSelect is the control HubSpot means for this, shows the chosen services as chips, and
+  // is add AND remove in one field. Holly, 2026-09-03.
+  const setServices = (keys: string[]) => {
+    onInputChange("professionalServices", keys);
+    // The bundle price is keyed to the COUNT, so an override kept across a count change would be
+    // a price for a bundle the rep no longer has. Cleared with the last service.
+    if (keys.length === 0) setOverride("professionalServices", null);
+  };
 
   const bankTransferNotSelected =
     requiresBankTransfer && paymentMethod !== BANK_TRANSFER_METHOD;
@@ -1710,7 +1978,10 @@ const OptionEditor = ({
     if (bankTransferNotSelected) onPaymentMethodChange(BANK_TRANSFER_METHOD);
   }, [bankTransferNotSelected, onPaymentMethodChange]);
   const lockBlocked =
-    approvalBlocked || discountReasonMissing || contactMissing;
+    approvalBlocked ||
+    discountReasonMissing ||
+    contactMissing ||
+    contractMissing;
   // A Deal with no owner produces a quote with no Seller. Warned, not blocked -- Holly's call:
   // the rep can lock in and set the owner afterwards.
   const ownerMissing = dealOwnerId === "";
@@ -1726,6 +1997,9 @@ const OptionEditor = ({
           ? ["A discount reason is required before this can be locked in."]
           : []),
         ...(contactMissing ? ["A contact is required on the Quote."] : []),
+        ...(contractMissing
+          ? ["Choose which contract this renewal is for."]
+          : []),
         ...previewResult.approvalReasons,
         ...(ownerMissing
           ? [
@@ -1819,10 +2093,10 @@ const OptionEditor = ({
                 }
               />
               {/* The "Apply This Pricing To" picker was removed on Holly's instruction,
-                  2026-09-03, along with all of its card state -- nothing could set it any
-                  more. The adopt path still exists SERVER-SIDE (adoptableQuotes,
-                  priceExistingQuote, the apply_to_quote action) and is simply no longer
-                  offered; removing that too is a separate, larger change. */}
+                  2026-09-03, along with all of its card state -- nothing could set it any more.
+                  The adopt path still exists SERVER-SIDE (adoptableQuotes, priceExistingQuote,
+                  the apply_to_quote action) and is simply no longer offered; removing that too is
+                  a separate, larger change and would break any stored caller. */}
               {quoteTemplates.length > 0 && (
                 <Select
                   label="Quote Template"
@@ -1871,6 +2145,43 @@ const OptionEditor = ({
                   onChange={(value) => onContactChange(String(value ?? ""))}
                 />
               </Flex>
+              {/* Contract for this Quote. Renewal-category Deals only -- the server sends no
+                  contracts otherwise, so this whole block disappears on new business without the
+                  card needing an opinion about pipelines.
+
+                  The microcopy is per-reason on purpose. "No contracts" and "we could not read
+                  them" are different answers, and a picker that shows nothing while saying nothing
+                  reads as the first when it may be the second. Holly, 2026-09-03. */}
+              {contractSource !== "not_renewal" && (
+                <Flex direction="column" gap="flush">
+                  <Select
+                    label="Contract for this Quote"
+                    name="quote_contract"
+                    value={contractId}
+                    options={[
+                      { value: "", label: "Choose a contract…" },
+                      ...contracts.map(({ id, label }) => ({
+                        value: id,
+                        label,
+                      })),
+                    ]}
+                    description={
+                      !contractsRead
+                        ? "Could not read this Company's contracts. You can still lock in."
+                        : contractSource === "no_company"
+                          ? "This Deal has no associated Company, so there are no contracts to offer."
+                          : contractSource === "company_has_none"
+                            ? "This Company has no contracts. HubSpot creates one when a quote is accepted."
+                            : contractSource === "company_none_quotable"
+                              ? "None of this Company's contracts is available to renew. All are shown so you can still pick one."
+                              : contracts.length === 1
+                                ? "The Company's only contract, selected for you."
+                                : "Pick the contract this renewal replaces."
+                    }
+                    onChange={(value) => onContractChange(String(value ?? ""))}
+                  />
+                </Flex>
+              )}
               {/* onChange, not onInput: onInput fires per keystroke and would re-render the whole
                   card on every character. onChange commits on blur, which is what state wants. */}
               <Input
@@ -1919,120 +2230,312 @@ const OptionEditor = ({
           <>
             <Divider />
             <Heading>Services and Pricing:</Heading>
-            <Text variant="microcopy">
-              Choose support, onboarding, optional services, and any requested
-              discount.
-            </Text>
-            {/* An AutoGrid of self-contained columns, which is how this gets to be horizontal
-                like Contract Basics without losing the hierarchy.
+            {/* ONE TABLE, matching Monthly Product Commitments above it.
+                Holly, 2026-09-03. Replaces a two-column AutoGrid of dropdown-plus-discount cells
+                with the same five columns and the same widths as the commitments table, so the two
+                read as one system rather than two conventions.
 
-                AutoGrid fills row by row, so putting the four controls in it directly made the DOM
-                order layout-dependent: correct at exactly two columns, wrong at one, and AutoGrid
-                is responsive, so it silently switched between them as content changed width. That
-                is what made the fields appear to rearrange themselves while being filled in.
+                Everything here comes from `catalog`, built server-side from pricingRules and the
+                settings record. No product name, price, billing unit or available option is
+                written in this file -- that was the explicit requirement, and it is what lets an
+                admin change any of them without a deploy.
 
-                Each grid cell is now a Flex column holding one control, its own discount, and that
-                discount's pricing summary. The cell is the unit that reflows, so a discount can
-                never be separated from the thing it discounts, at any width.
+                List Price is EDITABLE on every row. An entered figure is stored absolute (not as
+                a percentage of a moving base) and its departure from the catalogue price routes
+                through the ordinary discount ladder, so it needs an approver and a reason like any
+                other concession. See calculator.js. */}
+            <Table density="compact" flush>
+              {/* NO HEADER TEXT. Holly, 2026-09-03: "don't have a header row. just add the Title
+                  above what's loaded on the left." So every control names itself instead --
+                  NumberInput's own `label` on the editable cells, moneyCell's microcopy on the
+                  read-only ones -- and the subsection title sits above the left-hand content.
 
-                Use Flex, never Stack, inside these cells. Stack appears in the package's exports
-                and type definitions but in none of HubSpot's component documentation, and
-                converting these sections to Stack -- with and without an explicit direction --
-                deployed twice and rendered horizontally both times. */}
-            <AutoGrid columnWidth={280} flexible gap="md">
-              <Flex direction="column" gap="sm">
-                <Select
-                  label="Support"
-                  name="support_level"
-                  value={option.input.supportLevel}
-                  options={supportOptions}
-                  onChange={(value) =>
-                    onInputChange("supportLevel", String(value))
-                  }
-                />
-                <NumberInput
-                  label="Support Discount"
-                  name="support_discount"
-                  value={(option.input.supportDiscount || 0) * 100}
-                  min={-100}
-                  max={100}
-                  precision={2}
-                  formatStyle="percentage"
-                  onChange={(value) =>
-                    onInputChange("supportDiscount", (value || 0) / 100)
-                  }
-                />
-                {discountPreview(
-                  previewResult?.listSupportAnnual,
-                  option.input.supportDiscount,
-                  previewResult?.supportAnnual,
-                  "per year",
-                )}
-              </Flex>
-              <Flex direction="column" gap="sm">
-                <Select
-                  label="Onboarding"
-                  name="onboarding_package"
-                  value={option.input.onboardingPackage}
-                  options={onboardingOptions}
-                  onChange={(value) =>
-                    onInputChange("onboardingPackage", String(value))
-                  }
-                />
-                <NumberInput
-                  label="Onboarding Discount"
-                  name="onboarding_discount"
-                  value={(option.input.onboardingDiscount || 0) * 100}
-                  min={-100}
-                  max={100}
-                  precision={2}
-                  formatStyle="percentage"
-                  // Nothing to discount when no onboarding is being sold.
-                  readOnly={option.input.onboardingPackage === "none"}
-                  onChange={(value) =>
-                    onInputChange("onboardingDiscount", (value || 0) / 100)
-                  }
-                />
-                {discountPreview(
-                  previewResult?.listOnboardingAmount,
-                  option.input.onboardingDiscount,
-                  previewResult?.onboardingAmount,
-                  "one-time",
-                )}
-              </Flex>
-            </AutoGrid>
-            <Card>
-              <Flex direction="column" gap="xs">
-                <Heading>Add-ons and professional services:</Heading>
-                <AutoGrid columnWidth={280} flexible gap="md">
-                  <Flex direction="column" gap="sm">
-                    <MultiSelect
-                      label="Subscription Add-ons"
-                      name="add_ons"
-                      value={sellableAddOns(option.input.addOns)}
-                      options={addOnOptions}
+                  The header row itself stays, empty, purely to carry the column widths. It is
+                  the same trick the fee-summary table above uses. Without it the columns
+                  auto-size and stop lining up with Monthly Product Commitments, which was the
+                  point of making this a table in the first place. */}
+              <TableHead>
+                <TableRow>
+                  <TableHeader width={SERVICE_PRODUCT_WIDTH}>{""}</TableHeader>
+                  <TableHeader width={SERVICE_SELECTION_WIDTH} align="center">
+                    {""}
+                  </TableHeader>
+                  <TableHeader width={SERVICE_LIST_WIDTH} align="right">
+                    {""}
+                  </TableHeader>
+                  <TableHeader width={SERVICE_OVERRIDE_WIDTH} align="right">
+                    {""}
+                  </TableHeader>
+                  <TableHeader width={SERVICE_DISCOUNT_WIDTH} align="center">
+                    {""}
+                  </TableHeader>
+                  <TableHeader width={SERVICE_PROPOSED_WIDTH} align="right">
+                    {""}
+                  </TableHeader>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                <TableRow>
+                  <TableCell>
+                    <Flex direction="column" gap="flush">
+                      <Text format={{ fontWeight: "bold" }}>Support</Text>
+                      <Text variant="microcopy">
+                        {`${supportEntry?.label || "\u2014"} \u00b7 ${
+                          supportEntry?.billingUnit || "per year"
+                        }`}
+                      </Text>
+                    </Flex>
+                  </TableCell>
+                  <TableCell align="center">
+                    <Select
+                      label="Level"
+                      name="support_level"
+                      value={option.input.supportLevel}
+                      options={(catalog?.support || []).map(
+                        ({ key, label }) => ({
+                          value: key,
+                          label,
+                        }),
+                      )}
                       onChange={(value) =>
-                        onInputChange("addOns", value.map(String))
+                        onInputChange("supportLevel", String(value))
                       }
                     />
-                    {/* Only the add-ons actually selected get a discount field. Rendering one per
-                      option meant a column of read-only 0% inputs for things nobody is buying,
-                      which is most of this section's height and reads as broken rather than
-                      inactive. */}
-                    {addOnOptions
-                      .filter(({ value }) =>
-                        sellableAddOns(option.input.addOns).includes(
-                          String(value),
-                        ),
-                      )
-                      .map(({ value, label }) => (
-                        <Flex key={value} direction="column" gap="xs">
+                  </TableCell>
+                  <TableCell align="right">
+                    {moneyCell("List", catalogueSupportPrice)}
+                  </TableCell>
+                  <TableCell align="right">
+                    {/* Support has no rate-card constant -- it is a percentage of platform ARR
+                        capped at the tier cap -- so this box IS the flat support override Shane
+                        asked for. The server refuses one above the cap. */}
+                    <NumberInput
+                      label="Override"
+                      name="support_list_price"
+                      value={overrides.support ?? catalogueSupportPrice}
+                      min={0}
+                      precision={2}
+                      formatStyle="decimal"
+                      onChange={(value) =>
+                        setOverride("support", value, catalogueSupportPrice)
+                      }
+                    />
+                  </TableCell>
+                  <TableCell align="center">
+                    <NumberInput
+                      label="Discount"
+                      name="support_discount"
+                      value={(option.input.supportDiscount || 0) * 100}
+                      min={-100}
+                      max={100}
+                      precision={2}
+                      formatStyle="percentage"
+                      onChange={(value) =>
+                        onInputChange("supportDiscount", (value || 0) / 100)
+                      }
+                    />
+                  </TableCell>
+                  <TableCell align="right">
+                    {moneyCell("Proposed", previewResult?.supportAnnual)}
+                  </TableCell>
+                </TableRow>
+
+                <TableRow>
+                  <TableCell>
+                    <Flex direction="column" gap="flush">
+                      <Text format={{ fontWeight: "bold" }}>Onboarding</Text>
+                      <Text variant="microcopy">
+                        {`${onboardingEntry?.label || "\u2014"} \u00b7 ${
+                          onboardingEntry?.billingUnit || "one-time"
+                        }`}
+                      </Text>
+                    </Flex>
+                  </TableCell>
+                  <TableCell align="center">
+                    <Select
+                      label="Package"
+                      name="onboarding_package"
+                      value={option.input.onboardingPackage}
+                      options={(catalog?.onboarding || []).map(
+                        ({ key, label }) => ({
+                          value: key,
+                          label,
+                        }),
+                      )}
+                      onChange={(value) =>
+                        onInputChange("onboardingPackage", String(value))
+                      }
+                    />
+                  </TableCell>
+                  <TableCell align="right">
+                    {moneyCell(
+                      "List",
+                      noOnboarding ? null : catalogueOnboardingPrice,
+                    )}
+                  </TableCell>
+                  <TableCell align="right">
+                    {/* Nothing to price when no onboarding is being sold. The label still shows,
+                        so the column stays identifiable on a row that has no figures. */}
+                    {noOnboarding ? (
+                      moneyCell("Override", null)
+                    ) : (
+                      <NumberInput
+                        label="Override"
+                        name="onboarding_list_price"
+                        value={overrides.onboarding ?? catalogueOnboardingPrice}
+                        min={0}
+                        precision={2}
+                        formatStyle="decimal"
+                        onChange={(value) =>
+                          setOverride(
+                            "onboarding",
+                            value,
+                            catalogueOnboardingPrice,
+                          )
+                        }
+                      />
+                    )}
+                  </TableCell>
+                  <TableCell align="center">
+                    {noOnboarding ? (
+                      moneyCell("Discount", null)
+                    ) : (
+                      <NumberInput
+                        label="Discount"
+                        name="onboarding_discount"
+                        value={(option.input.onboardingDiscount || 0) * 100}
+                        min={-100}
+                        max={100}
+                        precision={2}
+                        formatStyle="percentage"
+                        onChange={(value) =>
+                          onInputChange(
+                            "onboardingDiscount",
+                            (value || 0) / 100,
+                          )
+                        }
+                      />
+                    )}
+                  </TableCell>
+                  <TableCell align="right">
+                    {moneyCell(
+                      "Proposed",
+                      noOnboarding ? null : previewResult?.onboardingAmount,
+                    )}
+                  </TableCell>
+                </TableRow>
+
+                {/* ADD-ONS: A LINE PER ADD-ON, and no picker of any kind.
+                    Holly, 2026-09-03: "have them all under add-ons and then all of them are in
+                    the same format as the existing with a line per each and not a multi select."
+
+                    Every offerable add-on gets a row whether or not it is being sold, and a
+                    checkbox is what puts it on the deal. This is how Monthly Product Commitments
+                    already works -- every product has a row, and a zero volume means "not part of
+                    this deal" -- so the two tables now behave the same way. It also removes the
+                    last picker-as-action on the card: there is nothing left to add FROM, so
+                    nothing can orphan its own selected value the way the two Selects did.
+
+                    Each add-on is its own SKU at its own annual price -- 2,400 and 5,000, with no
+                    count-based scale anywhere in the rate card -- so each row carries its own
+                    Override and Discount. Professional Services is one row precisely because it
+                    is the opposite: a single bundle price keyed to the item COUNT. */}
+                <TableRow>
+                  <TableCell>
+                    <Flex direction="column" gap="flush">
+                      <Text format={{ fontWeight: "bold" }}>Add-ons</Text>
+                      <Text variant="microcopy">
+                        {noAddOns
+                          ? "None selected"
+                          : `${selectedAddOnKeys.length} selected`}
+                      </Text>
+                    </Flex>
+                  </TableCell>
+                  {/* The group row totals what the rows beneath come to. Nothing to choose here
+                      any more -- each row chooses for itself. */}
+                  <TableCell> </TableCell>
+                  <TableCell align="right">
+                    {moneyCell("List", noAddOns ? null : addOnsCatalogueTotal)}
+                  </TableCell>
+                  <TableCell align="right">
+                    {moneyCell("Override", null)}
+                  </TableCell>
+                  <TableCell align="center">
+                    {moneyCell("Discount", null)}
+                  </TableCell>
+                  <TableCell align="right">
+                    {moneyCell(
+                      "Proposed",
+                      noAddOns ? null : previewResult?.annualAddOns,
+                    )}
+                  </TableCell>
+                </TableRow>
+                {offerableAddOns.map((entry) => {
+                  const key = entry.key;
+                  const selected = selectedAddOnKeys.includes(key);
+                  const priced = previewResult?.selectedAddOns.find(
+                    (item) => item.key === key,
+                  );
+                  return (
+                    <TableRow key={`addon-${key}`}>
+                      <TableCell>
+                        <Flex direction="column" gap="flush">
+                          <Text format={{ fontWeight: "bold" }}>
+                            {withoutQualifier(entry.label)}
+                          </Text>
+                          <Text variant="microcopy">
+                            {`Add-on · ${entry.billingUnit || "per year"}`}
+                          </Text>
+                        </Flex>
+                      </TableCell>
+                      <TableCell align="center">
+                        {/* The full label, qualifier included, sits here -- this is where the rep
+                            decides, and "requires Professional Services" is a real rule they need
+                            before they tick it, not after. */}
+                        <Checkbox
+                          name={`add_on_${key}`}
+                          checked={selected}
+                          onChange={(checked) => toggleAddOn(key, checked)}
+                        >
+                          {entry.label}
+                        </Checkbox>
+                      </TableCell>
+                      {/* The rate card price shows whether or not it is being sold, so a rep can
+                          see what an add-on costs before ticking it. */}
+                      <TableCell align="right">
+                        {moneyCell("List", catalogueAddOnPrice(key))}
+                      </TableCell>
+                      <TableCell align="right">
+                        {selected ? (
                           <NumberInput
-                            label={`${label} Discount`}
-                            name={`${value}_discount`}
+                            label="Override"
+                            name={`${key}_list_price`}
                             value={
-                              (option.input.addOnDiscounts?.[String(value)] ||
-                                0) * 100
+                              overrides.addOns?.[key] ??
+                              catalogueAddOnPrice(key)
+                            }
+                            min={0}
+                            precision={2}
+                            formatStyle="decimal"
+                            onChange={(value) =>
+                              setAddOnOverride(
+                                key,
+                                value,
+                                catalogueAddOnPrice(key),
+                              )
+                            }
+                          />
+                        ) : (
+                          moneyCell("Override", null)
+                        )}
+                      </TableCell>
+                      <TableCell align="center">
+                        {selected ? (
+                          <NumberInput
+                            label="Discount"
+                            name={`${key}_discount`}
+                            value={
+                              (option.input.addOnDiscounts?.[key] || 0) * 100
                             }
                             min={-100}
                             max={100}
@@ -2041,65 +2544,118 @@ const OptionEditor = ({
                             onChange={(discount) =>
                               onInputChange("addOnDiscounts", {
                                 ...(option.input.addOnDiscounts || {}),
-                                [String(value)]: (discount || 0) / 100,
+                                [key]: (discount || 0) / 100,
                               })
                             }
                           />
-                          {discountPreview(
-                            previewResult?.selectedAddOns.find(
-                              ({ key }) => key === value,
-                            )?.listAnnualAmount,
-                            option.input.addOnDiscounts?.[String(value)] || 0,
-                            previewResult?.selectedAddOns.find(
-                              ({ key }) => key === value,
-                            )?.annualAmount,
-                            "per year",
-                            previewResult?.selectedAddOns.find(
-                              ({ key }) => key === value,
-                            )?.rateCardAnnualAmount,
-                          )}
-                        </Flex>
-                      ))}
-                  </Flex>
-                  <Flex direction="column" gap="sm">
+                        ) : (
+                          moneyCell("Discount", null)
+                        )}
+                      </TableCell>
+                      <TableCell align="right">
+                        {moneyCell(
+                          "Proposed",
+                          selected ? priced?.annualAmount : null,
+                        )}
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+
+                {/* ONE ROW, not one per service. They are priced by BUNDLE COUNT -- 1 -> 2,000,
+                    2 -> 3,800, 3 -> 5,500 -- with a real volume break, so a per-service price
+                    would be invented and would not sum to the ladder. Holly, 2026-09-03. */}
+                <TableRow>
+                  <TableCell>
+                    <Flex direction="column" gap="flush">
+                      <Text format={{ fontWeight: "bold" }}>
+                        Professional Services
+                      </Text>
+                      <Text variant="microcopy">
+                        {noServices
+                          ? "None selected"
+                          : `${selectedServiceKeys.length} selected \u00b7 priced as a bundle`}
+                      </Text>
+                    </Flex>
+                  </TableCell>
+                  <TableCell align="center">
                     <MultiSelect
-                      label="Professional Services"
+                      label="Services"
                       name="professional_services"
-                      value={option.input.professionalServices}
-                      options={professionalServiceOptions}
-                      onChange={(value) =>
-                        onInputChange("professionalServices", value.map(String))
-                      }
-                    />
-                    <NumberInput
-                      label="Professional Services Discount"
-                      name="professional_services_discount"
-                      value={
-                        (option.input.professionalServicesDiscount || 0) * 100
-                      }
-                      min={-100}
-                      max={100}
-                      precision={2}
-                      formatStyle="percentage"
-                      readOnly={option.input.professionalServices.length === 0}
-                      onChange={(value) =>
-                        onInputChange(
-                          "professionalServicesDiscount",
-                          (value || 0) / 100,
-                        )
-                      }
-                    />
-                    {option.input.professionalServices.length > 0 &&
-                      discountPreview(
-                        previewResult?.listProfessionalServicesAmount,
-                        option.input.professionalServicesDiscount,
-                        previewResult?.professionalServicesAmount,
-                        "one-time",
+                      value={selectedServiceKeys}
+                      options={(catalog?.professionalServices || []).map(
+                        ({ key, label }) => ({
+                          value: key,
+                          label,
+                        }),
                       )}
-                  </Flex>
-                </AutoGrid>
-              </Flex>
-            </Card>
+                      onChange={(value) => setServices(value.map(String))}
+                    />
+                  </TableCell>
+                  <TableCell align="right">
+                    {moneyCell(
+                      "List",
+                      noServices ? null : catalogueServicesPrice,
+                    )}
+                  </TableCell>
+                  <TableCell align="right">
+                    {noServices ? (
+                      moneyCell("Override", null)
+                    ) : (
+                      <NumberInput
+                        label="Override"
+                        name="professional_services_list_price"
+                        value={
+                          overrides.professionalServices ??
+                          catalogueServicesPrice
+                        }
+                        min={0}
+                        precision={2}
+                        formatStyle="decimal"
+                        onChange={(value) =>
+                          setOverride(
+                            "professionalServices",
+                            value,
+                            catalogueServicesPrice,
+                          )
+                        }
+                      />
+                    )}
+                  </TableCell>
+                  <TableCell align="center">
+                    {noServices ? (
+                      moneyCell("Discount", null)
+                    ) : (
+                      <NumberInput
+                        label="Discount"
+                        name="professional_services_discount"
+                        value={
+                          (option.input.professionalServicesDiscount || 0) * 100
+                        }
+                        min={-100}
+                        max={100}
+                        precision={2}
+                        formatStyle="percentage"
+                        onChange={(value) =>
+                          onInputChange(
+                            "professionalServicesDiscount",
+                            (value || 0) / 100,
+                          )
+                        }
+                      />
+                    )}
+                  </TableCell>
+                  <TableCell align="right">
+                    {moneyCell(
+                      "Proposed",
+                      noServices
+                        ? null
+                        : previewResult?.professionalServicesAmount,
+                    )}
+                  </TableCell>
+                </TableRow>
+              </TableBody>
+            </Table>
           </>
         }
 

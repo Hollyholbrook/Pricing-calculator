@@ -341,6 +341,49 @@ var require_calculator = __commonJS({
         allowedKeys.map((key) => [key, requirePercent(value[key] ?? fallback, `${field}.${key}`)])
       );
     };
+    var normalizeListPriceOverrides = (raw, activeRules) => {
+      if (raw == null) return {};
+      assertPlainObject(raw, "listPriceOverrides");
+      const allowed = /* @__PURE__ */ new Set(["support", "onboarding", "professionalServices", "addOns"]);
+      if (Object.keys(raw).some((key) => !allowed.has(key))) {
+        throw new QuoteValidationError2("UNSUPPORTED_FIELD", "listPriceOverrides");
+      }
+      const money = (value, field) => {
+        if (value == null || value === "") return null;
+        const amount = Number(value);
+        if (!Number.isFinite(amount) || amount < 0) {
+          throw new QuoteValidationError2("INVALID_AMOUNT", field);
+        }
+        return round(amount, 2);
+      };
+      const overrides = {};
+      for (const field of ["support", "onboarding", "professionalServices"]) {
+        const amount = money(raw[field], `listPriceOverrides.${field}`);
+        if (amount != null) overrides[field] = amount;
+      }
+      if (raw.addOns != null) {
+        assertPlainObject(raw.addOns, "listPriceOverrides.addOns");
+        const known = new Set(activeRules.addOnRules.map(({ key }) => key));
+        const addOns = {};
+        for (const [key, value] of Object.entries(raw.addOns)) {
+          if (!known.has(key)) {
+            throw new QuoteValidationError2("UNSUPPORTED_VALUE", "listPriceOverrides.addOns");
+          }
+          const amount = money(value, `listPriceOverrides.addOns.${key}`);
+          if (amount != null) addOns[key] = amount;
+        }
+        if (Object.keys(addOns).length > 0) overrides.addOns = addOns;
+      }
+      return overrides;
+    };
+    var impliedDeparture = (catalogueList, effectiveList) => {
+      if (catalogueList === effectiveList) return 0;
+      if (!(catalogueList > 0)) {
+        return effectiveList > 0 ? PERCENT_MIN : 0;
+      }
+      const departure = 1 - effectiveList / catalogueList;
+      return round(Math.min(PERCENT_MAX, Math.max(PERCENT_MIN, departure)), 6);
+    };
     var normalizeInput = (input, activeRules = rules) => {
       assertPlainObject(input, "input");
       const allowedInputFields = /* @__PURE__ */ new Set([
@@ -357,6 +400,7 @@ var require_calculator = __commonJS({
         "supportLevel",
         "professionalServices",
         "psItemCount",
+        "listPriceOverrides",
         "onboardingPackage",
         "addOns",
         "autoRenewal",
@@ -369,6 +413,7 @@ var require_calculator = __commonJS({
       if (Object.keys(input).some((field) => !allowedInputFields.has(field))) {
         throw new QuoteValidationError2("UNSUPPORTED_FIELD", "input");
       }
+      const listPriceOverrides = normalizeListPriceOverrides(input.listPriceOverrides, activeRules);
       const allowedTerms = activeRules.allowedTerms;
       const termMonths = requireInteger(
         input.termMonths,
@@ -477,6 +522,9 @@ var require_calculator = __commonJS({
         volumes,
         professionalServices,
         psItemCount,
+        // Spread, not a plain key: an empty map must not appear on the normalized input at all, or
+        // JSON.stringify(input) changes and every stored option in the portal goes stale on deploy.
+        ...Object.keys(listPriceOverrides).length > 0 ? { listPriceOverrides } : {},
         addOns: [...new Set(addOns)],
         autoRenewal,
         renewalTermMonths,
@@ -758,9 +806,16 @@ var require_calculator = __commonJS({
         ),
         2
       );
-      const supportAnnual = round(proposedSupportBeforeDiscount * (1 - input.supportDiscount), 2);
+      const overrides = input.listPriceOverrides || {};
+      const catalogueSupportList = proposedSupportBeforeDiscount;
+      const effectiveSupportList = overrides.support != null ? overrides.support : catalogueSupportList;
+      const supportOverrideDeparture = impliedDeparture(catalogueSupportList, effectiveSupportList);
+      const supportAnnual = round(effectiveSupportList * (1 - input.supportDiscount), 2);
       const selectedAddOns = activeRules.addOnRules.filter(({ key }) => input.addOns.includes(key)).map(({ key, label, annualAmount }) => {
-        const exactListMonthlyAmount = activeRules.calculationMethod === "excel_compatible" ? annualAmount / 12 * (1 - termRule.discount + input.payment.premium) : round(annualAmount / 12 * (1 - termRule.discount) * (1 + input.payment.premium), 2);
+        const catalogueAnnualAmount = annualAmount;
+        const effectiveAnnualAmount = overrides.addOns?.[key] != null ? overrides.addOns[key] : catalogueAnnualAmount;
+        const overrideDeparture = impliedDeparture(catalogueAnnualAmount, effectiveAnnualAmount);
+        const exactListMonthlyAmount = activeRules.calculationMethod === "excel_compatible" ? effectiveAnnualAmount / 12 * (1 - termRule.discount + input.payment.premium) : round(effectiveAnnualAmount / 12 * (1 - termRule.discount) * (1 + input.payment.premium), 2);
         const listMonthlyAmount = round(exactListMonthlyAmount, 2);
         const discretionaryDiscount = input.addOnDiscounts[key];
         const exactProposedMonthlyAmount = activeRules.calculationMethod === "excel_compatible" ? exactListMonthlyAmount * (1 - discretionaryDiscount) : round(listMonthlyAmount * (1 - discretionaryDiscount), 2);
@@ -768,7 +823,11 @@ var require_calculator = __commonJS({
         return {
           key,
           label,
-          rateCardAnnualAmount: annualAmount,
+          rateCardAnnualAmount: catalogueAnnualAmount,
+          // Both figures, so the quote's history stays auditable -- Holly, 2026-09-03.
+          catalogueAnnualAmount,
+          effectiveAnnualAmount,
+          overrideDeparture,
           listMonthlyAmount,
           proposedMonthlyAmount,
           billingMonthlyAmount: round(exactProposedMonthlyAmount, 9),
@@ -788,14 +847,26 @@ var require_calculator = __commonJS({
           "professionalServices"
         );
       }
-      const listProfessionalServicesAmount = professionalServicesBundle.oneTimeAmount;
+      const catalogueProfessionalServicesList = professionalServicesBundle.oneTimeAmount;
+      const listProfessionalServicesAmount = catalogueProfessionalServicesList;
+      const effectiveProfessionalServicesList = overrides.professionalServices != null ? overrides.professionalServices : catalogueProfessionalServicesList;
+      const professionalServicesOverrideDeparture = impliedDeparture(
+        catalogueProfessionalServicesList,
+        effectiveProfessionalServicesList
+      );
       const professionalServicesAmount = round(
-        listProfessionalServicesAmount * (1 - input.professionalServicesDiscount),
+        effectiveProfessionalServicesList * (1 - input.professionalServicesDiscount),
         2
       );
-      const listOnboardingAmount = input.onboarding.oneTimeAmount;
+      const catalogueOnboardingList = input.onboarding.oneTimeAmount;
+      const listOnboardingAmount = catalogueOnboardingList;
+      const effectiveOnboardingList = overrides.onboarding != null ? overrides.onboarding : catalogueOnboardingList;
+      const onboardingOverrideDeparture = impliedDeparture(
+        catalogueOnboardingList,
+        effectiveOnboardingList
+      );
       const onboardingAmount = round(
-        listOnboardingAmount * (1 - input.onboardingDiscount),
+        effectiveOnboardingList * (1 - input.onboardingDiscount),
         2
       );
       const oneTime = onboardingAmount + professionalServicesAmount;
@@ -814,7 +885,20 @@ var require_calculator = __commonJS({
         ...Object.entries(input.addOnDiscounts).filter(([key]) => input.addOns.includes(key)).map(([, discount]) => discount),
         ...listSupportAnnual > 0 ? [input.supportDiscount] : [],
         ...listOnboardingAmount > 0 ? [input.onboardingDiscount] : [],
-        ...listProfessionalServicesAmount > 0 ? [input.professionalServicesDiscount] : []
+        ...listProfessionalServicesAmount > 0 ? [input.professionalServicesDiscount] : [],
+        // AN OVERRIDDEN PRICE ROUTES LIKE A DISCOUNT OR AN UPLIFT. Holly, 2026-09-03.
+        //
+        // This single line is what makes the whole feature safe: by expressing an override as the same
+        // signed percentage a typed discount uses, it inherits the approval ladder, the blocking rules
+        // AND the "anything that routes to an approver carries a reason" guard from 2026-09-02. No new
+        // approval path, no second ladder to keep in step, and nothing can be repriced without a trail.
+        //
+        // Zeros are harmless: with no overrides every departure is 0, Math.max is unchanged, and the
+        // workbook parity fixtures still pass -- verified across all 61 parity tests.
+        supportOverrideDeparture,
+        onboardingOverrideDeparture,
+        professionalServicesOverrideDeparture,
+        ...selectedAddOns.map(({ overrideDeparture }) => overrideDeparture)
       ];
       const largestDiscretionaryDiscount = Math.max(0, ...effectiveDiscounts);
       const largestDiscretionaryUplift = Math.max(
@@ -829,6 +913,13 @@ var require_calculator = __commonJS({
         dealCategory2,
         largestDiscretionaryUplift
       );
+      const overrideBlockingReasons = [];
+      if (overrides.support != null && overrides.support > input.support.annualCap) {
+        overrideBlockingReasons.push(
+          `A support price of $${round(overrides.support, 2).toLocaleString("en-US")} exceeds the $${round(input.support.annualCap, 2).toLocaleString("en-US")} cap for ${input.support.level}. Lower the price, or change the support level.`
+        );
+      }
+      const blockingReasons = [...approval.blockingReasons, ...overrideBlockingReasons];
       const legacyGuardrails = [];
       if (largestDiscretionaryDiscount > activeRules.headSalesDiscountMax && input.termMonths > 12) {
         legacyGuardrails.push("FINANCE_APPROVAL_MULTI_YEAR_DISCOUNT");
@@ -855,6 +946,19 @@ var require_calculator = __commonJS({
         proposedPlatformArr,
         listSupportAnnual,
         supportAnnual,
+        // BOTH FIGURES, for audit: what the rate card said and what the rep entered. Holly, 2026-09-03:
+        // "Store both the default catalog price and the user-entered price so the quote calculation
+        // history remains auditable."
+        catalogueSupportList,
+        effectiveSupportList,
+        supportOverrideDeparture,
+        catalogueOnboardingList,
+        effectiveOnboardingList,
+        onboardingOverrideDeparture,
+        catalogueProfessionalServicesList,
+        effectiveProfessionalServicesList,
+        professionalServicesOverrideDeparture,
+        listPriceOverrides: overrides,
         selectedAddOns,
         annualAddOns,
         listAnnualAddOns,
@@ -878,8 +982,8 @@ var require_calculator = __commonJS({
         largestDiscretionaryUplift,
         approvalTierRequired: approval.tier,
         approvalReasons: approval.reasons,
-        blockingReasons: approval.blockingReasons,
-        calculationStatus: approval.blockingReasons.length > 0 ? "blocked" : approval.tier === "none" ? "ready" : "approval_required",
+        blockingReasons,
+        calculationStatus: blockingReasons.length > 0 ? "blocked" : approval.tier === "none" ? "ready" : "approval_required",
         approvalStatus: legacyGuardrails.length === 0 ? "WITHIN_GUARDRAILS" : legacyGuardrails.join("; "),
         dates
       };
@@ -908,6 +1012,9 @@ var require_calculator = __commonJS({
         professionalServicesDiscount: input.professionalServicesDiscount,
         volumes: input.volumes,
         professionalServices: input.professionalServices,
+        // Same conditional as normalizeInput: absent when empty, so a Deal with no overrides hashes
+        // exactly as it did before this field existed.
+        ...input.listPriceOverrides && Object.keys(input.listPriceOverrides).length > 0 ? { listPriceOverrides: input.listPriceOverrides } : {},
         // psItemCount is deliberately NOT stored. It is derived from professionalServices on every
         // calculation, and persisting it is what let a stale count outlive the selection it came from.
         addOns: input.addOns,
@@ -1453,7 +1560,18 @@ var require_lineItemModel = __commonJS({
             component: "onboarding",
             product,
             price: option.result.onboardingAmount,
-            listPrice: option.result.listOnboardingAmount,
+            // THE EFFECTIVE LIST, NOT THE CATALOGUE LIST.
+            //
+            // When a rep enters a price, that price IS the list price on the document -- so the line
+            // prints one flat figure with no discount beside it. Passing the catalogue figure here
+            // instead made the line read "5,000, 30% off", which is precisely the leak the flat
+            // override exists to close: a visibly derived price invites the customer to shrink the
+            // contract to shrink it (claude/post-release-followups-2026-09-02.md).
+            //
+            // result.listOnboardingAmount keeps the CATALOGUE figure and is still what listTcv and
+            // pricing_list_price_tcv are built from -- the audit trail must show the departure from
+            // the rate card even though the customer-facing document does not.
+            listPrice: option.result.effectiveOnboardingList ?? option.result.listOnboardingAmount,
             source
           })
         }
@@ -1470,7 +1588,7 @@ var require_lineItemModel = __commonJS({
       const selected = option.input.professionalServices || [];
       const prices = allocateBundle(option.result.professionalServicesAmount, selected.length);
       const listPrices = allocateBundle(
-        option.result.listProfessionalServicesAmount,
+        option.result.effectiveProfessionalServicesList ?? option.result.listProfessionalServicesAmount,
         selected.length
       );
       return selected.map((key, index) => {
@@ -1811,6 +1929,138 @@ var require_productLibrary = __commonJS({
         localExpectation,
         PRODUCT_PROPERTIES
       }
+    };
+  }
+});
+
+// catalog.js
+var require_catalog = __commonJS({
+  "catalog.js"(exports2, module2) {
+    var pricingRules = require_pricingRules();
+    var { buildActiveRules } = require_calculator();
+    var PRODUCT_PRESENTATION = Object.freeze({
+      connect_ca: { description: "Connected accounts", unit: "CA/month", sort: 10 },
+      calendar_ca: { description: "Calendar-only accounts", unit: "calendars/month", sort: 20 },
+      notetaker_bot_hours: { description: "Bot hours", unit: "bot hours/month", sort: 30 },
+      agent_accounts: { description: "Agent accounts", unit: "accounts/month", sort: 40 },
+      agent_email_thousands: { description: "Emails in thousands", unit: "1,000 emails", sort: 50 },
+      agent_storage_gb: { description: "Storage", unit: "GB/month", sort: 60 },
+      agent_bandwidth_gb: { description: "Bandwidth", unit: "GB/month", sort: 70 }
+    });
+    var LABEL_OVERRIDES = Object.freeze({
+      support: { basic: "Basic", full: "Full", premium: "Premium" },
+      onboarding: { quick_launch_plus: "Quick Launch Plus" },
+      addOn: {
+        // "(requires Professional Services)" is a real rule, not decoration: selecting this add-on
+        // without a Professional Services item blocks Lock in. Saying so on the checkbox is cheaper
+        // than letting the rep discover it from a red banner after building the quote.
+        verified_oauth: "Turnkey Verified OAuth Projects (requires Professional Services)"
+      },
+      payment: {
+        annual_in_advance: "Annual in Advance",
+        semi_annual_in_advance: "Semi-Annual in Advance",
+        quarterly_in_advance: "Quarterly in Advance",
+        monthly_in_advance: "Monthly in Advance"
+      }
+    });
+    var RETIRED_ADD_ONS = Object.freeze(["enterprise_accelerator"]);
+    var override = (group, key, fallback) => LABEL_OVERRIDES[group]?.[key] ?? fallback;
+    var presentationMismatch = (ruleKeys, presentationKeys) => {
+      const missing = ruleKeys.filter((key) => !presentationKeys.includes(key));
+      const extra = presentationKeys.filter((key) => !ruleKeys.includes(key));
+      if (missing.length === 0 && extra.length === 0) return "";
+      return `CATALOG_PRESENTATION_MISMATCH:${missing.length > 0 ? ` missing ${missing.join(",")}` : ""}${extra.length > 0 ? ` extra ${extra.join(",")}` : ""}`;
+    };
+    var assertPresentationCoverage = () => {
+      const problem = presentationMismatch(
+        pricingRules.products.map(({ key }) => key),
+        Object.keys(PRODUCT_PRESENTATION)
+      );
+      if (problem) throw new Error(problem);
+    };
+    var buildCatalog2 = (pricingPolicy = {}) => {
+      assertPresentationCoverage();
+      const active = buildActiveRules(pricingPolicy);
+      return {
+        products: pricingRules.products.map(({ key, name }) => ({
+          key,
+          label: name,
+          description: PRODUCT_PRESENTATION[key].description,
+          unit: PRODUCT_PRESENTATION[key].unit,
+          role: "metered",
+          sort: PRODUCT_PRESENTATION[key].sort,
+          // Band-priced per unit, so there is no single list price -- the bands are the price, and
+          // they are already sent as productRates for the Settings screen.
+          billingUnit: "per month",
+          listPrice: null,
+          deprecated: false
+        })).sort((left, right) => left.sort - right.sort),
+        // SUPPORT HAS NO FIXED LIST PRICE. It is percentOfPlatformArr of the proposed platform ARR,
+        // capped at annualCap -- so its figure depends on the deal and is computed, never looked up.
+        // listPrice is null on purpose: the card must compute it, not display a constant. The percent
+        // and cap are sent so it can, and so an override can be checked against the cap.
+        support: active.supportRules.map(({ key, level, percentOfPlatformArr, annualCap }) => ({
+          key,
+          label: override("support", key, level),
+          role: "support",
+          billingUnit: "per year",
+          listPrice: null,
+          percentOfPlatformArr,
+          annualCap,
+          deprecated: false
+        })),
+        onboarding: active.onboardingRules.map(({ key, package: name, oneTimeAmount }) => ({
+          key,
+          label: override("onboarding", key, name),
+          role: "onboarding",
+          billingUnit: "one-time",
+          listPrice: oneTimeAmount,
+          deprecated: false
+        })),
+        addOns: active.addOnRules.map(({ key, label, deprecated, annualAmount }) => ({
+          key,
+          label: override("addOn", key, label),
+          role: "add_on",
+          billingUnit: "per year",
+          listPrice: annualAmount,
+          // Either flag retires it: the rate card's own `deprecated`, or this module's list.
+          deprecated: Boolean(deprecated) || RETIRED_ADD_ONS.includes(key)
+        })),
+        // PROFESSIONAL SERVICES ARE PRICED BY BUNDLE COUNT, NOT PER SERVICE.
+        //
+        // 1 -> 2,000 | 2 -> 3,800 | 3 -> 5,500 | 4 -> 7,200 | 5 -> 8,800. Note the break at 2: 3,800,
+        // not 4,000. There is no per-service price and inventing one would not sum to the ladder, so
+        // listPrice is null on every service and the ladder is sent separately. Holly, 2026-09-03:
+        // one row carrying the ladder price, with the chosen services named beneath it.
+        professionalServices: pricingRules.professionalServiceOptions.map(({ key, label }) => ({
+          key,
+          label,
+          role: "professional_service",
+          billingUnit: "one-time",
+          listPrice: null,
+          deprecated: false
+        })),
+        professionalServicesLadder: active.professionalServicesRules.map(
+          ({ itemCount, oneTimeAmount }) => ({ itemCount, listPrice: oneTimeAmount })
+        ),
+        // The card used to restate 12/24/36 as literals beside allowedTerms. One source now.
+        terms: pricingRules.allowedTerms.map((months) => ({
+          key: months,
+          label: `${months} months`
+        })),
+        payments: pricingRules.paymentRules.map(({ key, label }) => ({
+          key,
+          label: override("payment", key, label)
+        }))
+      };
+    };
+    var emptyProductMap = () => Object.fromEntries(pricingRules.products.map(({ key }) => [key, 0]));
+    module2.exports = {
+      buildCatalog: buildCatalog2,
+      emptyProductMap,
+      RETIRED_ADD_ONS,
+      PRODUCT_PRESENTATION,
+      _test: { assertPresentationCoverage, presentationMismatch, LABEL_OVERRIDES }
     };
   }
 });
@@ -2421,6 +2671,7 @@ var crypto = require("node:crypto");
 var hubspot = require("@hubspot/api-client");
 var { QuoteValidationError, calculateQuote, normalizeStoredInput } = require_calculator();
 var { inspectProductLibrary } = require_productLibrary();
+var { buildCatalog } = require_catalog();
 var rateCardLabels = require_pricingRules();
 var {
   accountIdFromContext,
@@ -2565,6 +2816,7 @@ var SAFE_ERRORS = Object.freeze({
   INVALID_QUOTE_CONTENT: "The quote display choices are invalid or incomplete.",
   LINE_ITEM_SYNC_FAILED: "HubSpot could not replace the Deal line items. Review the Deal before trying again.",
   DISCOUNT_REASON_REQUIRED: "A reason is required when a rate departs from the rate card, in either direction. Add one and try again.",
+  QUOTE_CONTRACT_REQUIRED: "Choose which contract this renewal is for, then Lock in again.",
   QUOTE_CONTACT_REQUIRED: "A contact is required on the Quote. Choose one on the pricing card, or associate a contact with this Deal.",
   QUOTE_TEMPLATE_NOT_CPQ: "That quote template is a legacy template and cannot be used. Choose a CPQ template on the card, or change which templates are offered in Settings > Quote Templates.",
   QUOTE_NOT_ADOPTABLE: "That quote can no longer be priced. It has to be a draft Change or Renewal quote on this Deal. Reload the card to see the current list.",
@@ -3220,6 +3472,20 @@ var lockLiveCalculation = async (client, dealId, state, parameters, portalId, se
     );
     throw new Error("DISCOUNT_REASON_REQUIRED");
   }
+  let chosenContractId = "";
+  if (category === "renewal") {
+    const { contracts, contractsRead } = await quoteContractOptions(client, dealId);
+    if (contractsRead && contracts.length > 0) {
+      const requested = String(parameters.contractId || "");
+      if (!requested || !contracts.some(({ id }) => id === requested)) {
+        console.warn(
+          `Nylas pricing: refused Lock in -- renewal deal ${dealId} offers ${contracts.length} contract(s) and the request named "${requested || "none"}".`
+        );
+        throw new Error("QUOTE_CONTRACT_REQUIRED");
+      }
+      chosenContractId = requested;
+    }
+  }
   const input = normalizeStoredInput(parameters.input, settings.pricingPolicy);
   const liveOption = {
     id: `live-${result.stateHash.slice(0, 16)}`,
@@ -3243,6 +3509,21 @@ var lockLiveCalculation = async (client, dealId, state, parameters, portalId, se
     options: [liveOption]
   };
   await writeDocument(client, dealId, document, properties);
+  if (chosenContractId) {
+    try {
+      await client.crm.associations.v4.basicApi.createDefault(
+        "deals",
+        String(dealId),
+        CONTRACT_OBJECT_TYPE,
+        chosenContractId
+      );
+      console.info(`Nylas pricing: associated contract ${chosenContractId} to deal ${dealId}.`);
+    } catch (error) {
+      console.warn(
+        `Nylas pricing: could not associate contract ${chosenContractId} to deal ${dealId}. ${providerMessage(error)}`
+      );
+    }
+  }
   const liveState = {
     ...state,
     document,
@@ -3698,6 +3979,105 @@ var latestQuoteTemplate = async (client, quoteId, templates) => {
       `Nylas pricing: could not read the template on quote ${quoteId}. ${providerMessage(error)}`
     );
     return null;
+  }
+};
+var CONTRACT_OBJECT_TYPE = "contracts";
+var CONTRACT_PROPERTIES = [
+  "hs_name",
+  "hs_status",
+  "hs_contract_effective_date",
+  "hs_end_date",
+  "hs_total_contract_value"
+];
+var CONTRACT_STATUS_RANK = Object.freeze({
+  active: 0,
+  // Future-dated and will activate itself. As renewable as an active one, and listed right after.
+  scheduled_activation: 1,
+  draft: 2,
+  // Temporarily stopped, not finished. Still renewable, so offered -- last of the good ones.
+  paused: 3
+});
+var CONTRACT_STATUS_NOT_OFFERABLE = Object.freeze(["completed", "terminated", "error"]);
+var contractStatusRank = (status) => {
+  const key = String(status || "").trim().toLowerCase();
+  if (key in CONTRACT_STATUS_RANK) return CONTRACT_STATUS_RANK[key];
+  if (CONTRACT_STATUS_NOT_OFFERABLE.includes(key)) return 90;
+  return 50;
+};
+var contractIsOfferable = (status) => !CONTRACT_STATUS_NOT_OFFERABLE.includes(String(status || "").trim().toLowerCase());
+var contractOptionLabel = (record) => {
+  const props = record?.properties || {};
+  const name = String(props.hs_name || "").trim() || `Contract ${record?.id}`;
+  const status = String(props.hs_status || "").trim();
+  const ends = String(props.hs_end_date || "").trim();
+  const parts = [name];
+  if (status) parts.push(status.toUpperCase());
+  if (ends) parts.push(`ends ${ends}`);
+  return parts.join(" \u2014 ");
+};
+var readContractById = async (client, contractId, properties = CONTRACT_PROPERTIES) => {
+  try {
+    return await client.crm.objects.basicApi.getById(
+      CONTRACT_OBJECT_TYPE,
+      String(contractId),
+      properties
+    );
+  } catch (error) {
+    const kept = properties.filter((name) => !isUnknownPropertyRejection(error, name));
+    if (kept.length > 0 && kept.length < properties.length) {
+      return readContractById(client, contractId, kept);
+    }
+    throw error;
+  }
+};
+var quoteContractOptions = async (client, dealId) => {
+  try {
+    const companyIds = await associatedIds(client, "deals", dealId, "companies", 1);
+    if (!companyIds[0]) {
+      return { contracts: [], contractSource: "no_company", contractsRead: true };
+    }
+    const contractIds = await associatedIds(
+      client,
+      "companies",
+      companyIds[0],
+      CONTRACT_OBJECT_TYPE,
+      50
+    );
+    if (contractIds.length === 0) {
+      return { contracts: [], contractSource: "company_has_none", contractsRead: true };
+    }
+    const records = [];
+    await inBatches(contractIds, async (contractId) => {
+      try {
+        records.push(await readContractById(client, contractId));
+      } catch (error) {
+        console.warn(
+          `Nylas pricing: could not read contract ${contractId}.`,
+          safeProviderDiagnostics(error, "read_contract")
+        );
+        records.push({ id: String(contractId), properties: {} });
+      }
+    });
+    const all = records.map((record) => ({
+      id: String(record.id),
+      label: contractOptionLabel(record),
+      status: String(record?.properties?.hs_status || ""),
+      endDate: String(record?.properties?.hs_end_date || "")
+    })).sort(
+      (left, right) => contractStatusRank(left.status) - contractStatusRank(right.status) || String(right.endDate).localeCompare(String(left.endDate)) || left.label.localeCompare(right.label)
+    );
+    const quotable = all.filter(({ status }) => contractIsOfferable(status));
+    return {
+      contracts: quotable.length > 0 ? quotable : all,
+      contractSource: quotable.length > 0 ? "company" : "company_none_quotable",
+      contractsRead: true
+    };
+  } catch (error) {
+    console.warn(
+      "Nylas pricing: could not list contracts for the deal company.",
+      safeProviderDiagnostics(error, "list_contracts")
+    );
+    return { contracts: [], contractSource: "read_failed", contractsRead: false };
   }
 };
 var quoteContactOptions = async (client, dealId) => {
@@ -4252,6 +4632,23 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
         [{ associationCategory: "HUBSPOT_DEFINED", associationTypeId: 71 }]
       );
     }
+    if (parameters.contractId) {
+      try {
+        await client.crm.associations.v4.basicApi.createDefault(
+          "quotes",
+          String(quote.id),
+          CONTRACT_OBJECT_TYPE,
+          String(parameters.contractId)
+        );
+        console.info(
+          `Nylas pricing: associated contract ${parameters.contractId} to quote ${quote.id}.`
+        );
+      } catch (error) {
+        console.warn(
+          `Nylas pricing: could not associate contract ${parameters.contractId} to quote ${quote.id}. ${providerMessage(error)}`
+        );
+      }
+    }
     const finalized = await client.crm.quotes.basicApi.getById(String(quote.id), [
       "hs_quote_link",
       "hs_status",
@@ -4324,6 +4721,7 @@ var generateQuote = async (client, dealId, state, parameters, portalId, settings
         quoteId: String(quote.id),
         quoteType: finalized?.properties?.hs_type,
         intendedKind: quoteKindForTemplate(settings, templateId),
+        contract: parameters.contractId ? String(parameters.contractId) : "",
         templateId,
         templateName,
         category: dealCategory(settings, state.dealType, state.pipelineId),
@@ -4551,7 +4949,8 @@ var calculatorDetails = ({
   option,
   lineItemCount,
   status,
-  outcome
+  outcome,
+  contract
 }) => {
   const result = option?.result || {};
   const money = (value) => value == null ? "-" : `$${Number(value).toLocaleString("en-US")}`;
@@ -4580,6 +4979,9 @@ var calculatorDetails = ({
     row("Committed ARR", money(result.committedArr)),
     row("TCV", money(result.tcv)),
     row("Line items", lineItemCount == null ? "-" : String(lineItemCount)),
+    // Only on renewals, and only when one was chosen -- an empty "Contract" row on every
+    // new-business lock would read as a missing value rather than an inapplicable one.
+    ...contract ? [row("Contract", contract)] : [],
     ...result.blockingReasons?.length ? [row("Blocked by", result.blockingReasons.join(" | "))] : []
   ].join("\n");
 };
@@ -4616,7 +5018,12 @@ exports.main = async (context) => {
         quoteTemplates: await usableQuoteTemplates(getClient()),
         // The product rows and band labels, derived from pricingRules. The Settings screen used to
         // carry its own copy of all seven products and every band boundary as a literal string.
-        productRates: productRateDescriptors()
+        productRates: productRateDescriptors(),
+        // ONE list instead of four. Phase 1 of the configurable-calculator proposal: the card used
+        // to restate every product, option, term and cadence as literals, and nothing enforced
+        // agreement with the rate card. Built server-side from pricingRules, so the catalogue can
+        // never offer something the calculator cannot price. See catalog.js.
+        catalog: buildCatalog()
       });
     }
     if (action === "update_settings") {
@@ -4656,6 +5063,13 @@ exports.main = async (context) => {
           dealCategory(settings, state.dealType, state.pipelineId)
         ),
         ...await quoteContactOptions(client, dealId),
+        // Contracts only on a renewal-category Deal. A new-business Deal never sees the picker and
+        // never spends the round trip -- and the category is resolved SERVER-SIDE from the Deal,
+        // never taken from the card, because a stale cached card bundle must not be able to widen
+        // its own behaviour. Same reasoning as the old category guard.
+        ...dealCategory(settings, state.dealType, state.pipelineId) === "renewal" ? await quoteContractOptions(client, dealId) : { contracts: [], contractSource: "not_renewal", contractsRead: true },
+        // The same catalogue the Settings screen gets. The card renders what it is given.
+        catalog: buildCatalog(),
         // The Deal's draft Change and Renewal quotes. HubSpot has to create those; the card offers
         // them so the rep can send this Deal's pricing to one instead of making a new quote.
         adoptableQuotes: await adoptableQuotes(client, dealId),
@@ -4795,6 +5209,11 @@ exports._test = Object.freeze({
   senderProperties,
   associatedIds,
   createLineItem,
+  quoteContractOptions,
+  contractStatusRank,
+  contractIsOfferable,
+  contractOptionLabel,
+  readContractById,
   isUnknownPropertyRejection,
   deleteOption,
   lockLiveCalculation,

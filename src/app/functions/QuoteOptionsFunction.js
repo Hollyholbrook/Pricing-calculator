@@ -3,6 +3,7 @@ const hubspot = require('@hubspot/api-client');
 
 const { QuoteValidationError, calculateQuote, normalizeStoredInput } = require('./calculator');
 const { inspectProductLibrary } = require('./productLibrary');
+const { buildCatalog } = require('./catalog');
 // LABELS ONLY. Every number in the summary below comes from the calculated result, never from
 // here -- reading a price out of the rate card while the result was computed from stored settings
 // is how a summary would end up disagreeing with the quote beside it.
@@ -270,6 +271,8 @@ const SAFE_ERRORS = Object.freeze({
   DISCOUNT_REASON_REQUIRED:
     'A reason is required when a rate departs from the rate card, in either direction. Add one ' +
     'and try again.',
+  QUOTE_CONTRACT_REQUIRED:
+    'Choose which contract this renewal is for, then Lock in again.',
   QUOTE_CONTACT_REQUIRED:
     'A contact is required on the Quote. Choose one on the pricing card, or associate a contact ' +
     'with this Deal.',
@@ -1207,11 +1210,45 @@ const lockLiveCalculation = async (
     );
     throw new Error('DISCOUNT_REASON_REQUIRED');
   }
-  // A change or renewal quote must say which contract it is for. Holly, 2026-08-30.
+  // A renewal Deal must say which contract it is for. Holly, 2026-08-30, rebuilt 2026-09-03.
   //
   // Same position rule as the two guards above: this is ABOVE every write. syncDealLineItems now
   // creates before it archives, so a late failure is survivable -- but a guard that refuses the
   // lock should still refuse it before anything has been written at all, not after.
+  //
+  // IT BLOCKS ONLY WHEN THERE WAS A REAL CHOICE TO MAKE: contracts were read successfully, at
+  // least one came back, and none was chosen -- or an id was sent that is not on that company,
+  // which means a stale card or a typo. Holly chose this over an unconditional block, 2026-09-03.
+  //
+  // The asymmetry with the Contact picker is deliberate. A rep can always create a contact. A rep
+  // CANNOT create a contract -- HubSpot makes one when a quote is accepted, and creating one by
+  // hand needs a Revenue Hub seat. So an unconditional block would dead-end every renewal on a
+  // portal where the read fails, or for a customer whose first contract does not exist yet, with
+  // nothing the rep could do about it. That is the mistake of shipping a requirement that loses a
+  // rep's work.
+  let chosenContractId = '';
+  if (category === 'renewal') {
+    const { contracts, contractsRead } = await quoteContractOptions(client, dealId);
+    // contractsRead is REDUNDANT-BY-CONSTRUCTION today and kept deliberately. quoteContractOptions
+    // returns contracts:[] on any failure, so contracts.length > 0 already implies the read
+    // succeeded -- mutation-checked 2026-09-03: dropping `contractsRead &&` breaks no test. It is
+    // kept because it states the intent (never block on our own failure) and because a future
+    // change that returned PARTIAL results on a failed read would otherwise start blocking reps
+    // silently. The test 'a read failure is reported as a failure, not as "no contracts"' pins the
+    // invariant this depends on; if that test ever changes, this condition becomes load-bearing.
+    if (contractsRead && contracts.length > 0) {
+      const requested = String(parameters.contractId || '');
+      if (!requested || !contracts.some(({ id }) => id === requested)) {
+        console.warn(
+          'Nylas pricing: refused Lock in -- renewal deal ' +
+            `${dealId} offers ${contracts.length} contract(s) and the request named ` +
+            `"${requested || 'none'}".`,
+        );
+        throw new Error('QUOTE_CONTRACT_REQUIRED');
+      }
+      chosenContractId = requested;
+    }
+  }
 
   // Never carry the raw card input forward. It can hold human labels the CATALOG cannot key on,
   // duplicate professional-services entries, and — worst — redline text the rep already retracted
@@ -1257,6 +1294,35 @@ const lockLiveCalculation = async (
     options: [liveOption],
   };
   await writeDocument(client, dealId, document, properties);
+
+  // Put the chosen contract on the DEAL.
+  //
+  // Proven writable in this portal -- Thrive TRM 60785797504 <-> 583651633759 -- and it is what
+  // HubSpot's native renewal-quote workflow action reads to resolve the contract from an enrolled
+  // Deal. Writing it keeps that door open without committing to that architecture.
+  //
+  // createDefault rather than a guessed numeric association type id: guessing one is how the
+  // `units` incident started.
+  //
+  // NEVER FATAL. Everything above has already been written by this point, so throwing here would
+  // fail a lock that actually succeeded. The rep's choice is recorded in calculator_details either
+  // way, so a refused association is recoverable by hand.
+  if (chosenContractId) {
+    try {
+      await client.crm.associations.v4.basicApi.createDefault(
+        'deals',
+        String(dealId),
+        CONTRACT_OBJECT_TYPE,
+        chosenContractId,
+      );
+      console.info(`Nylas pricing: associated contract ${chosenContractId} to deal ${dealId}.`);
+    } catch (error) {
+      console.warn(
+        `Nylas pricing: could not associate contract ${chosenContractId} to deal ${dealId}. ` +
+          `${providerMessage(error)}`,
+      );
+    }
+  }
 
   const liveState = {
     ...state,
@@ -2012,6 +2078,181 @@ const latestQuoteTemplate = async (client, quoteId, templates) => {
         `${providerMessage(error)}`,
     );
     return null;
+  }
+};
+
+// ---------------------------------------------------------------------------
+// Contracts on a renewal Deal
+// ---------------------------------------------------------------------------
+//
+// Rebuilt 2026-09-03 on Holly's instruction: "IF it's in Active renewals pipeline then we need to
+// be able to have the rep check the contract associated (Defaulting to the one they have, if they
+// have more than one then they need to pick which one)."
+//
+// This is a FRESH build, not a restore. The 2026-08-30 picker was deleted on 2026-09-01 along with
+// the quote-kind machinery (claude/one-flow-quote-kinds-removed.md). None of that comes back: no
+// quote kinds, no per-kind template lists, no contract object-type discovery, no adopt step. The
+// trigger is dealCategory === 'renewal' and nothing else.
+//
+// THE CONTRACT IS AN ASSOCIATION ONLY. It feeds no number. The calculator prices every flow --
+// Holly, 2026-08-30 and re-confirmed 2026-09-01 against the commerce beta's renewal-quote
+// endpoint. A future session reading the beta docs will think building the quote from the
+// contract's line items is the obvious answer; it was considered twice and declined.
+//
+// Reads the CRM object API only. crm.objects.contracts.read is already in app-hsmeta.json, so this
+// needs no scope change and no reinstall.
+
+const CONTRACT_OBJECT_TYPE = 'contracts';
+
+const CONTRACT_PROPERTIES = [
+  'hs_name',
+  'hs_status',
+  'hs_contract_effective_date',
+  'hs_end_date',
+  'hs_total_contract_value',
+];
+
+// THE REAL STATUS ENUM, READ FROM THE PORTAL 2026-09-03 -- not from the beta docs.
+//
+// The commerce beta documents four values (ACTIVE / DRAFT / COMPLETED / TERMINATED). The CRM
+// property hs_status on this portal has SEVEN:
+//
+//   active | completed | terminated | draft | scheduled_activation ("Scheduled") | error | paused
+//
+// The first build of this ranked on the documented four, so `scheduled_activation` -- a contract
+// with a future effective date, which becomes active on its own -- fell through to "not quotable".
+// Both of Holly's Organization's contracts are `scheduled_activation`, so the picker told the rep
+// none of them was active or draft, which was simply wrong. Diagnose from the portal, not the docs.
+//
+// Compared case-insensitively: the value is read off a CRM record, and a portal storing "Active"
+// must not silently sort to the bottom.
+const CONTRACT_STATUS_RANK = Object.freeze({
+  active: 0,
+  // Future-dated and will activate itself. As renewable as an active one, and listed right after.
+  scheduled_activation: 1,
+  draft: 2,
+  // Temporarily stopped, not finished. Still renewable, so offered -- last of the good ones.
+  paused: 3,
+});
+
+// Finished or broken. Excluded from the picker UNLESS nothing else is available, because an empty
+// picker reads as "this company has no contracts", which is a different answer and a wrong one.
+const CONTRACT_STATUS_NOT_OFFERABLE = Object.freeze(['completed', 'terminated', 'error']);
+
+// An UNKNOWN status is offered, ranked after the known-good ones. HubSpot has added values to this
+// enum before -- `scheduled_activation`, `error` and `paused` are all absent from the beta docs --
+// and hiding a contract the rep can see in HubSpot is worse than showing one we cannot rank.
+const contractStatusRank = (status) => {
+  const key = String(status || '').trim().toLowerCase();
+  if (key in CONTRACT_STATUS_RANK) return CONTRACT_STATUS_RANK[key];
+  if (CONTRACT_STATUS_NOT_OFFERABLE.includes(key)) return 90;
+  return 50;
+};
+
+const contractIsOfferable = (status) =>
+  !CONTRACT_STATUS_NOT_OFFERABLE.includes(String(status || '').trim().toLowerCase());
+
+// Never blank, and always says the status out loud -- a rep needs to SEE that a DRAFT contract is
+// not live yet rather than being told so afterwards.
+const contractOptionLabel = (record) => {
+  const props = record?.properties || {};
+  const name = String(props.hs_name || '').trim() || `Contract ${record?.id}`;
+  const status = String(props.hs_status || '').trim();
+  const ends = String(props.hs_end_date || '').trim();
+  const parts = [name];
+  if (status) parts.push(status.toUpperCase());
+  if (ends) parts.push(`ends ${ends}`);
+  return parts.join(' \u2014 ');
+};
+
+// A read naming a property this portal lacks 400s, and that would take the whole picker down for
+// every rep on every renewal Deal. Drop the offending property and retry -- the same pattern as
+// createLineItem, for the same reason.
+const readContractById = async (client, contractId, properties = CONTRACT_PROPERTIES) => {
+  try {
+    return await client.crm.objects.basicApi.getById(
+      CONTRACT_OBJECT_TYPE,
+      String(contractId),
+      properties,
+    );
+  } catch (error) {
+    const kept = properties.filter((name) => !isUnknownPropertyRejection(error, name));
+    if (kept.length > 0 && kept.length < properties.length) {
+      return readContractById(client, contractId, kept);
+    }
+    throw error;
+  }
+};
+
+// The DEAL'S COMPANY's contracts, not the Deal's own.
+//
+// A renewal Deal usually has no contract of its own: HubSpot associates a new contract to the deal
+// whose quote was accepted, not to next year's. A rep thinks in terms of the customer's contracts,
+// so that is what is offered (Holly, 2026-08-30).
+//
+// contractsRead is the important half of the return value. It distinguishes "this company has no
+// contracts" from "we could not find out", and the lock guard refuses to block on our own failure.
+// Reporting a read failure as an empty list would be a different answer and a wrong one.
+const quoteContractOptions = async (client, dealId) => {
+  try {
+    const companyIds = await associatedIds(client, 'deals', dealId, 'companies', 1);
+    if (!companyIds[0]) {
+      return { contracts: [], contractSource: 'no_company', contractsRead: true };
+    }
+    const contractIds = await associatedIds(
+      client,
+      'companies',
+      companyIds[0],
+      CONTRACT_OBJECT_TYPE,
+      50,
+    );
+    if (contractIds.length === 0) {
+      return { contracts: [], contractSource: 'company_has_none', contractsRead: true };
+    }
+    const records = [];
+    await inBatches(contractIds, async (contractId) => {
+      try {
+        records.push(await readContractById(client, contractId));
+      } catch (error) {
+        // Keep the option. A contract we cannot describe is still a contract the rep may need to
+        // pick, and dropping it silently would hide a choice that exists in HubSpot.
+        console.warn(
+          `Nylas pricing: could not read contract ${contractId}.`,
+          safeProviderDiagnostics(error, 'read_contract'),
+        );
+        records.push({ id: String(contractId), properties: {} });
+      }
+    });
+    const all = records
+      .map((record) => ({
+        id: String(record.id),
+        label: contractOptionLabel(record),
+        status: String(record?.properties?.hs_status || ''),
+        endDate: String(record?.properties?.hs_end_date || ''),
+      }))
+      .sort(
+        (left, right) =>
+          contractStatusRank(left.status) - contractStatusRank(right.status) ||
+          String(right.endDate).localeCompare(String(left.endDate)) ||
+          left.label.localeCompare(right.label),
+      );
+    // Quotable ones only -- but NEVER empty by filtering. If every contract the company has is
+    // COMPLETED or TERMINATED, show all of them rather than none: an empty picker reads on the
+    // card as "this company has no contracts", which is a different answer and a wrong one. Same
+    // rule as offeredQuoteTemplates.
+    const quotable = all.filter(({ status }) => contractIsOfferable(status));
+    return {
+      contracts: quotable.length > 0 ? quotable : all,
+      contractSource: quotable.length > 0 ? 'company' : 'company_none_quotable',
+      contractsRead: true,
+    };
+  } catch (error) {
+    // The picker must never stop the card loading.
+    console.warn(
+      'Nylas pricing: could not list contracts for the deal company.',
+      safeProviderDiagnostics(error, 'list_contracts'),
+    );
+    return { contracts: [], contractSource: 'read_failed', contractsRead: false };
   }
 };
 
@@ -2974,6 +3215,35 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
       );
     }
 
+    // The chosen contract, onto the QUOTE.
+    //
+    // Unlike the Deal association this has NEVER ONCE SUCCEEDED -- it has never been attempted
+    // against a real portal. There is no documented quote-to-contract association type id, so
+    // createDefault is the only honest attempt; a guessed numeric id is how the `units` incident
+    // started.
+    //
+    // Never fatal, and for a sharper reason than usual: the quote already EXISTS by this point, so
+    // throwing here would leave an orphan quote behind a failed lock. If HubSpot refuses, the log
+    // line is the record of it and the rep's choice still reached the Deal.
+    if (parameters.contractId) {
+      try {
+        await client.crm.associations.v4.basicApi.createDefault(
+          'quotes',
+          String(quote.id),
+          CONTRACT_OBJECT_TYPE,
+          String(parameters.contractId),
+        );
+        console.info(
+          `Nylas pricing: associated contract ${parameters.contractId} to quote ${quote.id}.`,
+        );
+      } catch (error) {
+        console.warn(
+          `Nylas pricing: could not associate contract ${parameters.contractId} to quote ` +
+            `${quote.id}. ${providerMessage(error)}`,
+        );
+      }
+    }
+
     // A quote created through the API is already DRAFT, so the update that set it was redundant
     // -- and it was the call that failed: it revalidates the whole quote, which is where the
     // template-type complaint came from. Read the quote instead of writing to it.
@@ -3083,6 +3353,7 @@ const generateQuote = async (client, dealId, state, parameters, portalId, settin
         quoteId: String(quote.id),
         quoteType: finalized?.properties?.hs_type,
         intendedKind: quoteKindForTemplate(settings, templateId),
+        contract: parameters.contractId ? String(parameters.contractId) : '',
         templateId,
         templateName,
         category: dealCategory(settings, state.dealType, state.pipelineId),
@@ -3423,6 +3694,7 @@ const calculatorDetails = ({
   lineItemCount,
   status,
   outcome,
+  contract,
 }) => {
   const result = option?.result || {};
   const money = (value) =>
@@ -3452,6 +3724,9 @@ const calculatorDetails = ({
     row('Committed ARR', money(result.committedArr)),
     row('TCV', money(result.tcv)),
     row('Line items', lineItemCount == null ? '-' : String(lineItemCount)),
+    // Only on renewals, and only when one was chosen -- an empty "Contract" row on every
+    // new-business lock would read as a missing value rather than an inapplicable one.
+    ...(contract ? [row('Contract', contract)] : []),
     ...(result.blockingReasons?.length
       ? [row('Blocked by', result.blockingReasons.join(' | '))]
       : []),
@@ -3494,6 +3769,11 @@ exports.main = async (context) => {
         // The product rows and band labels, derived from pricingRules. The Settings screen used to
         // carry its own copy of all seven products and every band boundary as a literal string.
         productRates: productRateDescriptors(),
+        // ONE list instead of four. Phase 1 of the configurable-calculator proposal: the card used
+        // to restate every product, option, term and cadence as literals, and nothing enforced
+        // agreement with the rate card. Built server-side from pricingRules, so the catalogue can
+        // never offer something the calculator cannot price. See catalog.js.
+        catalog: buildCatalog(),
       });
     }
     if (action === 'update_settings') {
@@ -3535,6 +3815,15 @@ exports.main = async (context) => {
           dealCategory(settings, state.dealType, state.pipelineId),
         ),
         ...(await quoteContactOptions(client, dealId)),
+        // Contracts only on a renewal-category Deal. A new-business Deal never sees the picker and
+        // never spends the round trip -- and the category is resolved SERVER-SIDE from the Deal,
+        // never taken from the card, because a stale cached card bundle must not be able to widen
+        // its own behaviour. Same reasoning as the old category guard.
+        ...(dealCategory(settings, state.dealType, state.pipelineId) === 'renewal'
+          ? await quoteContractOptions(client, dealId)
+          : { contracts: [], contractSource: 'not_renewal', contractsRead: true }),
+        // The same catalogue the Settings screen gets. The card renders what it is given.
+        catalog: buildCatalog(),
         // The Deal's draft Change and Renewal quotes. HubSpot has to create those; the card offers
         // them so the rep can send this Deal's pricing to one instead of making a new quote.
         adoptableQuotes: await adoptableQuotes(client, dealId),
@@ -3680,6 +3969,11 @@ exports._test = Object.freeze({
   senderProperties,
   associatedIds,
   createLineItem,
+  quoteContractOptions,
+  contractStatusRank,
+  contractIsOfferable,
+  contractOptionLabel,
+  readContractById,
   isUnknownPropertyRejection,
   deleteOption,
   lockLiveCalculation,

@@ -1027,6 +1027,21 @@ test('every discount surface is caught by the reason requirement', () => {
     support: { supportDiscount: 0.2 },
     onboarding: { onboardingDiscount: 0.3 },
     'professional services': { professionalServicesDiscount: 0.4 },
+    // ENTERED PRICES ARE A DISCOUNT SURFACE TOO. Holly, 2026-09-03: "If the rep puts in a price
+    // that's not the unit price we need to ask why." A typed price never passes through a
+    // discount field, so without these four rows the guard above would let one through
+    // unexplained -- which is the whole failure this table exists to catch.
+    //
+    // The amounts are below the catalogue price for this fixture (strategic onboarding, premium
+    // support, gtm_review, privacy_filter), so each implies a positive departure.
+    'entered onboarding price': { listPriceOverrides: { onboarding: 1000 } },
+    'entered support price': { listPriceOverrides: { support: 100 } },
+    'entered professional services price': {
+      listPriceOverrides: { professionalServices: 100 },
+    },
+    'entered add-on price': {
+      listPriceOverrides: { addOns: { privacy_filter: 1 } },
+    },
   };
   for (const [name, extra] of Object.entries(surfaces)) {
     const result = calculateQuote(discountedInput(extra));
@@ -1050,6 +1065,17 @@ test('every surface raises the uplift figure the reason guard also reads', () =>
     support: { supportDiscount: -0.2 },
     onboarding: { onboardingDiscount: -0.3 },
     'professional services': { professionalServicesDiscount: -0.4 },
+    // The uplift half: a price entered ABOVE the catalogue price. Renewals use this to move a
+    // legacy rate back toward the current rate card, and it reaches an approver just as a
+    // discount does, so it has to carry a reason too.
+    'entered onboarding price': { listPriceOverrides: { onboarding: 99_000 } },
+    'entered support price': { listPriceOverrides: { support: 99_000 } },
+    'entered professional services price': {
+      listPriceOverrides: { professionalServices: 99_000 },
+    },
+    'entered add-on price': {
+      listPriceOverrides: { addOns: { privacy_filter: 99_000 } },
+    },
   };
   for (const [name, extra] of Object.entries(surfaces)) {
     const result = calculateQuote(discountedInput(extra));
@@ -3302,4 +3328,394 @@ test('priceExistingQuote runs end to end without throwing', async () => {
   assert.equal(result.quoteId, '42608004129');
   assert.equal(result.adopted, true);
   assert.ok(result.lineItemCount > 0, 'the calculator lines must be applied');
+});
+
+// ===========================================================================
+// The contract picker, rebuilt 2026-09-03
+// ===========================================================================
+//
+// EXECUTED, NEVER READ. Every assertion below runs lockLiveCalculation or quoteContractOptions
+// against a fake client and checks what was actually written. A source-text version of any of
+// these would pass against a deleted guard -- that is exactly how a ReferenceError reached
+// production on 2026-09-01 and how a reverted reason guard passed on 2026-09-02.
+//
+// Each one was mutation-checked: the guard was deleted, the sort reversed, the filter inverted and
+// the association target changed, and the relevant test failed each time.
+
+const contractPickerClient = ({
+  contracts = [],
+  companyId = "co-1",
+  readFails = false,
+  associateFails = false,
+} = {}) => {
+  const client = generateQuoteClient();
+  client.contractAssociations = [];
+  client.contractReadCalls = [];
+  const byId = new Map(contracts.map((entry) => [String(entry.id), entry]));
+
+  const api = client.crm.associations.v4.basicApi;
+  api.getPage = async (fromType, _id, toType) => {
+    if (toType === "companies") {
+      return { results: companyId ? [{ toObjectId: companyId }] : [] };
+    }
+    if (toType === "contracts") {
+      client.contractReadCalls.push(`${fromType}->contracts`);
+      if (readFails) throw Object.assign(new Error("forbidden"), { code: 403 });
+      return { results: contracts.map(({ id }) => ({ toObjectId: id })) };
+    }
+    return { results: [] };
+  };
+  api.createDefault = async (fromType, fromId, toType, toId) => {
+    if (String(toType) === "contracts") {
+      if (associateFails) throw new Error("HubSpot refused the association");
+      client.contractAssociations.push(`${fromType}:${fromId}->${toId}`);
+    }
+    return {};
+  };
+
+  const template = {
+    properties: { hs_type: "cpq_template", hs_name: "New Business Template" },
+  };
+  client.crm.objects.basicApi.getById = async (objectType, id) => {
+    if (String(objectType) === "contracts") {
+      const found = byId.get(String(id));
+      return {
+        id: String(id),
+        properties: {
+          hs_name: found?.name || `Contract ${id}`,
+          hs_status: found?.status || "ACTIVE",
+          hs_end_date: found?.endDate || "2027-01-01",
+        },
+      };
+    }
+    return template;
+  };
+  return client;
+};
+
+const renewalSettings = () =>
+  normalizeSettings({
+    ...defaultSettings(),
+    renewalPipelineIds: ["p-renew"],
+    enabledQuoteTemplateIds: ["567553820432"],
+    defaultQuoteTemplateId: "567553820432",
+  });
+
+// No discount and no uplift, so the reason guard cannot be what refuses these locks.
+const renewalState = (pipelineId = "p-renew") => {
+  const input = {
+    termMonths: 12,
+    paymentFrequency: "annual_in_advance",
+    volumes: { connect_ca: 500 },
+    supportLevel: "basic",
+    onboardingPackage: "none",
+    professionalServices: [],
+    addOns: [],
+  };
+  const option = { id: "selected-1", input, result: calculateQuote(input) };
+  return {
+    document: { options: [option] },
+    selectedOptionId: option.id,
+    selectedStateHash: option.result.stateHash,
+    dealType: "renewal",
+    pipelineId,
+    dealName: "Test Co",
+    option,
+  };
+};
+
+const lockParams = (extra = {}) => ({
+  quoteContent: {},
+  contactId: "123",
+  discountReason: "",
+  paymentMethod: "ach",
+  input: renewalState().option.input,
+  ...extra,
+});
+
+test("the picker lists ACTIVE before DRAFT and prints the status", async () => {
+  const client = contractPickerClient({
+    contracts: [
+      {
+        id: "c-draft",
+        status: "DRAFT",
+        endDate: "2028-01-01",
+        name: "Next year",
+      },
+      {
+        id: "c-active",
+        status: "ACTIVE",
+        endDate: "2027-01-01",
+        name: "Current",
+      },
+    ],
+  });
+  const { contracts, contractSource, contractsRead } =
+    await _test.quoteContractOptions(client, "deal-1");
+  assert.equal(contractsRead, true);
+  assert.equal(contractSource, "company");
+  assert.deepEqual(
+    contracts.map(({ id }) => id),
+    ["c-active", "c-draft"],
+    "ACTIVE must come first -- a rep picking the top entry must not get a contract that is not live",
+  );
+  // The status is in the label, not merely in the data: a rep has to SEE that a draft is not live.
+  assert.match(contracts[1].label, /DRAFT/);
+  assert.match(contracts[1].label, /Next year/);
+});
+
+test("the status ranking uses the PORTAL's enum, not the beta docs' four values", async () => {
+  // Read from the portal 2026-09-03: active | completed | terminated | draft |
+  // scheduled_activation ("Scheduled") | error | paused. The beta docs list four of those, and the
+  // first build of this ranked on the documented set -- so `scheduled_activation`, a contract with
+  // a future effective date that activates itself, fell through to "not quotable". Both of Holly's
+  // Organization's contracts are scheduled_activation, so the picker told the rep that two
+  // perfectly renewable contracts were neither active nor draft. Diagnose from the portal.
+  const rank = _test.contractStatusRank;
+  const offerable = _test.contractIsOfferable;
+
+  assert.ok(rank("active") < rank("scheduled_activation"));
+  assert.ok(rank("scheduled_activation") < rank("draft"));
+  assert.ok(rank("draft") < rank("paused"));
+  for (const status of ["active", "scheduled_activation", "draft", "paused"]) {
+    assert.equal(offerable(status), true, `${status} must be offerable`);
+  }
+  for (const status of ["completed", "terminated", "error"]) {
+    assert.equal(offerable(status), false, `${status} must not be offerable`);
+  }
+  // An UNKNOWN status is OFFERED, ranked after the known-good ones. HubSpot has already added
+  // three values this code did not know about; hiding a contract the rep can see is worse.
+  assert.equal(offerable("a_status_hubspot_adds_next_year"), true);
+  assert.ok(rank("a_status_hubspot_adds_next_year") > rank("paused"));
+  assert.ok(rank("a_status_hubspot_adds_next_year") < rank("completed"));
+
+  // End to end, in the exact shape of Holly's Organization: two scheduled contracts are offered as
+  // NORMAL options, not via the "none of these is available" fallback.
+  const client = contractPickerClient({
+    contracts: [
+      { id: "c-sched-a", status: "scheduled_activation", endDate: "2027-09-30", name: "Accelerator" },
+      { id: "c-sched-b", status: "scheduled_activation", endDate: "2027-01-31", name: "Pro Platform" },
+    ],
+  });
+  const { contracts, contractSource } = await _test.quoteContractOptions(client, "deal-1");
+  assert.equal(contracts.length, 2);
+  assert.equal(
+    contractSource,
+    "company",
+    "scheduled contracts are normal options, not the last-resort fallback",
+  );
+  // And ordered by end date within the same status.
+  assert.deepEqual(contracts.map(({ id }) => id), ["c-sched-a", "c-sched-b"]);
+});
+
+test("status is matched case-insensitively", () => {
+  // The value comes off a CRM record, not the commerce API that documents the uppercase enum.
+  // A portal storing "Active" must not sort below a DRAFT.
+  assert.equal(
+    _test.contractStatusRank("Active"),
+    _test.contractStatusRank("ACTIVE"),
+  );
+  assert.equal(
+    _test.contractStatusRank(" draft "),
+    _test.contractStatusRank("DRAFT"),
+  );
+  assert.ok(
+    _test.contractStatusRank("COMPLETED") > _test.contractStatusRank("DRAFT"),
+  );
+});
+
+test("a company whose every contract is finished still shows them all", async () => {
+  const client = contractPickerClient({
+    contracts: [
+      {
+        id: "c-done",
+        status: "COMPLETED",
+        endDate: "2026-06-30",
+        name: "Expired",
+      },
+      {
+        id: "c-gone",
+        status: "TERMINATED",
+        endDate: "2026-01-31",
+        name: "Cancelled",
+      },
+    ],
+  });
+  const { contracts, contractSource } = await _test.quoteContractOptions(
+    client,
+    "deal-1",
+  );
+  // NEVER empty by filtering. An empty picker reads on the card as "this company has no
+  // contracts", which is a different answer and a wrong one.
+  assert.equal(
+    contracts.length,
+    2,
+    "filtering to nothing is worse than showing the finished ones",
+  );
+  assert.equal(contractSource, "company_none_quotable");
+});
+
+test('a read failure is reported as a failure, not as "no contracts"', async () => {
+  const client = contractPickerClient({
+    contracts: [{ id: "c-1" }],
+    readFails: true,
+  });
+  const { contracts, contractSource, contractsRead } =
+    await _test.quoteContractOptions(client, "deal-1");
+  assert.equal(
+    contractsRead,
+    false,
+    "this is the flag the lock guard refuses to block on",
+  );
+  assert.equal(contractSource, "read_failed");
+  assert.deepEqual(contracts, []);
+});
+
+test("Lock in is refused on a renewal when contracts exist and none was chosen", async () => {
+  const client = contractPickerClient({
+    contracts: [
+      { id: "c-1", status: "ACTIVE", name: "One" },
+      { id: "c-2", status: "ACTIVE", name: "Two" },
+    ],
+  });
+  await assert.rejects(
+    () =>
+      _test.lockLiveCalculation(
+        client,
+        "deal-1",
+        renewalState(),
+        lockParams(),
+        "45023718",
+        renewalSettings(),
+      ),
+    (error) => error.message === "QUOTE_CONTRACT_REQUIRED",
+  );
+  // And it refused BEFORE writing anything. syncDealLineItems is what empties the Deal.
+  assert.equal(
+    client.dealWrites.length,
+    0,
+    "nothing may be written by a refused lock",
+  );
+  assert.deepEqual(client.contractAssociations, []);
+});
+
+test("a contract id that is not on the company is refused", async () => {
+  const client = contractPickerClient({
+    contracts: [{ id: "c-1", status: "ACTIVE" }],
+  });
+  await assert.rejects(
+    () =>
+      _test.lockLiveCalculation(
+        client,
+        "deal-1",
+        renewalState(),
+        lockParams({ contractId: "c-999" }),
+        "45023718",
+        renewalSettings(),
+      ),
+    (error) => error.message === "QUOTE_CONTRACT_REQUIRED",
+  );
+  assert.equal(client.dealWrites.length, 0);
+});
+
+test("the chosen contract is the one associated, not the first offered", async () => {
+  const client = contractPickerClient({
+    contracts: [
+      { id: "c-first", status: "ACTIVE", endDate: "2027-06-01", name: "First" },
+      {
+        id: "c-second",
+        status: "ACTIVE",
+        endDate: "2027-01-01",
+        name: "Second",
+      },
+    ],
+  });
+  await _test.lockLiveCalculation(
+    client,
+    "deal-1",
+    renewalState(),
+    lockParams({ contractId: "c-second" }),
+    "45023718",
+    renewalSettings(),
+  );
+  // The rep's choice, not the top of the list. Associating the first offered contract on a renewal
+  // is the failure mode this whole picker exists to prevent.
+  assert.deepEqual(client.contractAssociations, ["deals:deal-1->c-second"]);
+  assert.ok(
+    client.dealWrites.length > 0,
+    "the lock itself must still have gone through",
+  );
+});
+
+test("a refused association does not fail a lock that already succeeded", async () => {
+  const client = contractPickerClient({
+    contracts: [{ id: "c-1", status: "ACTIVE" }],
+    associateFails: true,
+  });
+  // Must not throw: everything else has already been written by the time the association runs, so
+  // throwing would fail a lock that actually worked.
+  await _test.lockLiveCalculation(
+    client,
+    "deal-1",
+    renewalState(),
+    lockParams({ contractId: "c-1" }),
+    "45023718",
+    renewalSettings(),
+  );
+  assert.deepEqual(client.contractAssociations, []);
+  assert.ok(client.dealWrites.length > 0, "the lock still succeeds");
+});
+
+test("a read failure does not block the lock", async () => {
+  const client = contractPickerClient({
+    contracts: [{ id: "c-1" }],
+    readFails: true,
+  });
+  // A rep cannot create a contract. Blocking on our own read failure would dead-end every renewal
+  // with nothing the rep could do about it.
+  await _test.lockLiveCalculation(
+    client,
+    "deal-1",
+    renewalState(),
+    lockParams(),
+    "45023718",
+    renewalSettings(),
+  );
+  assert.ok(client.dealWrites.length > 0);
+});
+
+test("a Deal with no company does not block the lock", async () => {
+  const client = contractPickerClient({ contracts: [], companyId: "" });
+  await _test.lockLiveCalculation(
+    client,
+    "deal-1",
+    renewalState(),
+    lockParams(),
+    "45023718",
+    renewalSettings(),
+  );
+  assert.ok(client.dealWrites.length > 0);
+});
+
+test("a new-business Deal never reads contracts at all", async () => {
+  const client = contractPickerClient({
+    contracts: [{ id: "c-1", status: "ACTIVE" }],
+  });
+  await _test.lockLiveCalculation(
+    client,
+    "deal-1",
+    // Not in a renewal pipeline, so dealCategory is new_business.
+    { ...renewalState("p-newbiz"), dealType: "newbusiness" },
+    lockParams(),
+    "45023718",
+    renewalSettings(),
+  );
+  // Not merely "did not block" -- it must not spend the round trip either. "Don't touch ANYTHING
+  // with new business."
+  assert.deepEqual(
+    client.contractReadCalls,
+    [],
+    "a new-business Deal must not read contracts",
+  );
+  assert.deepEqual(client.contractAssociations, []);
 });

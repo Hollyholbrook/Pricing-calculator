@@ -723,7 +723,19 @@ const buildOnboardingLines = (option, source) => {
         component: 'onboarding',
         product,
         price: option.result.onboardingAmount,
-        listPrice: option.result.listOnboardingAmount,
+        // THE EFFECTIVE LIST, NOT THE CATALOGUE LIST.
+        //
+        // When a rep enters a price, that price IS the list price on the document -- so the line
+        // prints one flat figure with no discount beside it. Passing the catalogue figure here
+        // instead made the line read "5,000, 30% off", which is precisely the leak the flat
+        // override exists to close: a visibly derived price invites the customer to shrink the
+        // contract to shrink it (claude/post-release-followups-2026-09-02.md).
+        //
+        // result.listOnboardingAmount keeps the CATALOGUE figure and is still what listTcv and
+        // pricing_list_price_tcv are built from -- the audit trail must show the departure from
+        // the rate card even though the customer-facing document does not.
+        listPrice:
+          option.result.effectiveOnboardingList ?? option.result.listOnboardingAmount,
         source,
       }),
     },
@@ -743,8 +755,11 @@ const buildProfessionalServiceLines = (option, source) => {
   const prices = allocateBundle(option.result.professionalServicesAmount, selected.length);
   // The list amounts are allocated the same way, so each line's discount is its own share of the
   // bundle's concession and the shares still sum to the totals exactly.
+  // Same rule as onboarding: an entered bundle price is the list price on the document, so the
+  // lines carry it with no discount printed. The catalogue figure stays on the result for audit.
   const listPrices = allocateBundle(
-    option.result.listProfessionalServicesAmount,
+    option.result.effectiveProfessionalServicesList ??
+      option.result.listProfessionalServicesAmount,
     selected.length,
   );
   return selected.map((key, index) => {

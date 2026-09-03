@@ -1034,3 +1034,140 @@ test('an uplifted line is sent at its price with no discount field', () => {
   }
   assert.ok(uplifted > 0, 'the fixture must actually produce an uplifted Connect line');
 });
+
+// ===========================================================================
+// A rep-entered list price must reach the HubSpot line item
+// ===========================================================================
+//
+// Holly, 2026-09-03: "An edited list price must be used when creating or updating the
+// corresponding HubSpot line item." The line builders read supportAnnual / onboardingAmount /
+// professionalServicesAmount off the result, all of which now incorporate an override -- so this
+// holds by construction. Asserted anyway, because "by construction" is how the units incident got
+// shipped: nothing was checking the thing everyone assumed.
+
+test('an entered onboarding price is what lands on the line item', () => {
+  const input = {
+    termMonths: 12,
+    paymentFrequency: 'annual_in_advance',
+    volumes: { connect_ca: 5000 },
+    supportLevel: 'basic',
+    onboardingPackage: 'quick_launch',
+    professionalServices: [],
+    addOns: [],
+  };
+  const catalogue = buildDealLineItems({ id: 'o', input, result: calculateQuote(input) });
+  const overridden = buildDealLineItems({
+    id: 'o',
+    input,
+    result: calculateQuote({ ...input, listPriceOverrides: { onboarding: 3500 } }),
+  });
+
+  const onboardingLine = (items) =>
+    items.find(({ properties }) => properties.nylas_pricing_component === 'onboarding');
+
+  assert.equal(Number(onboardingLine(catalogue).properties.price), 5000, 'the catalogue price');
+  const line = onboardingLine(overridden).properties;
+  assert.equal(
+    Number(line.price),
+    3500,
+    'the rep entered 3500, so 3500 IS the price -- not 5000 with a discount beside it',
+  );
+  // NO DISCOUNT PRINTED. An entered price is the price, not a concession off a catalogue figure.
+  // Printing "5,000, 30% off" is the leak the flat override exists to close.
+  assert.equal(Number(line.hs_discount_percentage || 0), 0);
+  assert.equal(Number(line.proposed_rate), 3500);
+  assert.equal(Number(line.total_fees_for_term), 3500);
+});
+
+test('an entered flat support price is what lands on the support line item', () => {
+  const input = {
+    termMonths: 12,
+    paymentFrequency: 'annual_in_advance',
+    volumes: { connect_ca: 5000 },
+    supportLevel: 'full',
+    onboardingPackage: 'none',
+    professionalServices: [],
+    addOns: [],
+  };
+  const calculated = calculateQuote(input);
+  const flat = calculateQuote({ ...input, listPriceOverrides: { support: 9000 } });
+  // Prove the fixture actually moves, so the assertion below is the override and not a coincidence.
+  assert.notEqual(calculated.supportAnnual, 9000);
+
+  const supportLine = (result) =>
+    buildDealLineItems({ id: 'o', input, result }).find(
+      ({ properties }) => properties.nylas_pricing_component === 'support',
+    );
+  assert.equal(Number(supportLine(flat).properties.price), 9000);
+  // This is the whole point of the flat override: the customer sees one flat number, with no
+  // discount printed beside it to reveal that the figure was derived.
+  assert.equal(Number(supportLine(flat).properties.hs_discount_percentage || 0), 0);
+});
+
+test('an entered add-on price is what lands on the add-on line item', () => {
+  const input = {
+    termMonths: 12,
+    paymentFrequency: 'annual_in_advance',
+    volumes: { connect_ca: 5000 },
+    supportLevel: 'basic',
+    onboardingPackage: 'none',
+    professionalServices: [],
+    addOns: ['shared_oauth_app'],
+  };
+  const items = buildDealLineItems({
+    id: 'o',
+    input,
+    result: calculateQuote({
+      ...input,
+      listPriceOverrides: { addOns: { shared_oauth_app: 1200 } },
+    }),
+  });
+  const line = items.find(
+    ({ properties }) => properties.nylas_line_item_key === 'addon:shared_oauth_app',
+  );
+  // The entered annual figure, and no discount printed beside it.
+  assert.equal(Number(line.properties.price), 1200);
+  assert.equal(Number(line.properties.hs_discount_percentage || 0), 0);
+});
+
+test('an entered professional-services bundle price is what lands on those line items', () => {
+  const input = {
+    termMonths: 12,
+    paymentFrequency: 'annual_in_advance',
+    volumes: { connect_ca: 5000 },
+    supportLevel: 'basic',
+    onboardingPackage: 'none',
+    professionalServices: ['gtm_review', 'provider_oauth_app_creation'],
+    addOns: [],
+  };
+  const catalogue = calculateQuote(input);
+  // Two services price at 3,800 on the ladder -- prove the fixture moves before asserting.
+  assert.equal(catalogue.professionalServicesAmount, 3800);
+
+  const psLines = (result) =>
+    buildDealLineItems({ id: 'o', input, result }).filter(
+      ({ properties }) => properties.nylas_pricing_component === 'professional_services',
+    );
+
+  const overridden = psLines(
+    calculateQuote({ ...input, listPriceOverrides: { professionalServices: 3000 } }),
+  );
+  assert.equal(overridden.length, 2, 'one line per service, the bundle price spread across them');
+
+  // The entered bundle price, and it still SUMS exactly -- allocateBundle gives the remainder to
+  // the last line rather than letting rounding lose a cent.
+  const sum = overridden.reduce((total, { properties }) => total + Number(properties.price), 0);
+  assert.equal(sum, 3000);
+
+  // And no discount printed on any of them: an entered price is the price.
+  for (const { properties } of overridden) {
+    assert.equal(Number(properties.hs_discount_percentage || 0), 0);
+  }
+
+  // Against the catalogue path, which DOES carry the ladder figure.
+  const plain = psLines(catalogue);
+  assert.equal(
+    plain.reduce((total, { properties }) => total + Number(properties.price), 0),
+    3800,
+  );
+});

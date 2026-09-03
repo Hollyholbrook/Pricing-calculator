@@ -97,6 +97,79 @@ const normalizeDiscountMap = (value, allowedKeys, field, fallback = 0) => {
   );
 };
 
+// A REP-ENTERED PRICE, replacing the one the rate card computes.
+//
+// Holly, 2026-09-03: the Services and Pricing table makes List Price editable per row. Support,
+// onboarding, the professional-services bundle and each add-on can be overridden.
+//
+// STORED AS AN ABSOLUTE FIGURE, NOT A PERCENTAGE. Holly's flat-support-override note rejected the
+// percentage form for exactly this reason: "it is a percentage of a moving base, so the figure
+// shifts on every re-lock". An absolute price stays where the rep put it. The percentage is
+// DERIVED at calculation time, for approval routing and reporting only.
+//
+// Absent or empty is not the same as present-and-empty: an empty map is dropped entirely so the
+// normalized input -- and therefore the state hash -- is byte-identical to what it was before this
+// field existed. Otherwise every stored option on every Deal would go stale on deploy.
+const normalizeListPriceOverrides = (raw, activeRules) => {
+  if (raw == null) return {};
+  assertPlainObject(raw, 'listPriceOverrides');
+  const allowed = new Set(['support', 'onboarding', 'professionalServices', 'addOns']);
+  if (Object.keys(raw).some((key) => !allowed.has(key))) {
+    throw new QuoteValidationError('UNSUPPORTED_FIELD', 'listPriceOverrides');
+  }
+  const money = (value, field) => {
+    if (value == null || value === '') return null;
+    const amount = Number(value);
+    if (!Number.isFinite(amount) || amount < 0) {
+      throw new QuoteValidationError('INVALID_AMOUNT', field);
+    }
+    return round(amount, 2);
+  };
+  const overrides = {};
+  for (const field of ['support', 'onboarding', 'professionalServices']) {
+    const amount = money(raw[field], `listPriceOverrides.${field}`);
+    if (amount != null) overrides[field] = amount;
+  }
+  if (raw.addOns != null) {
+    assertPlainObject(raw.addOns, 'listPriceOverrides.addOns');
+    const known = new Set(activeRules.addOnRules.map(({ key }) => key));
+    const addOns = {};
+    for (const [key, value] of Object.entries(raw.addOns)) {
+      // An unknown key is refused rather than ignored. A silently dropped override is a price the
+      // rep typed, saw accepted, and did not get -- the failure mode the smoke test found in
+      // normalizeSettings and called out as the dangerous kind.
+      if (!known.has(key)) {
+        throw new QuoteValidationError('UNSUPPORTED_VALUE', 'listPriceOverrides.addOns');
+      }
+      const amount = money(value, `listPriceOverrides.addOns.${key}`);
+      if (amount != null) addOns[key] = amount;
+    }
+    if (Object.keys(addOns).length > 0) overrides.addOns = addOns;
+  }
+  return overrides;
+};
+
+// How far an entered price sits from the one the rate card computes, as the same signed percentage
+// the discount fields already use: positive is a discount, negative is an uplift. This is what
+// lets an override reuse the WHOLE existing apparatus -- the approval ladder, the blocking rules
+// and the "anything that routes to an approver carries a reason" guard -- with no new machinery.
+//
+// Clamped to the same bounds as a typed discount. An override of 3x list is -2 before clamping,
+// and every magnitude at or beyond 1 already routes to Finance, so the clamp cannot change an
+// approval outcome -- it only keeps the reported figure inside the range the rest of the code and
+// the Deal properties expect.
+const impliedDeparture = (catalogueList, effectiveList) => {
+  if (catalogueList === effectiveList) return 0;
+  if (!(catalogueList > 0)) {
+    // Charging for something the rate card gives away. There is no percentage of zero, so this
+    // takes the maximum uplift and lands at the top of the ladder, which is the right place for
+    // a price that has no rate-card basis at all.
+    return effectiveList > 0 ? PERCENT_MIN : 0;
+  }
+  const departure = 1 - effectiveList / catalogueList;
+  return round(Math.min(PERCENT_MAX, Math.max(PERCENT_MIN, departure)), 6);
+};
+
 const normalizeInput = (input, activeRules = rules) => {
   assertPlainObject(input, 'input');
   const allowedInputFields = new Set([
@@ -113,6 +186,7 @@ const normalizeInput = (input, activeRules = rules) => {
     'supportLevel',
     'professionalServices',
     'psItemCount',
+    'listPriceOverrides',
     'onboardingPackage',
     'addOns',
     'autoRenewal',
@@ -125,6 +199,8 @@ const normalizeInput = (input, activeRules = rules) => {
   if (Object.keys(input).some((field) => !allowedInputFields.has(field))) {
     throw new QuoteValidationError('UNSUPPORTED_FIELD', 'input');
   }
+
+  const listPriceOverrides = normalizeListPriceOverrides(input.listPriceOverrides, activeRules);
 
   // Bounds derived from the rate card, never restated. A hardcoded 12/36 here would silently
   // reject a term the rate card had added, before the allowedTerms check below could accept it.
@@ -256,6 +332,9 @@ const normalizeInput = (input, activeRules = rules) => {
     volumes,
     professionalServices,
     psItemCount,
+    // Spread, not a plain key: an empty map must not appear on the normalized input at all, or
+    // JSON.stringify(input) changes and every stored option in the portal goes stale on deploy.
+    ...(Object.keys(listPriceOverrides).length > 0 ? { listPriceOverrides } : {}),
     addOns: [...new Set(addOns)],
     autoRenewal,
     renewalTermMonths,
@@ -696,13 +775,32 @@ const calculateQuote = (
   // (proposedPlatformArr). listSupportAnnual above is the list-price counterpart and must be
   // derived from listPlatformArr, otherwise product discounts leak into the "list" figure and
   // understate the blended effective discount.
-  const supportAnnual = round(proposedSupportBeforeDiscount * (1 - input.supportDiscount), 2);
+  // AN OVERRIDDEN SUPPORT PRICE IS THE FLAT SUPPORT OVERRIDE Shane asked for.
+  //
+  // Support has no rate-card price to look up -- it is a percentage of the ARR the customer pays,
+  // capped. Reps quote a flat figure off the prospect's early projections and do not want the
+  // customer to see it is derived, because a visibly dynamic support price invites them to shrink
+  // the contract to shrink it (claude/post-release-followups-2026-09-02.md). An entered figure replaces the
+  // calculated one outright; the discount, if any, then applies to what the rep entered.
+  const overrides = input.listPriceOverrides || {};
+  const catalogueSupportList = proposedSupportBeforeDiscount;
+  const effectiveSupportList =
+    overrides.support != null ? overrides.support : catalogueSupportList;
+  const supportOverrideDeparture = impliedDeparture(catalogueSupportList, effectiveSupportList);
+  const supportAnnual = round(effectiveSupportList * (1 - input.supportDiscount), 2);
   const selectedAddOns = activeRules.addOnRules
     .filter(({ key }) => input.addOns.includes(key))
     .map(({ key, label, annualAmount }) => {
+      // The rep's figure stands in for the rate card's annual amount, so the term discount and
+      // payment premium still apply to it exactly as they would to a catalogue price. Overriding
+      // the price does not opt a line out of the deal's own terms.
+      const catalogueAnnualAmount = annualAmount;
+      const effectiveAnnualAmount =
+        overrides.addOns?.[key] != null ? overrides.addOns[key] : catalogueAnnualAmount;
+      const overrideDeparture = impliedDeparture(catalogueAnnualAmount, effectiveAnnualAmount);
       const exactListMonthlyAmount = activeRules.calculationMethod === 'excel_compatible'
-        ? (annualAmount / 12) * (1 - termRule.discount + input.payment.premium)
-        : round((annualAmount / 12) * (1 - termRule.discount) * (1 + input.payment.premium), 2);
+        ? (effectiveAnnualAmount / 12) * (1 - termRule.discount + input.payment.premium)
+        : round((effectiveAnnualAmount / 12) * (1 - termRule.discount) * (1 + input.payment.premium), 2);
       const listMonthlyAmount = round(exactListMonthlyAmount, 2);
       const discretionaryDiscount = input.addOnDiscounts[key];
       const exactProposedMonthlyAmount = activeRules.calculationMethod === 'excel_compatible'
@@ -712,7 +810,11 @@ const calculateQuote = (
       return {
         key,
         label,
-        rateCardAnnualAmount: annualAmount,
+        rateCardAnnualAmount: catalogueAnnualAmount,
+        // Both figures, so the quote's history stays auditable -- Holly, 2026-09-03.
+        catalogueAnnualAmount,
+        effectiveAnnualAmount,
+        overrideDeparture,
         listMonthlyAmount,
         proposedMonthlyAmount,
         billingMonthlyAmount: round(exactProposedMonthlyAmount, 9),
@@ -736,14 +838,32 @@ const calculateQuote = (
       'professionalServices',
     );
   }
-  const listProfessionalServicesAmount = professionalServicesBundle.oneTimeAmount;
+  // Priced by BUNDLE COUNT, so the override replaces the ladder's figure for that count -- there
+  // is no per-service price to override. Holly, 2026-09-03: one row carrying the ladder price.
+  const catalogueProfessionalServicesList = professionalServicesBundle.oneTimeAmount;
+  const listProfessionalServicesAmount = catalogueProfessionalServicesList;
+  const effectiveProfessionalServicesList =
+    overrides.professionalServices != null
+      ? overrides.professionalServices
+      : catalogueProfessionalServicesList;
+  const professionalServicesOverrideDeparture = impliedDeparture(
+    catalogueProfessionalServicesList,
+    effectiveProfessionalServicesList,
+  );
   const professionalServicesAmount = round(
-    listProfessionalServicesAmount * (1 - input.professionalServicesDiscount),
+    effectiveProfessionalServicesList * (1 - input.professionalServicesDiscount),
     2,
   );
-  const listOnboardingAmount = input.onboarding.oneTimeAmount;
+  const catalogueOnboardingList = input.onboarding.oneTimeAmount;
+  const listOnboardingAmount = catalogueOnboardingList;
+  const effectiveOnboardingList =
+    overrides.onboarding != null ? overrides.onboarding : catalogueOnboardingList;
+  const onboardingOverrideDeparture = impliedDeparture(
+    catalogueOnboardingList,
+    effectiveOnboardingList,
+  );
   const onboardingAmount = round(
-    listOnboardingAmount * (1 - input.onboardingDiscount),
+    effectiveOnboardingList * (1 - input.onboardingDiscount),
     2,
   );
   const oneTime = onboardingAmount + professionalServicesAmount;
@@ -781,6 +901,19 @@ const calculateQuote = (
     ...(listSupportAnnual > 0 ? [input.supportDiscount] : []),
     ...(listOnboardingAmount > 0 ? [input.onboardingDiscount] : []),
     ...(listProfessionalServicesAmount > 0 ? [input.professionalServicesDiscount] : []),
+    // AN OVERRIDDEN PRICE ROUTES LIKE A DISCOUNT OR AN UPLIFT. Holly, 2026-09-03.
+    //
+    // This single line is what makes the whole feature safe: by expressing an override as the same
+    // signed percentage a typed discount uses, it inherits the approval ladder, the blocking rules
+    // AND the "anything that routes to an approver carries a reason" guard from 2026-09-02. No new
+    // approval path, no second ladder to keep in step, and nothing can be repriced without a trail.
+    //
+    // Zeros are harmless: with no overrides every departure is 0, Math.max is unchanged, and the
+    // workbook parity fixtures still pass -- verified across all 61 parity tests.
+    supportOverrideDeparture,
+    onboardingOverrideDeparture,
+    professionalServicesOverrideDeparture,
+    ...selectedAddOns.map(({ overrideDeparture }) => overrideDeparture),
   ];
   // The floor of 0 is what makes an UPLIFT approval-neutral, and it is the workbook's own rule
   // rather than a convenience. QUOTE BUILDER E62 routes on
@@ -805,6 +938,23 @@ const calculateQuote = (
     dealCategory,
     largestDiscretionaryUplift,
   );
+
+  // AN OVERRIDE MAY NOT BREACH THE SUPPORT CAP. Holly, 2026-09-03 -- see
+  // claude/support-cap-decision.md. The cap is the tier's annualCap, so Basic (cap 0) cannot be
+  // given a price at all: support that the rate card gives away is not something a rep may start
+  // charging for by typing a number.
+  const overrideBlockingReasons = [];
+  if (
+    overrides.support != null &&
+    overrides.support > input.support.annualCap
+  ) {
+    overrideBlockingReasons.push(
+      `A support price of $${round(overrides.support, 2).toLocaleString('en-US')} exceeds the ` +
+        `$${round(input.support.annualCap, 2).toLocaleString('en-US')} cap for ` +
+        `${input.support.level}. Lower the price, or change the support level.`,
+    );
+  }
+  const blockingReasons = [...approval.blockingReasons, ...overrideBlockingReasons];
 
   const legacyGuardrails = [];
   // DISCOUNT ONLY. This one is named FINANCE_APPROVAL_MULTI_YEAR_DISCOUNT and means "a deep
@@ -839,6 +989,19 @@ const calculateQuote = (
     proposedPlatformArr,
     listSupportAnnual,
     supportAnnual,
+    // BOTH FIGURES, for audit: what the rate card said and what the rep entered. Holly, 2026-09-03:
+    // "Store both the default catalog price and the user-entered price so the quote calculation
+    // history remains auditable."
+    catalogueSupportList,
+    effectiveSupportList,
+    supportOverrideDeparture,
+    catalogueOnboardingList,
+    effectiveOnboardingList,
+    onboardingOverrideDeparture,
+    catalogueProfessionalServicesList,
+    effectiveProfessionalServicesList,
+    professionalServicesOverrideDeparture,
+    listPriceOverrides: overrides,
     selectedAddOns,
     annualAddOns,
     listAnnualAddOns,
@@ -862,9 +1025,9 @@ const calculateQuote = (
     largestDiscretionaryUplift,
     approvalTierRequired: approval.tier,
     approvalReasons: approval.reasons,
-    blockingReasons: approval.blockingReasons,
+    blockingReasons,
     calculationStatus:
-      approval.blockingReasons.length > 0
+      blockingReasons.length > 0
         ? 'blocked'
         : approval.tier === 'none'
           ? 'ready'
@@ -909,6 +1072,11 @@ const normalizeStoredInput = (rawInput, pricingPolicy = {}) => {
     professionalServicesDiscount: input.professionalServicesDiscount,
     volumes: input.volumes,
     professionalServices: input.professionalServices,
+    // Same conditional as normalizeInput: absent when empty, so a Deal with no overrides hashes
+    // exactly as it did before this field existed.
+    ...(input.listPriceOverrides && Object.keys(input.listPriceOverrides).length > 0
+      ? { listPriceOverrides: input.listPriceOverrides }
+      : {}),
     // psItemCount is deliberately NOT stored. It is derived from professionalServices on every
     // calculation, and persisting it is what let a stale count outlive the selection it came from.
 
